@@ -1,0 +1,276 @@
+{
+  "version": 1,
+  "stages": {
+    "PA-8": {
+      "updated_at": "2026-04-17T00:26:56",
+      "stage_type": "ACTIVITY",
+      "success": true,
+      "steps": [
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              352,
+              827
+            ],
+            "text": "踏入新生黎明“内关卡已开放"
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1464,
+              920
+            ],
+            "text": "告别天真年代"
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1113,
+              291
+            ],
+            "text": "PA-8",
+            "success": true
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1447,
+              145
+            ],
+            "text": "PA-8",
+            "success": true
+          }
+        }
+      ]
+    },
+    "PA-1": {
+      "updated_at": "2026-04-17T00:28:53",
+      "stage_type": "ACTIVITY",
+      "success": true,
+      "steps": [
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              500,
+              540
+            ],
+            "vector": [
+              800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              500,
+              540
+            ],
+            "vector": [
+              800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              197,
+              316
+            ],
+            "text": "PA-1",
+            "success": true
+          }
+        }
+      ]
+    },
+    "TO-9": {
+      "updated_at": "2026-08-01T01:55:02",
+      "stage_type": "UNKNOWN",
+      "success": true,
+      "steps": [
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              363,
+              827
+            ],
+            "text": "<直到大地变成一颗酸橙>活动已开放"
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1681,
+              674
+            ],
+            "text": "驶向大地尽头",
+            "success": true
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              1400,
+              540
+            ],
+            "vector": [
+              -800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              1400,
+              540
+            ],
+            "vector": [
+              -800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1163,
+              603
+            ],
+            "text": "TO-9",
+            "success": true
+          }
+        }
+      ]
+    }
+  },
+  "patterns": {
+    "PA-*": {
+      "updated_at": "2026-04-17T00:28:53",
+      "stage_type": "ACTIVITY",
+      "source_stage": "PA-1",
+      "success": true,
+      "steps": [
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              500,
+              540
+            ],
+            "vector": [
+              800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              500,
+              540
+            ],
+            "vector": [
+              800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              197,
+              316
+            ],
+            "text": "PA-1",
+            "success": true
+          }
+        }
+      ]
+    },
+    "TO-*": {
+      "updated_at": "2026-08-01T01:55:02",
+      "stage_type": "UNKNOWN",
+      "source_stage": "TO-9",
+      "success": true,
+      "steps": [
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              363,
+              827
+            ],
+            "text": "<直到大地变成一颗酸橙>活动已开放"
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1681,
+              674
+            ],
+            "text": "驶向大地尽头",
+            "success": true
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              1400,
+              540
+            ],
+            "vector": [
+              -800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "swipe",
+          "payload": {
+            "start": [
+              1400,
+              540
+            ],
+            "vector": [
+              -800,
+              0
+            ]
+          }
+        },
+        {
+          "action": "tap",
+          "payload": {
+            "pos": [
+              1163,
+              603
+            ],
+            "text": "TO-9",
+            "success": true
+          }
+        }
+      ]
+    }
+  }
+}

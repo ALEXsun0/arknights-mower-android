@@ -1,0 +1,4 @@
+{
+  "mower": {"url": "https://github.com/ALEXsun0/arknights-mower", "commit": "446457c541c0ee35954bea85d81b4dda0345145b", "source": "Committed workspace snapshot; excludes ongoing local edits and personal configuration"},
+  "meow": {"url": "https://github.com/Aliothmoon/MAA-Meow", "commit": "042e21b6a7c826f1dcd4ecef0004e5288f7601f2", "engine_assets": "v0.21.4 arm64-v8a release"}
+}

@@ -1,0 +1,17 @@
+artifacts/
+**/.gradle/
+**/build/
+**/local.properties
+**/.cxx/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/ui/dist/
+meow/app/src/main/assets/python-runtime.zip
+meow/app/src/main/assets/MaaSync/MaaResource/
+meow/app/src/main/jniLibs/
+*.keystore
+*.jks
+runtime/config/
+runtime/log/
+runtime/temp/

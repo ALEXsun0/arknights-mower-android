@@ -1,0 +1,853 @@
+import axios from 'axios'
+import { defineStore } from 'pinia'
+import { inject, ref, watch, watchEffect } from 'vue'
+import { createWorkshopState } from '@/utils/workshopConfig'
+
+export const useConfigStore = defineStore('config', () => {
+  const defaultLaunchCommand =
+    'input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; am start -n {package}/{activity}'
+  const weeklyPlanWeekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  const adb = ref('')
+  const drone_count_limit = ref(0)
+  const drone_room = ref('')
+  const drone_interval = ref(4)
+  const enable_party = ref(true)
+  const leifeng_mode = ref(true)
+  const free_blacklist = ref([])
+  const maa_adb_path = ref('')
+  const maa_enable = ref(false)
+  const maa_path = ref('')
+  const maa_mirrorchyan_token = ref('')
+  const maa_update_channel = ref('stable')
+  const maa_auto_check_update = ref(false)
+  const maa_restore_theme_enable = ref(false)
+  const maa_restore_theme = ref('')
+  const medicine_expire_days = ref(0)
+  const maa_report_to_yituliu = ref(false)
+  const maa_yituliu_id = ref('')
+  const maa_penguin_id = ref('')
+  const ap_fallback = ref(0)
+  const maa_weekly_plan = ref([])
+  const maa_weekly_plan_options = ref([])
+  const maa_weekly_plan_active = ref('')
+  const maa_weekly_plan_activity_fallbacks = ref({})
+  const maa_weekly_plan_activity_switch_times = ref({})
+  const maa_weekly_plan_activity_end_times = ref({})
+  const maa_stage_inventory_enable = ref(false)
+  const maa_stage_limit_rules = ref([])
+  const maa_stage_ratio_rules = ref([])
+  const maa_rg_enable = ref(0)
+  const maa_long_task_type = ref('rogue')
+  const mail_enable = ref(false)
+  const account = ref('')
+  const pass_code = ref('')
+  const recipient = ref('')
+  const timezone_offset = ref(0)
+  const custom_smtp_server = ref({})
+  const package_type = ref('official')
+  const reload_room = ref('')
+  const run_order_delay = ref(10)
+  const dorm_order = ref([])
+  const start_automatically = ref(false)
+  const maa_mall_buy = ref('')
+  const maa_mall_blacklist = ref('')
+  const shop_list = ref([])
+  const item_list = ref([])
+  const maa_gap = ref(false)
+  const simulator = ref({ name: '', index: -1 })
+  const resting_threshold = ref(50)
+  const fia_threshold = ref(90)
+  const rescue_threshold = ref(75)
+  const favorite = ref([])
+  const {
+    workshop_settings,
+    workshop_settings_generation,
+    workshop_manual_settings,
+    workshop_manual_settings_revision,
+    workshop_preset_warning,
+    load_workshop_config,
+    apply_workshop_response
+  } = createWorkshopState()
+  const defaultDeerFodder = () => [
+    {
+      item_names: ['碳素', '碳素组', '家具零件_碳素组'],
+      children_lower_limit: 0,
+      self_upper_limit: 9999
+    }
+  ]
+  const workshop_deer_fodder = ref(defaultDeerFodder())
+  const workshop_min_bonus = ref(80)
+  const workshop_low_priority_rest = ref(true)
+  const fodder_operators = ref(['九色鹿'])
+  const t5_operators = ref(['年'])
+  const book_operators = ref(['司霆惊蛰'])
+  const theme = ref('light')
+  const tap_to_launch_game = ref({
+    enable: false,
+    mode: 'adb',
+    x: 0,
+    y: 0,
+    command: defaultLaunchCommand
+  })
+  const exit_game_when_idle = ref(false)
+  const return_home_when_idle = ref(false)
+  const close_simulator_when_idle = ref(false)
+  const maa_conn_preset = ref('General')
+  const maa_touch_option = ref('maatouch')
+  const maa_mall_ignore_blacklist_when_full = ref(false)
+  const maa_mall_only_buy_discount = ref(false)
+  const maa_mall_reserve_max_credit = ref(false)
+  const maa_rg_sleep_min = ref('00:00')
+  const maa_rg_sleep_max = ref('00:00')
+  const maa_credit_fight = ref(true)
+  const maa_depot_enable = ref(false)
+  const maa_rg_theme = ref('Mizuki')
+  const maa_rcl_theme = ref('Tales')
+  const rcl = ref({})
+  const rogue = ref({})
+  const sss = ref({})
+  const screenshot = ref(1)
+  const screenshot_interval = ref(500)
+  const mail_subject = ref('')
+  const ai_type = ref('')
+  const ai_key = ref('')
+  const skland_enable = ref(false)
+  const skland_info = ref([])
+  const recruit_enable = ref(true)
+  const recruitment_permit = ref(30)
+  const recruit_robot = ref(true)
+  const recruit_auto_only5 = ref(true)
+  const run_order_grandet_mode = ref({})
+  const check_mail_enable = ref(true)
+  const report_enable = ref(true)
+  const recruit_gap = ref(false)
+  const recruit_auto_5 = ref('hand')
+  const webview = ref({ scale: 1.0 })
+  const runtime_platform = ref('')
+  const shop_collect_enable = ref(true)
+  const meeting_level = ref(3)
+  const fix_mumu12_adb_disconnect = ref(false)
+  const ra_timeout = ref(30)
+  const sf_target = ref('结局A')
+  const touch_method = ref('scrcpy')
+  const free_room = ref(false)
+  const merge_interval = ref(10)
+  const fia_fool = ref(true)
+  const refresh_backup_plan_after_mood = ref(false)
+  const assistant_follows_schedule = ref(false)
+  const enable_mastery = ref(true)
+  const sign_in = ref({ enable: true })
+  const droidcast = ref({})
+  const mumu12IPC = ref(false)
+  const visit_friend_enable = ref(true)
+  const visit_friend_mode = ref('maa')
+  const credit_fight = ref({})
+  const custom_screenshot = ref({})
+  const hot_update_enable = ref(false)
+  const hot_update_auto_update = ref(false)
+  const notification_level = ref('INFO')
+  const waiting_scene = ref({})
+  const expiring_medicine_on_weekend = ref(false)
+  const maa_mail = ref(false)
+  const maa_recruit = ref(false)
+  const maa_orundum = ref(false)
+  const maa_mining = ref(false)
+  const maa_specialaccess = ref(false)
+  const syncingWeeklyPlan = ref(false)
+  const skipNextWeeklyPlanSync = ref(false)
+  let weeklyPlanSyncTimer = null
+  let configSaveRequest = Promise.resolve()
+
+  async function load_shop() {
+    const response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/shop`)
+    const mall_list = []
+    for (const i of response.data) {
+      mall_list.push({
+        value: i,
+        label: i
+      })
+    }
+    shop_list.value = mall_list
+  }
+
+  async function load_item() {
+    const response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/item`)
+    const mall_list = []
+    for (const i of response.data) {
+      mall_list.push({
+        value: i,
+        label: i
+      })
+    }
+    item_list.value = mall_list
+  }
+
+  function normalizeWeeklyPlan(rawPlan) {
+    return weeklyPlanWeekdays.map((weekday, index) => {
+      const item = Array.isArray(rawPlan) ? (rawPlan[index] ?? {}) : {}
+      const stageValue = item.stage
+      return {
+        weekday,
+        medicine: Number.isFinite(Number(item.medicine)) ? Number(item.medicine) : 0,
+        sanity_threshold: Math.min(
+          189,
+          Math.max(
+            0,
+            Number.isFinite(Number(item.sanity_threshold)) ? Number(item.sanity_threshold) : 0
+          )
+        ),
+        stage: Array.isArray(stageValue)
+          ? stageValue.filter((value) => typeof value === 'string')
+          : typeof stageValue === 'string'
+            ? [stageValue]
+            : []
+      }
+    })
+  }
+
+  function normalizeStageLimitRules(rawRules) {
+    if (!Array.isArray(rawRules)) {
+      return []
+    }
+    return rawRules
+      .filter((rule) => rule && typeof rule.stage === 'string' && rule.stage.trim())
+      .map((rule) => ({
+        stage: rule.stage.trim(),
+        operator: rule.operator === 'or' ? 'or' : 'and',
+        enabled: rule.enabled !== false,
+        items: (Array.isArray(rule.items) ? rule.items : [])
+          .filter((item) => item && (item.item_id || item.item_name))
+          .map((item) => ({
+            item_id: String(item.item_id || item.item_name || '').trim(),
+            item_name: String(item.item_name || item.item_id || '').trim(),
+            limit: Math.max(0, Number.isFinite(Number(item.limit)) ? Number(item.limit) : 0)
+          }))
+      }))
+  }
+
+  function normalizeStageRatioRules(rawRules) {
+    if (!Array.isArray(rawRules)) {
+      return []
+    }
+    return rawRules.map((rule, index) => ({
+      name: String(rule?.name || `比例规则 ${index + 1}`).trim(),
+      enabled: rule?.enabled !== false,
+      members: (Array.isArray(rule?.members) ? rule.members : [])
+        .filter((member) => member && member.stage && (member.item_id || member.item_name))
+        .map((member) => ({
+          stage: String(member.stage).trim(),
+          item_id: String(member.item_id || member.item_name || '').trim(),
+          item_name: String(member.item_name || member.item_id || '').trim(),
+          ratio: Math.max(0, Number.isFinite(Number(member.ratio)) ? Number(member.ratio) : 0)
+        }))
+    }))
+  }
+
+  function normalizeTimestampMap(rawValue) {
+    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+      return {}
+    }
+    return Object.fromEntries(
+      Object.entries(rawValue)
+        .map(([key, value]) => [key, Number(value)])
+        .filter(([, value]) => Number.isFinite(value) && value > 0)
+    )
+  }
+
+  function buildWeeklyPlanInventoryConfig() {
+    return {
+      enabled: maa_stage_inventory_enable.value,
+      limit_rules: normalizeStageLimitRules(maa_stage_limit_rules.value),
+      ratio_rules: normalizeStageRatioRules(maa_stage_ratio_rules.value)
+    }
+  }
+
+  function applyWeeklyPlanInventoryConfig(rawConfig = {}) {
+    maa_stage_inventory_enable.value = rawConfig.enabled === true
+    maa_stage_limit_rules.value = normalizeStageLimitRules(rawConfig.limit_rules)
+    maa_stage_ratio_rules.value = normalizeStageRatioRules(rawConfig.ratio_rules)
+  }
+
+  function applyWeeklyPlanMetadata(data = {}) {
+    maa_weekly_plan_activity_fallbacks.value =
+      data.activity_fallbacks && typeof data.activity_fallbacks === 'object'
+        ? data.activity_fallbacks
+        : {}
+    maa_weekly_plan_activity_switch_times.value = normalizeTimestampMap(
+      data.activity_fallback_switch_times
+    )
+    maa_weekly_plan_activity_end_times.value = normalizeTimestampMap(data.activity_plan_end_times)
+  }
+
+  async function load_weekly_plan_state() {
+    const listResponse = await axios.get(`${import.meta.env.VITE_HTTP_URL}/weekly-plans`)
+    maa_weekly_plan_options.value = Array.isArray(listResponse.data.plans)
+      ? listResponse.data.plans
+      : []
+    applyWeeklyPlanMetadata(listResponse.data)
+    applyWeeklyPlanInventoryConfig(listResponse.data.inventory_config)
+
+    if (!maa_weekly_plan_active.value) {
+      await update_weekly_plan_active('默认', normalizeWeeklyPlan(maa_weekly_plan.value))
+    } else if (!maa_weekly_plan_options.value.includes(maa_weekly_plan_active.value)) {
+      maa_weekly_plan_options.value = Array.from(
+        new Set([...maa_weekly_plan_options.value, maa_weekly_plan_active.value])
+      )
+    }
+  }
+
+  async function update_weekly_plan_active(key, plan = undefined) {
+    const activeKey = typeof key === 'string' ? key.trim() : ''
+    if (!activeKey) {
+      throw new Error('周计划方案不能为空')
+    }
+
+    // Finish any autosave for the source plan before changing the active key,
+    // so an older /conf request cannot write its inventory rules into the target.
+    await configSaveRequest.catch(() => {})
+    syncingWeeklyPlan.value = true
+    try {
+      const currentInventoryConfig = buildWeeklyPlanInventoryConfig()
+      const payload = {
+        active: activeKey,
+        source_inventory_config: currentInventoryConfig
+      }
+      if (plan !== undefined) {
+        payload.plan = normalizeWeeklyPlan(plan)
+        payload.inventory_config = currentInventoryConfig
+      }
+      const response = await axios.post(
+        `${import.meta.env.VITE_HTTP_URL}/weekly-plans/active`,
+        payload
+      )
+      maa_weekly_plan_active.value = response.data.active
+      skipNextWeeklyPlanSync.value = true
+      maa_weekly_plan.value = normalizeWeeklyPlan(response.data.plan)
+      maa_weekly_plan_options.value = Array.from(
+        new Set([...maa_weekly_plan_options.value, response.data.active])
+      )
+      applyWeeklyPlanInventoryConfig(response.data.inventory_config)
+      applyWeeklyPlanMetadata(response.data)
+      return response.data
+    } finally {
+      syncingWeeklyPlan.value = false
+    }
+  }
+
+  async function sync_active_weekly_plan() {
+    if (!maa_weekly_plan_active.value) {
+      return
+    }
+    return update_weekly_plan_active(maa_weekly_plan_active.value, maa_weekly_plan.value)
+  }
+
+  async function delete_weekly_plan(key) {
+    const planKey = typeof key === 'string' ? key.trim() : ''
+    if (!planKey) {
+      throw new Error('周计划方案不能为空')
+    }
+
+    await configSaveRequest.catch(() => {})
+    syncingWeeklyPlan.value = true
+    try {
+      const response = await axios.delete(
+        `${import.meta.env.VITE_HTTP_URL}/weekly-plans/${encodeURIComponent(planKey)}`
+      )
+      maa_weekly_plan_active.value = response.data.active
+      skipNextWeeklyPlanSync.value = true
+      maa_weekly_plan.value = normalizeWeeklyPlan(response.data.plan)
+      applyWeeklyPlanInventoryConfig(response.data.inventory_config)
+      const listResponse = await axios.get(`${import.meta.env.VITE_HTTP_URL}/weekly-plans`)
+      maa_weekly_plan_options.value = Array.isArray(listResponse.data.plans)
+        ? listResponse.data.plans
+        : []
+      applyWeeklyPlanMetadata(listResponse.data)
+      return response.data
+    } finally {
+      syncingWeeklyPlan.value = false
+    }
+  }
+
+  async function update_weekly_plan_activity_fallback(target, switchTime = undefined) {
+    const source = maa_weekly_plan_active.value
+    if (!source) {
+      throw new Error('请先选择周计划方案')
+    }
+    const payload = {
+      source,
+      target: typeof target === 'string' ? target.trim() : ''
+    }
+    if (switchTime !== undefined) {
+      payload.switch_time = switchTime
+    }
+    const response = await axios.post(
+      `${import.meta.env.VITE_HTTP_URL}/weekly-plans/activity-fallback`,
+      payload
+    )
+    applyWeeklyPlanMetadata(response.data)
+    return response.data
+  }
+
+  function normalizeLaunchConfig(config = {}) {
+    const modeOptions = ['adb', 'tap', 'custom']
+    const mode = modeOptions.includes(config.mode) ? config.mode : config.enable ? 'tap' : 'adb'
+    return {
+      enable: mode == 'tap',
+      mode,
+      x: config.x ?? 0,
+      y: config.y ?? 0,
+      command: config.command || defaultLaunchCommand
+    }
+  }
+
+  async function load_config() {
+    const response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/conf`)
+    runtime_platform.value = response.data.runtime_platform || ''
+    adb.value = response.data.adb
+    drone_count_limit.value = response.data.drone_count_limit
+    drone_room.value = response.data.drone_room
+    drone_interval.value = response.data.drone_interval
+    enable_party.value = response.data.enable_party != 0
+    leifeng_mode.value = response.data.leifeng_mode != 0
+    free_blacklist.value =
+      response.data.free_blacklist == '' ? [] : response.data.free_blacklist.split(',')
+    maa_adb_path.value = response.data.maa_adb_path
+    maa_enable.value = response.data.maa_enable != 0
+    maa_path.value = response.data.maa_path
+    maa_mirrorchyan_token.value = response.data.maa_mirrorchyan_token || ''
+    maa_update_channel.value = response.data.maa_update_channel === 'beta' ? 'beta' : 'stable'
+    maa_auto_check_update.value = response.data.maa_auto_check_update ?? false
+    maa_restore_theme_enable.value = response.data.maa_restore_theme_enable ?? false
+    maa_restore_theme.value = response.data.maa_restore_theme ?? ''
+    maa_rg_enable.value = response.data.maa_rg_enable == 1
+    maa_long_task_type.value = response.data.maa_long_task_type
+    medicine_expire_days.value = response.data.medicine_expire_days
+    maa_report_to_yituliu.value = response.data.maa_report_to_yituliu ?? false
+    maa_yituliu_id.value = response.data.maa_yituliu_id ?? ''
+    maa_penguin_id.value = response.data.maa_penguin_id ?? ''
+    ap_fallback.value = Number(response.data.ap_fallback) || 0
+    maa_weekly_plan.value = normalizeWeeklyPlan(response.data.maa_weekly_plan)
+    maa_weekly_plan_active.value = response.data.maa_weekly_plan_active || ''
+    applyWeeklyPlanInventoryConfig({
+      enabled: response.data.maa_stage_inventory_enable,
+      limit_rules: response.data.maa_stage_limit_rules,
+      ratio_rules: response.data.maa_stage_ratio_rules
+    })
+    mail_enable.value = response.data.mail_enable != 0
+    account.value = response.data.account
+    pass_code.value = response.data.pass_code
+    recipient.value = response.data.recipient
+    timezone_offset.value = response.data.timezone_offset
+    custom_smtp_server.value = response.data.custom_smtp_server
+    package_type.value = response.data.package_type == 1 ? 'official' : 'bilibili'
+    reload_room.value = response.data.reload_room == '' ? [] : response.data.reload_room.split(',')
+    run_order_delay.value = response.data.run_order_delay
+
+    dorm_order.value = response.data.dorm_order == '' ? [] : response.data.dorm_order.split(',')
+    start_automatically.value = response.data.start_automatically
+    maa_mall_buy.value =
+      response.data.maa_mall_buy == '' ? [] : response.data.maa_mall_buy.split(',')
+    maa_mall_blacklist.value =
+      response.data.maa_mall_blacklist == '' ? [] : response.data.maa_mall_blacklist.split(',')
+    maa_gap.value = response.data.maa_gap
+    simulator.value = response.data.simulator
+    resting_threshold.value = response.data.resting_threshold * 100
+    fia_threshold.value = response.data.fia_threshold * 100
+    rescue_threshold.value = response.data.rescue_threshold * 100
+    favorite.value = response.data.favorite == '' ? [] : response.data.favorite.split(',')
+    theme.value = response.data.theme
+    tap_to_launch_game.value = normalizeLaunchConfig(response.data.tap_to_launch_game)
+    exit_game_when_idle.value = response.data.exit_game_when_idle
+    return_home_when_idle.value = response.data.return_home_when_idle
+    close_simulator_when_idle.value = response.data.close_simulator_when_idle
+    maa_conn_preset.value = response.data.maa_conn_preset
+    maa_touch_option.value = response.data.maa_touch_option
+    maa_mall_ignore_blacklist_when_full.value = response.data.maa_mall_ignore_blacklist_when_full
+    maa_mall_only_buy_discount.value = response.data.maa_mall_only_buy_discount ?? false
+    maa_mall_reserve_max_credit.value = response.data.maa_mall_reserve_max_credit ?? false
+    maa_rg_sleep_max.value = response.data.maa_rg_sleep_max
+    maa_rg_sleep_min.value = response.data.maa_rg_sleep_min
+    maa_credit_fight.value = response.data.maa_credit_fight
+    maa_depot_enable.value = response.data.maa_depot_enable
+    maa_rg_theme.value = response.data.maa_rg_theme
+    maa_rcl_theme.value = response.data.maa_rcl_theme
+    rcl.value = response.data.rcl
+    rogue.value = response.data.rogue
+    sss.value = response.data.sss
+    screenshot.value = response.data.screenshot
+    screenshot_interval.value = response.data.screenshot_interval
+    mail_subject.value = response.data.mail_subject
+    skland_enable.value = response.data.skland_enable != 0
+    ai_key.value = response.data.ai_key
+    ai_type.value = response.data.ai_type
+    skland_info.value = response.data.skland_info
+    recruit_enable.value = response.data.recruit_enable
+    recruitment_permit.value = response.data.recruitment_permit
+    recruit_robot.value = response.data.recruit_robot
+    recruit_auto_only5.value = response.data.recruit_auto_only5
+    run_order_grandet_mode.value = response.data.run_order_grandet_mode
+    check_mail_enable.value = response.data.check_mail_enable
+    report_enable.value = response.data.report_enable
+    recruit_gap.value = response.data.recruit_gap
+    recruit_auto_5.value = response.data.recruit_auto_5
+    webview.value = response.data.webview
+    shop_collect_enable.value = response.data.shop_collect_enable
+    meeting_level.value = response.data.meeting_level
+    fix_mumu12_adb_disconnect.value = response.data.fix_mumu12_adb_disconnect
+    ra_timeout.value = response.data.reclamation_algorithm.timeout
+    sf_target.value = response.data.secret_front.target
+    touch_method.value = response.data.touch_method
+    free_room.value = response.data.free_room
+    merge_interval.value = response.data.merge_interval
+    fia_fool.value = response.data.fia_fool
+    refresh_backup_plan_after_mood.value = response.data.refresh_backup_plan_after_mood ?? false
+    assistant_follows_schedule.value = response.data.assistant_follows_schedule
+    enable_mastery.value = response.data.enable_mastery ?? true
+    sign_in.value = response.data.sign_in
+    droidcast.value = response.data.droidcast
+    mumu12IPC.value = response.data.mumu12IPC
+    visit_friend_enable.value = response.data.visit_friend_enable ?? true
+    visit_friend_mode.value = response.data.visit_friend_mode ?? 'maa'
+    credit_fight.value = response.data.credit_fight
+    custom_screenshot.value = response.data.custom_screenshot
+    load_workshop_config(response.data)
+    workshop_deer_fodder.value = response.data.workshop_deer_fodder ?? defaultDeerFodder()
+    workshop_min_bonus.value = response.data.workshop_min_bonus ?? 80
+    workshop_low_priority_rest.value = response.data.workshop_low_priority_rest ?? true
+    fodder_operators.value = response.data.fodder_operators || ['九色鹿']
+    t5_operators.value = response.data.t5_operators || ['年']
+    book_operators.value = response.data.book_operators || ['司霆惊蛰']
+    hot_update_enable.value = response.data.hot_update?.enable ?? false
+    hot_update_auto_update.value = response.data.hot_update?.auto_update ?? false
+    notification_level.value = response.data.notification_level
+    waiting_scene.value = response.data.waiting_scene
+    expiring_medicine_on_weekend.value = response.data.expiring_medicine_on_weekend
+    maa_mail.value = response.data.maa_mail
+    maa_recruit.value = response.data.maa_recruit
+    maa_orundum.value = response.data.maa_orundum
+    maa_mining.value = response.data.maa_mining
+    maa_specialaccess.value = response.data.maa_specialaccess
+    await load_weekly_plan_state()
+  }
+
+  function build_config() {
+    return {
+      account: account.value,
+      adb: adb.value,
+      drone_count_limit: drone_count_limit.value,
+      drone_room: drone_room.value,
+      drone_interval: drone_interval.value,
+      enable_party: enable_party.value ? 1 : 0,
+      leifeng_mode: leifeng_mode.value ? 1 : 0,
+      free_blacklist: free_blacklist.value.join(','),
+      maa_adb_path: maa_adb_path.value,
+      maa_enable: maa_enable.value ? 1 : 0,
+      maa_path: maa_path.value,
+      maa_mirrorchyan_token: maa_mirrorchyan_token.value,
+      maa_update_channel: maa_update_channel.value,
+      maa_auto_check_update: maa_auto_check_update.value,
+      maa_restore_theme_enable: maa_restore_theme_enable.value,
+      maa_restore_theme: maa_restore_theme.value,
+      maa_rg_enable: maa_rg_enable.value ? 1 : 0,
+      maa_long_task_type: maa_long_task_type.value,
+      medicine_expire_days: medicine_expire_days.value,
+      maa_report_to_yituliu: maa_report_to_yituliu.value,
+      maa_yituliu_id: maa_yituliu_id.value,
+      maa_penguin_id: maa_penguin_id.value,
+      ap_fallback: ap_fallback.value,
+      maa_weekly_plan_active: maa_weekly_plan_active.value,
+      maa_stage_inventory_enable: maa_stage_inventory_enable.value,
+      maa_stage_limit_rules: normalizeStageLimitRules(maa_stage_limit_rules.value),
+      maa_stage_ratio_rules: normalizeStageRatioRules(maa_stage_ratio_rules.value),
+      mail_enable: mail_enable.value ? 1 : 0,
+      package_type: package_type.value == 'official' ? 1 : 0,
+      pass_code: pass_code.value,
+      recipient: recipient.value,
+      timezone_offset: timezone_offset.value,
+      custom_smtp_server: custom_smtp_server.value,
+      reload_room: reload_room.value.join(','),
+      run_order_delay: run_order_delay.value,
+      dorm_order: dorm_order.value.join(','),
+      start_automatically: start_automatically.value,
+      maa_mall_buy: maa_mall_buy.value.join(','),
+      maa_mall_blacklist: maa_mall_blacklist.value.join(','),
+      maa_gap: maa_gap.value,
+      simulator: simulator.value,
+      theme: theme.value,
+      resting_threshold: resting_threshold.value / 100,
+      fia_threshold: fia_threshold.value / 100,
+      rescue_threshold: rescue_threshold.value / 100,
+      favorite: favorite.value.join(','),
+      tap_to_launch_game: {
+        enable: tap_to_launch_game.value.mode == 'tap',
+        mode: tap_to_launch_game.value.mode,
+        x: tap_to_launch_game.value.x,
+        y: tap_to_launch_game.value.y,
+        command: tap_to_launch_game.value.command || defaultLaunchCommand
+      },
+      exit_game_when_idle: exit_game_when_idle.value,
+      return_home_when_idle: return_home_when_idle.value,
+      close_simulator_when_idle: close_simulator_when_idle.value,
+      maa_conn_preset: maa_conn_preset.value,
+      maa_touch_option: maa_touch_option.value,
+      maa_mall_ignore_blacklist_when_full: maa_mall_ignore_blacklist_when_full.value,
+      maa_mall_only_buy_discount: maa_mall_only_buy_discount.value,
+      maa_mall_reserve_max_credit: maa_mall_reserve_max_credit.value,
+      maa_rg_sleep_max: maa_rg_sleep_max.value,
+      maa_rg_sleep_min: maa_rg_sleep_min.value,
+      maa_credit_fight: maa_credit_fight.value,
+      maa_depot_enable: maa_depot_enable.value,
+      maa_rg_theme: maa_rg_theme.value,
+      maa_rcl_theme: maa_rcl_theme.value,
+      rcl: rcl.value,
+      rogue: rogue.value,
+      sss: sss.value,
+      screenshot: screenshot.value,
+      screenshot_interval: screenshot_interval.value,
+      mail_subject: mail_subject.value,
+      skland_enable: skland_enable.value,
+      ai_type: ai_type.value,
+      ai_key: ai_key.value,
+      skland_info: skland_info.value,
+      recruit_enable: recruit_enable.value,
+      recruitment_permit: recruitment_permit.value,
+      recruit_robot: recruit_robot.value,
+      recruit_auto_only5: recruit_auto_only5.value,
+      run_order_grandet_mode: run_order_grandet_mode.value,
+      check_mail_enable: check_mail_enable.value,
+      report_enable: report_enable.value,
+      recruit_gap: recruit_gap.value,
+      recruit_auto_5: recruit_auto_5.value,
+      webview: webview.value,
+      shop_collect_enable: shop_collect_enable.value ? 1 : 0,
+      meeting_level: meeting_level.value,
+      fix_mumu12_adb_disconnect: fix_mumu12_adb_disconnect.value,
+      reclamation_algorithm: {
+        timeout: ra_timeout.value
+      },
+      secret_front: {
+        target: sf_target.value
+      },
+      touch_method: touch_method.value,
+      free_room: free_room.value,
+      merge_interval: merge_interval.value,
+      fia_fool: fia_fool.value,
+      refresh_backup_plan_after_mood: refresh_backup_plan_after_mood.value,
+      assistant_follows_schedule: assistant_follows_schedule.value,
+      enable_mastery: enable_mastery.value,
+      sign_in: sign_in.value,
+      droidcast: droidcast.value,
+      mumu12IPC: mumu12IPC.value,
+      visit_friend_enable: visit_friend_enable.value,
+      visit_friend_mode: visit_friend_mode.value,
+      credit_fight: credit_fight.value,
+      custom_screenshot: custom_screenshot.value,
+      workshop_manual_settings: workshop_manual_settings.value,
+      workshop_manual_settings_revision: workshop_manual_settings_revision.value,
+      workshop_deer_fodder: workshop_deer_fodder.value,
+      workshop_min_bonus: workshop_min_bonus.value,
+      workshop_low_priority_rest: workshop_low_priority_rest.value,
+      fodder_operators: fodder_operators.value,
+      t5_operators: t5_operators.value,
+      book_operators: book_operators.value,
+      hot_update: {
+        enable: hot_update_enable.value,
+        auto_update: hot_update_auto_update.value
+      },
+      notification_level: notification_level.value,
+      waiting_scene: waiting_scene.value,
+      expiring_medicine_on_weekend: expiring_medicine_on_weekend.value,
+      maa_mail: maa_mail.value,
+      maa_recruit: maa_recruit.value,
+      maa_orundum: maa_orundum.value,
+      maa_mining: maa_mining.value,
+      maa_specialaccess: maa_specialaccess.value
+    }
+  }
+
+  const loaded = inject('loaded')
+  watch(
+    maa_weekly_plan,
+    () => {
+      if (skipNextWeeklyPlanSync.value) {
+        skipNextWeeklyPlanSync.value = false
+        return
+      }
+      if (!loaded.value || syncingWeeklyPlan.value || !maa_weekly_plan_active.value) {
+        return
+      }
+      if (weeklyPlanSyncTimer) {
+        clearTimeout(weeklyPlanSyncTimer)
+      }
+      weeklyPlanSyncTimer = setTimeout(() => {
+        weeklyPlanSyncTimer = null
+        sync_active_weekly_plan()
+      }, 250)
+    },
+    { deep: true }
+  )
+  function save_config() {
+    // Track nested edits synchronously for watchEffect; serialize the latest
+    // draft and revision when this queued request actually starts.
+    JSON.stringify(build_config())
+    configSaveRequest = configSaveRequest
+      .catch(() => {})
+      .then(async () => {
+        const payload = JSON.parse(JSON.stringify(build_config()))
+        const response = await axios.post(`${import.meta.env.VITE_HTTP_URL}/conf`, payload)
+        apply_workshop_response(response.data, payload.workshop_manual_settings)
+        return response
+      })
+    return configSaveRequest
+  }
+
+  watchEffect(() => {
+    if (loaded.value) {
+      save_config().catch((error) => console.error('配置保存失败', error))
+    }
+  })
+
+  return {
+    adb,
+    load_config,
+    save_config,
+    drone_count_limit,
+    drone_room,
+    drone_interval,
+    enable_party,
+    leifeng_mode,
+    free_blacklist,
+    maa_adb_path,
+    maa_enable,
+    maa_path,
+    maa_mirrorchyan_token,
+    maa_update_channel,
+    maa_auto_check_update,
+    maa_restore_theme_enable,
+    maa_restore_theme,
+    maa_rg_enable,
+    maa_long_task_type,
+    medicine_expire_days,
+    maa_report_to_yituliu,
+    maa_yituliu_id,
+    maa_penguin_id,
+    ap_fallback,
+    maa_weekly_plan,
+    maa_weekly_plan_options,
+    maa_weekly_plan_active,
+    maa_weekly_plan_activity_fallbacks,
+    maa_weekly_plan_activity_switch_times,
+    maa_weekly_plan_activity_end_times,
+    maa_stage_inventory_enable,
+    maa_stage_limit_rules,
+    maa_stage_ratio_rules,
+    mail_enable,
+    account,
+    pass_code,
+    recipient,
+    timezone_offset,
+    custom_smtp_server,
+    package_type,
+    reload_room,
+    run_order_delay,
+    dorm_order,
+    start_automatically,
+    maa_mall_buy,
+    maa_mall_blacklist,
+    load_shop,
+    shop_list,
+    load_item,
+    item_list,
+    maa_gap,
+    build_config,
+    defaultLaunchCommand,
+    simulator,
+    resting_threshold,
+    fia_threshold,
+    rescue_threshold,
+    favorite,
+    workshop_settings,
+    workshop_settings_generation,
+    workshop_manual_settings,
+    workshop_manual_settings_revision,
+    workshop_preset_warning,
+    apply_workshop_response,
+    workshop_deer_fodder,
+    workshop_min_bonus,
+    workshop_low_priority_rest,
+    fodder_operators,
+    t5_operators,
+    book_operators,
+    theme,
+    tap_to_launch_game,
+    exit_game_when_idle,
+    return_home_when_idle,
+    close_simulator_when_idle,
+    maa_conn_preset,
+    maa_touch_option,
+    maa_mall_ignore_blacklist_when_full,
+    maa_mall_only_buy_discount,
+    maa_mall_reserve_max_credit,
+    maa_rg_sleep_min,
+    maa_rg_sleep_max,
+    maa_credit_fight,
+    maa_depot_enable,
+    maa_rg_theme,
+    maa_rcl_theme,
+    rcl,
+    rogue,
+    sss,
+    screenshot,
+    screenshot_interval,
+    mail_subject,
+    recruit_enable,
+    recruitment_permit,
+    recruit_robot,
+    recruit_auto_only5,
+    skland_enable,
+    ai_type,
+    ai_key,
+    skland_info,
+    run_order_grandet_mode,
+    check_mail_enable,
+    report_enable,
+    recruit_gap,
+    recruit_auto_5,
+    webview,
+    runtime_platform,
+    shop_collect_enable,
+    meeting_level,
+    fix_mumu12_adb_disconnect,
+    ra_timeout,
+    sf_target,
+    touch_method,
+    free_room,
+    merge_interval,
+    fia_fool,
+    refresh_backup_plan_after_mood,
+    assistant_follows_schedule,
+    enable_mastery,
+    sign_in,
+    droidcast,
+    mumu12IPC,
+    visit_friend_enable,
+    visit_friend_mode,
+    credit_fight,
+    custom_screenshot,
+    hot_update_enable,
+    hot_update_auto_update,
+    notification_level,
+    waiting_scene,
+    expiring_medicine_on_weekend,
+    maa_mail,
+    maa_recruit,
+    maa_orundum,
+    maa_mining,
+    maa_specialaccess,
+    load_weekly_plan_state,
+    update_weekly_plan_active,
+    sync_active_weekly_plan,
+    delete_weekly_plan,
+    update_weekly_plan_activity_fallback
+  }
+})

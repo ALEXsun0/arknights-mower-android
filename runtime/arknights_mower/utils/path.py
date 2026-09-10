@@ -1,0 +1,137 @@
+import os
+import sys
+from pathlib import Path
+
+appname = "arknights_mower"
+appauthor = "ArkMower"
+global_space = None
+
+
+def find_git_root(directory: Path) -> Path:
+    if (directory / ".git").is_dir():
+        return directory
+    elif directory == directory.parent:
+        return None
+    else:
+        return find_git_root(directory.parent)
+
+
+def _default_frozen_data_dir(
+    internal_dir: Path,
+    platform_name: str | None = None,
+    home_dir: Path | None = None,
+) -> Path:
+    """Return the writable data root used by a frozen application.
+
+    A macOS ``.app`` bundle is signed and can also be launched from a read-only
+    DMG, so runtime state must not be written below ``Contents``. Windows and
+    Linux keep their existing portable layout next to PyInstaller's internal
+    directory.
+    """
+    platform_name = sys.platform if platform_name is None else platform_name
+    if platform_name == "darwin":
+        home_dir = Path.home() if home_dir is None else Path(home_dir)
+        return home_dir / "Library" / "Application Support" / appname
+    return internal_dir.parent
+
+
+# define _app_dir
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _internal_dir = Path(sys._MEIPASS).resolve()
+    _install_dir = _internal_dir.parent.resolve()
+    _app_dir = _default_frozen_data_dir(_internal_dir)
+else:
+    _app_dir = find_git_root(Path(os.getcwd()).resolve())
+    if not _app_dir:
+        _app_dir = Path(os.getcwd()).resolve()
+    _internal_dir = _app_dir
+    _install_dir = _internal_dir
+
+# Allow overriding the app data root so all @app paths can live in one bind-mounted folder.
+_data_dir_env = os.getenv("MOWER_DATA_DIR")
+_data_dir = Path(_data_dir_env).expanduser().resolve() if _data_dir_env else _app_dir
+
+
+def _get_path(base_path, path, space) -> Path:
+    if space:
+        return Path(base_path) / space / path
+    else:
+        return Path(base_path) / path
+
+
+def get_app_path(path, space=None) -> Path:
+    global global_space
+    if space is None:  # 不用 not space 是因为 not '' == True
+        space = global_space
+    return _get_path(_data_dir, path, space)
+
+
+def get_internal_path(path) -> Path:
+    return _get_path(_internal_dir, path, None)
+
+
+def get_install_path(path) -> Path:
+    return _get_path(_install_dir, path, None)
+
+
+def get_path(path: str, space=None) -> Path:
+    """
+    使用 '@xxx/' 来表示一些特别的目录
+    @app: mower数据文件夹, 例如 get_path('@app/logs/runtime.log')
+    @internal: mower内部文件夹, 在开发时为 .git 所在目录, 打包时为 @app/_internal
+    @install: mower 安装文件夹，在开发时与 @internal 相同，打包时为 mower 的安装目录
+
+    指定space来区分配置文件空间，如space为None(默认值)，则使用global_space
+
+    特别的，如果要覆盖global_space并指定默认目录，使用space=''
+    """
+    global global_space
+    if space is None:
+        space = global_space
+    path = path.replace("\\", "/")
+
+    if isinstance(path, str) and path.startswith("@"):
+        index = path.find("/")
+        index = index if index != -1 else len(path)
+        special_dir_name = path[1:index]
+        relative_path = path[index:].strip("/")
+        if special_dir_name == "app":
+            return get_app_path(relative_path, space)
+        elif special_dir_name == "internal":
+            return get_internal_path(relative_path)
+        elif special_dir_name == "install":
+            return get_install_path(relative_path)
+        else:
+            raise ValueError(
+                "{}: {} 不是一个有效的特殊目录别名".format(path, special_dir_name)
+            )
+    else:
+        return Path(path)
+        # raise ValueError("{} 路径必须以 '@xxx' 开头".format(path))
+
+
+def resolve_config_path(value: str) -> str:
+    """Resolve portable config aliases against this installation/data root.
+
+    Do not persist the resolved path or apply the instance space. Existing
+    absolute paths, relative paths and bare commands such as ``adb`` keep their
+    original meaning.
+    """
+    if value.split("/", 1)[0] in ("@app", "@internal", "@install"):
+        return str(get_path(value, space=""))
+    return value
+
+
+class SpecialDir:
+    def __init__(self, method):
+        self.method = method
+
+    def __truediv__(self, path) -> Path:
+        return self.method(path, None)
+
+    def __str__(self):
+        return str(self.method("", None))
+
+
+app_dir = SpecialDir(get_app_path)
+internal_dir = SpecialDir(get_internal_path)

@@ -1,0 +1,5287 @@
+import copy
+import json
+import os
+import pathlib
+import sys
+from collections import defaultdict, deque
+from ctypes import CFUNCTYPE, c_char_p, c_int, c_void_p
+from datetime import datetime, timedelta
+from typing import Literal, Optional
+
+import cv2
+import requests
+from packaging.version import InvalidVersion, Version
+
+from arknights_mower.data import (
+    agent_list,
+    agent_profession,
+    base_room_list,
+    stage_data_full,
+    workshop_formula,
+)
+from arknights_mower.solvers.base_mixin import BaseMixin
+from arknights_mower.solvers.credit import CreditSolver
+from arknights_mower.solvers.cultivate_depot import cultivate as cultivateDepotSolver
+from arknights_mower.solvers.depotREC import depotREC as DepotSolver
+from arknights_mower.solvers.local_operation import (
+    FOLLOWUP_TASK_META,
+    build_sanity_projection,
+    compute_next_threshold_time,
+    get_required_runs_total,
+    get_stage_drain_runs_total,
+)
+from arknights_mower.solvers.mail import MailSolver
+from arknights_mower.solvers.mission import MissionSolver
+from arknights_mower.solvers.navigation import NavigationSolver
+from arknights_mower.solvers.operation import OperationSolver
+from arknights_mower.solvers.player_info import PlayerInfoClient
+from arknights_mower.solvers.reclamation_algorithm import ReclamationAlgorithm
+from arknights_mower.solvers.record import (
+    apply_workshop_inventory,
+    get_inventory_counts,
+    invalidate_workshop_inventory,
+    save_exception,
+    save_log,
+)
+from arknights_mower.solvers.recruit import RecruitSolver
+from arknights_mower.solvers.report import ReportSolver
+from arknights_mower.solvers.secret_front import SecretFront
+from arknights_mower.solvers.shop import CreditShop
+from arknights_mower.solvers.skland import SKLand
+from arknights_mower.utils import config, detector, rapidocr
+from arknights_mower.utils import typealias as tp
+from arknights_mower.utils.csleep import MowerExit, csleep
+from arknights_mower.utils.datetime import (
+    format_time,
+    get_server_weekday,
+)
+from arknights_mower.utils.device.device import Device
+from arknights_mower.utils.digit_reader import DigitReader
+from arknights_mower.utils.email import maa_template, send_message, task_template
+from arknights_mower.utils.graph import SceneGraphSolver
+from arknights_mower.utils.image import cropimg, loadres, thres2
+from arknights_mower.utils.log import logger
+from arknights_mower.utils.operators import (
+    TRADE_ORDER_AGENTS,
+    Operator,
+    Operators,
+)
+from arknights_mower.utils.path import get_path, resolve_config_path
+from arknights_mower.utils.plan import PlanTriggerTiming
+from arknights_mower.utils.recognize import RecognizeError, Recognizer, Scene
+from arknights_mower.utils.resource_pkg import refresh_resource_at_boundary
+from arknights_mower.utils.scheduler_task import (
+    SchedulerTask,
+    TaskTypes,
+    check_dorm_ordering,
+    find_next_task,
+    plan_metadata,
+    protect_support_swaps,
+    scheduling,
+    try_add_release_dorm,
+    try_reorder,
+    try_workshop_tasks,
+)
+from arknights_mower.utils.simulator import restart_simulator
+from arknights_mower.utils.trading_order import TradingOrder
+
+
+def _is_mastery_busy(operator_name: str) -> bool:
+    try:
+        from arknights_mower.utils.mastery_db import is_operator_busy
+
+        return is_operator_busy(operator_name)
+    except Exception:
+        return False
+
+
+def _add_group_to_fix_plan(fix_plan: dict, op_data: Operators, group: str) -> None:
+    """把组内真正不在岗的成员写进 fix_plan；已在静态槽位的成员跳过。
+
+    已在岗成员写进去只是 no-op：arrange 逐房间对比后「任务与当前房间相同，
+    跳过」。当唯一真实修复项（如训练室）被 _suppress_train_correction 抑制时，
+    no-op 项撑起 fix_plan 永不收敛 → 排班死循环（#229）。
+    """
+    for name in op_data.groups[group]:
+        agent = op_data.operators[name]
+        if agent.room == agent.current_room and agent.index == agent.current_index:
+            continue
+        if agent.room not in fix_plan:
+            fix_plan[agent.room] = ["Current"] * len(op_data.plan[agent.room])
+        fix_plan[agent.room][agent.index] = name
+
+
+def _maa_client_type() -> str:
+    """推导 MAA 集成协议的客户端类型：官服 Official，B 服 Bilibili。"""
+    return "Official" if config.conf.package_type == 1 else "Bilibili"
+
+
+# 战术分队类（对照 RoguelikeSquadIsProfessional），凹开局直升精二仅对这类分队下发
+_PROFESSIONAL_SQUADS = (
+    "突击战术分队",
+    "堡垒战术分队",
+    "远程战术分队",
+    "破坏战术分队",
+)
+
+# 刷开局期望奖励键，与协议 collectible_mode_start_list 的九项一致
+_COLLECTIBLE_START_KEYS = (
+    "hot_water",
+    "shield",
+    "ingot",
+    "hope",
+    "random",
+    "key",
+    "dice",
+    "ideas",
+    "ticket",
+)
+
+
+class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
+    """
+    收集基建的产物：物资、赤金、信赖
+    """
+
+    def __init__(
+        self,
+        device: Device = None,
+        recog: Recognizer = None,
+        *,
+        connection_retries: int = 3,
+    ) -> None:
+        super().__init__(device, recog, connection_retries=connection_retries)
+        self.op_data = None
+        self.party_time = None
+        self.drone_time = None
+        self.reload_time = None
+        self.reload_room = None
+        self.clue_count_limit = 9
+        self.enable_party = True
+        self.leifeng_mode = False
+        self.digit_reader = DigitReader()
+        self.error = False
+        self.clue_count = 0
+        self.tasks = []
+        self.free_clue = None
+        self.credit_fight = None
+        self.task_count = 0
+        self.refresh_connecting = False
+        self.recruit_time = None
+        self.last_clue = None
+        self.sleeping = False
+        self._simulator_closed_for_idle = False
+        self.operators = {}
+        self.last_execution = {"maa": None, "recruit": None, "todo": None}
+        self.order_reader = TradingOrder()
+        self.sign_in = (datetime.now() - timedelta(days=1, hours=4)).date()
+        self.daily_report = (datetime.now() - timedelta(days=1, hours=4)).date()
+        self.daily_skland = (datetime.now() - timedelta(days=1, hours=4)).date()
+        self.daily_mail = (datetime.now() - timedelta(days=1, hours=8)).date()
+        self.daily_visit_friend = (datetime.now() - timedelta(days=1, hours=4)).date()
+        self.ideal_resting_count = 4
+        self.choose_error = set()
+        self.drop_send = False
+        self.global_plan = {}
+        self.local_operation_followup_time = None
+        self.restart_after_mood_read = False
+
+    def find_next_task(
+        self,
+        compare_time: datetime | None = None,
+        task_type="",
+        compare_type: Literal["<", "=", ">"] = "<",
+        meta_data="",
+    ):
+        """找符合条件的下一个任务
+
+        Args:
+            tasks: 任务列表
+            compare_time: 截止时间
+        """
+        return find_next_task(
+            self.tasks, compare_time, task_type, compare_type, meta_data
+        )
+
+    @property
+    def party_time(self):
+        return self._party_time
+
+    @party_time.setter
+    def party_time(self, value):
+        self._party_time = value
+        if self.op_data is not None:
+            current_party_time = getattr(self.op_data, "party_time", None)
+            if current_party_time is None or (
+                isinstance(current_party_time, datetime)
+                and current_party_time <= datetime.now()
+            ):
+                self.op_data.party_time = value
+
+    def run(self) -> None:
+        """
+        :param clue_collect: bool, 是否收取线索
+        """
+
+        self.error = False
+        self.handle_error(True)
+
+        while True:
+            scheduling(self.tasks)
+            check_dorm_ordering(self.tasks, self.op_data)
+            protect_support_swaps(self.tasks)
+            self.task = self.tasks[0] if self.tasks else None
+            if self.task is None:
+                break
+            reschedule_time = (self.task.time - datetime.now()).total_seconds()
+            if reschedule_time > 300:
+                self.task = None
+                break
+            if reschedule_time <= 0:
+                break
+            logger.info(f"出现任务调度情况休息{reschedule_time}秒等待下一个任务开始")
+            # 休眠可能被新增任务唤醒；返回后重新排序、选择并检查到期时间。
+            self._idle_sleep(reschedule_time)
+        if self.party_time is not None and self.party_time < datetime.now():
+            self.party_time = None
+        if self.free_clue is not None and self.free_clue != get_server_weekday():
+            self.free_clue = None
+        if self.credit_fight is not None and self.credit_fight != get_server_weekday():
+            self.credit_fight = None
+        self.todo_task = False
+        self.collect_notification = False
+        self.planned = False
+        if self.op_data is None or self.op_data.operators is None:
+            self.initialize_operators()
+        self.op_data.correct_dorm()
+        self.backup_plan_solver(PlanTriggerTiming.BEGINNING)
+        logMsg = "||".join([str(t) for t in self.tasks])
+        logger.debug("当前任务: " + logMsg)
+        save_log(logMsg, "{}" if not self.task else str(self.task), level="INFO")
+        return super().run()
+
+    def transition(self) -> None:
+        if (scene := self.scene()) == Scene.INFRA_MAIN:
+            return self.infra_main()
+        elif scene == Scene.INFRA_TODOLIST:
+            return self.todo_list()
+        elif scene == Scene.RIIC_OPERATOR_SELECT:
+            self.tap_element("confirm_blue")
+        elif scene in self.waiting_scene:
+            self.waiting_solver()
+        else:
+            self.scene_graph_navigation(Scene.INFRA_MAIN)
+            self.last_room = ""
+            logger.debug("重设上次房间为空")
+
+    def overtake_room(self):
+        candidates = self.task.meta_data.split(",")
+        if len(candidates) == 0:
+            return
+        if self.op_data.operators[candidates[0]].group != "":
+            candidates = self.op_data.groups[
+                self.op_data.operators[candidates[0]].group
+            ]
+        logger.debug(f"更新下班小组信息为{candidates}")
+        # 在candidate 中，计算出需要的high free 和 Low free 数量
+        # 只计算无法直接接管的主力床位。低优、替班和临时休息干员会让床，
+        # 不能在这里阻止整个大组尝试下班。
+        current_resting = self.op_data.active_high_resting_count()
+        plan = {}
+        self.get_resting_plan(candidates, [], plan, current_resting)
+        if len(plan.items()) > 0:
+            self.tasks.append(
+                SchedulerTask(
+                    datetime.now(), task_plan=plan, task_type=TaskTypes.SHIFT_OFF
+                )
+            )
+            re_order_dorm_plan = try_reorder(self.op_data, plan)
+            if re_order_dorm_plan:
+                logger.debug(f"新增宿舍任务{re_order_dorm_plan}")
+                task = SchedulerTask(
+                    task_plan=re_order_dorm_plan, task_type=TaskTypes.SHIFT_OFF
+                )
+                self.tasks.append(task)
+        else:
+            msg = f"无法完成 {self.task.meta_data} 的排班，如果重复接收此邮件请检查替换组是否被占用"
+            send_message(msg, level="ERROR")
+            logger.error(msg)
+            # 简单暴力一点，移除所有非回满的
+            # 智能情况的话，得在人数和替换冲突中做出选择
+            required = 0
+            for x in candidates:
+                op = self.op_data.operators[x]
+                if op.workaholic:
+                    continue
+                required += 1
+            remove_name = set()
+            # 按心情降序排序
+            sorted_dorms = sorted(
+                self.op_data.dorm,
+                key=lambda dorm: (
+                    self.op_data.operators[dorm.name].mood
+                    if dorm.name in self.op_data.operators
+                    else 25
+                ),
+                reverse=True,
+            )
+            for idx, dorm in enumerate(sorted_dorms):
+                if not dorm.name or dorm.name not in self.op_data.operators:
+                    continue
+                if dorm.time is not None and dorm.time < datetime.now():
+                    logger.debug(f"跳过{str(dorm)}，休息完毕")
+                    continue
+                operator = self.op_data.operators[dorm.name]
+                if (operator.rest_in_full and operator.exhaust_require) or (
+                    operator.group in self.op_data.rest_in_full_group
+                    and operator.group in self.op_data.exhaust_group
+                ):
+                    # 如果回满，则跳过
+                    logger.debug(f"跳过{str(dorm)}，用尽回满")
+                    continue
+                if not operator.is_high():
+                    # 跳过非高优
+                    continue
+                if operator.group and operator.name not in remove_name:
+                    # 增加当前宿舍组的所有在休息中的干员
+                    for name in self.op_data.groups[operator.group]:
+                        if self.op_data.operators[name].is_resting():
+                            _, dorm = self.op_data.get_dorm_by_name(name)
+                            # 跳过已经计算的休息完毕的人
+                            if dorm.time is not None and dorm.time < datetime.now():
+                                continue
+                            remove_name.add(name)
+                else:
+                    remove_name.add(dorm.name)
+
+                # 检查条件是否满足
+                if current_resting - len(remove_name) + required <= len(
+                    self.op_data.dorm
+                ):
+                    break
+            if current_resting - len(remove_name) + required > len(self.op_data.dorm):
+                msg = f"无法完成 {self.task.meta_data} 的排班，宿舍可用空位不足，请减少使用回满词条"
+                send_message(msg, level="ERROR")
+                return
+            logger.debug(f"需要提前移出宿舍的干员: {remove_name}")
+            planned = set()
+            for name in remove_name:
+                if name in planned:
+                    continue
+                op = self.op_data.operators[name]
+                group = [op.name] if not op.group else self.op_data.groups[op.group]
+                for agent in group:
+                    o = self.op_data.operators[agent]
+                    if o.room not in plan:
+                        plan[o.room] = ["Current"] * len(self.op_data.plan[o.room])
+                    plan[o.room][o.index] = agent
+                    planned.add(o.name)
+            logger.debug(f"生成顶替上班任务{plan}")
+            if plan:
+                self.tasks.append(SchedulerTask(task_plan=plan))
+                # 执行完提前换班任务再次执行本任务
+                self.tasks.append(
+                    SchedulerTask(
+                        task_plan=copy.deepcopy(self.task.plan),
+                        meta_data=self.task.meta_data,
+                        task_type=self.task.type,
+                    )
+                )
+            else:
+                msg = f"无法完成 {self.task.meta_data} 的排班，请检查是否有替换组冲突"
+                logger.warning(msg)
+                send_message(msg, level="ERROR")
+            self.skip()
+
+    def handle_error(self, force=False):
+        if self.scene() == Scene.UNKNOWN:
+            for retry in range(5):
+                logger.warning(f"当前场景无法识别，尝试返回纠正，第{retry + 1}次")
+                self.back()
+                if self.scene() != Scene.UNKNOWN:
+                    break
+            else:
+                logger.warning("连续返回 5 次后仍无法识别场景，退出游戏重进")
+                self.device.exit()
+                self.check_current_focus()
+        if self.error or force:
+            # 如果没有任何时间小于当前时间的任务才生成空任务
+            if (
+                self.find_next_task(datetime.now()) is None
+                and self.find_next_task(task_type=TaskTypes.SKILL_UPGRADE) is None
+            ):
+                logger.debug("由于出现错误情况，生成一次空任务来执行纠错")
+                self.tasks.append(SchedulerTask())
+            # 如果没有任何时间小于当前时间的任务-10分钟 则清空任务
+            if self.find_next_task(datetime.now() - timedelta(seconds=900)):
+                logger.info("检测到执行超过15分钟的任务，清空非专精任务")
+                self.tasks = [
+                    t
+                    for t in self.tasks
+                    if t.type
+                    in (
+                        TaskTypes.SKILL_UPGRADE,
+                        TaskTypes.SWAP_SUPPORT,
+                        TaskTypes.REFRESH_TIME,
+                    )
+                ]
+                # #144：清队后补立即空任务——队列只剩远期专精重检时，让下一次
+                # run() 走正常 planned 分支重读心情/换班/跑单，而不是睡到远期任务开始
+                logger.debug("清队后补立即空任务，下一轮走正常流程重读心情/换班/跑单")
+                self.tasks.append(SchedulerTask())
+        elif self.find_next_task(datetime.now() + timedelta(hours=2.5)) is None:
+            logger.debug("2.5小时内没有其他任务，生成一个空任务")
+            self.tasks.append(SchedulerTask(time=datetime.now() + timedelta(hours=2.5)))
+        return True
+
+    def plan_fia(self):
+        fia_plan, fia_room = self.check_fia()
+        if fia_room is None or fia_plan is None:
+            return
+        # 肥鸭充能新模式：https://github.com/ArkMowers/arknights-mower/issues/551
+        target = None
+        if not config.conf.fia_fool:
+            fia_threshold = config.conf.fia_threshold
+            logger.info(f"菲亚防呆设计未开启，菲亚阈值为{fia_threshold}")
+        else:
+            fia_threshold = 0.9
+            logger.info(f"菲亚防呆设计已开启，菲亚阈值为{fia_threshold}")
+        for operator in fia_plan:
+            data = self.op_data.operators[operator]
+            operator_morale = data.current_mood()
+            operator_limit = data.lower_limit
+            logger.debug(f"{operator}的心情为{operator_morale}")
+            if operator_morale > fia_threshold * 24:
+                logger.debug(f"{operator}的心情高于阈值，跳过充能")
+                continue
+            if data.rest_in_full and data.exhaust_require and not data.is_resting():
+                logger.debug(f"{operator}为暖机干员但不在宿舍，跳过充能")
+                continue
+            if data.group:
+                lowest = True
+                for member in self.op_data.groups[data.group]:
+                    if member == operator:
+                        continue
+                    # Lancet-2
+                    if (
+                        self.op_data.operators[member].workaholic
+                        and member not in fia_plan
+                    ):
+                        continue
+                    member_morale = self.op_data.operators[member].current_mood()
+                    member_limit = self.op_data.operators[member].lower_limit
+                    logger.debug(f"{data.group}组内{member}的心情为{member_morale}")
+                    if member_morale - member_limit < operator_morale - operator_limit:
+                        lowest = False
+                        logger.debug(f"{operator}的心情高于{member}，跳过充能")
+                        break
+                if not lowest:
+                    continue
+            target = operator
+            break
+        # 若全部跳过且关闭防呆则令目标干员为心情最低干员
+        if target is None and not config.conf.fia_fool:
+            target = fia_plan[0]
+            op_mood = 24
+            for op in fia_plan:
+                data = self.op_data.operators[op]
+                op_mood_t = data.current_mood()
+                if data.rest_in_full and data.exhaust_require and not data.is_resting():
+                    logger.debug(f"{operator}为暖机干员但不在宿舍，跳过充能")
+                    continue
+                if op_mood_t < op_mood:
+                    target = op
+                    op_mood = op_mood_t
+        if target:
+            self.tasks.append(
+                SchedulerTask(
+                    time=self.task.time,
+                    task_type=TaskTypes.FIAMMETTA,
+                    task_plan={fia_room: [target, "菲亚梅塔"]},
+                )
+            )
+            # 充能结束后整组立即上班
+            for task in self.tasks:
+                if task.type == TaskTypes.SHIFT_ON:
+                    for room, operators in task.plan.items():
+                        if target in operators:
+                            task.time = self.task.time + timedelta(seconds=1)
+                            self.tasks.sort(key=lambda task: task.time)
+                            return
+        else:
+            logger.info("肥鸭充能干员不足，请添加更多干员！")
+            self.tasks.append(
+                SchedulerTask(
+                    time=self.task.time + timedelta(hours=24 * (1 - fia_threshold) / 2),
+                    task_type=TaskTypes.FIAMMETTA,
+                )
+            )
+            self.tasks.sort(key=lambda task: task.time)
+
+    def craft_material(self):
+        task = self.task
+        from arknights_mower.utils.workshop_automation import workshop_task_snapshot
+
+        snapshot = workshop_task_snapshot(task)
+        if snapshot is None:
+            logger.info("加工配置已更新，跳过旧的自动加工任务")
+            return
+        operator = self.op_data.operators.get(task.meta_data)
+        if (
+            operator is not None
+            and 0 <= operator.mood < 1
+            and not operator.current_room.startswith("dorm")
+        ):
+            logger.info(f"{task.meta_data}心情不足1点，跳过加工任务")
+            return
+        try:
+            self.enter_room("factory")
+            current_agent = [
+                key
+                for key, value in self.op_data.operators.items()
+                if value.current_room == "factory"
+            ]
+            agent_room = (
+                self.op_data.operators[task.meta_data].current_room
+                if task.meta_data in self.op_data.operators
+                else ""
+            )
+            agent_index = (
+                self.op_data.operators[task.meta_data].current_index
+                if task.meta_data in self.op_data.operators
+                else -1
+            )
+            logger.debug(f"当前工厂干员: {current_agent}")
+            logger.debug(f"当前加工干员位置: {agent_room}")
+            self.agent_arrange({"factory": [task.meta_data]})
+            self.generate_product(task.meta_data, snapshot=snapshot)
+            if len(current_agent) > 0 and current_agent[0] != task.meta_data:
+                new_plan = {"factory": current_agent}
+                if agent_room and agent_index >= 0:
+                    new_plan[agent_room] = ["Current"] * len(
+                        self.op_data.plan[agent_room]
+                    )
+                    new_plan[agent_room][agent_index] = task.meta_data
+                self.agent_arrange(new_plan)
+        except Exception as e:
+            save_exception(e)
+            logger.error(f"工厂任务失败: {e}")
+            logger.exception(e)
+
+    def plan_metadata(self):
+        self.tasks = plan_metadata(self.op_data, self.tasks)
+
+    def infra_main(self):
+        """位于基建首页"""
+        if self.find("control_central") is None:
+            self.back()
+            return
+        if self.task is not None:
+            # Navigation/reconnection may have consumed the margin since run().
+            # Recheck at a safe boundary, before any staff arrangement has started.
+            protect_support_swaps(self.tasks)
+            if self.task.time > datetime.now() or not any(
+                task is self.task for task in self.tasks
+            ):
+                self.task = None
+                self.skip()
+                return True
+            try:
+                if self.task.type == TaskTypes.SKILL_UPGRADE:
+                    from arknights_mower.solvers.mastery import run_mastery_task
+
+                    run_mastery_task(self)
+                    from arknights_mower.utils.workshop_automation import (
+                        restore_if_no_plans,
+                    )
+
+                    restore_if_no_plans()
+                elif self.task.type == TaskTypes.SWAP_SUPPORT:
+                    from arknights_mower.solvers.mastery import run_swap_support
+
+                    run_swap_support(self)
+                elif self.task.type == TaskTypes.FURNITURE:
+                    from arknights_mower.solvers.furniture import FurnitureDismantler
+
+                    FurnitureDismantler(self).run()
+                elif len(self.task.plan.keys()) > 0:
+                    get_time = False
+                    if TaskTypes.SHIFT_OFF == self.task.type:
+                        get_time = True
+                    if TaskTypes.RELEASE_DORM == self.task.type:
+                        # 如果该房间提前已经被移出，则跳过安排避免影响正常排班
+                        free_room = list(self.task.plan.keys())[0]
+                        if "Free" in self.task.plan[free_room]:
+                            free_index = self.task.plan[free_room].index("Free")
+                            if self.task.meta_data in self.op_data.operators.keys():
+                                free_agent = self.op_data.operators[self.task.meta_data]
+                                if (
+                                    free_agent.current_room == free_room
+                                    and free_agent.current_index == free_index
+                                ):
+                                    get_time = True
+                                    if self.task.meta_data in [
+                                        item.operator
+                                        for item in config.conf.workshop_settings
+                                    ]:
+                                        logger.info(
+                                            "检测到释放干员为工作站加工干员，切换为工作站任务"
+                                        )
+                                        self.craft_material()
+                                        if free_agent.mood < 24:
+                                            # 如果心情低于4，则不需要再次执行Free任务
+                                            self.task.plan = {}
+
+                                    # 如果在上一步完成了加工，心情会强制归零
+                                    # 如果是高优先，还需要把宿舍reference移除
+                                    if free_agent.is_high() and free_agent.mood > 0:
+                                        idx, dorm = self.op_data.get_dorm_by_name(
+                                            free_agent.name
+                                        )
+                                        if idx is not None:
+                                            update_task = find_next_task(
+                                                self.tasks,
+                                                task_type=TaskTypes.SHIFT_ON,
+                                                meta_data="dorm" + str(idx),
+                                            )
+                                            if update_task:
+                                                logger.debug("开始更新宿舍信息")
+                                                dorm_list = update_task.meta_data.split(
+                                                    ","
+                                                )
+                                                dorm_list.remove("dorm" + str(idx))
+                                                update_task.meta_data = ",".join(
+                                                    dorm_list
+                                                )
+                                                free_agent.mood = free_agent.upper_limit
+                                                free_agent.time_stamp = dorm.time
+                                else:
+                                    self.task.plan = {}
+                            else:
+                                self.task.plan = {}
+                        else:
+                            self.task.plan = {}
+                    if (
+                        config.conf.run_order_grandet_mode.back_to_index
+                        and TaskTypes.RUN_ORDER == self.task.type
+                        and not self.refresh_connecting
+                        and config.conf.run_order_buffer_time > 0
+                        and datetime.now() + timedelta(seconds=45)
+                        < self.task.time
+                        + timedelta(minutes=config.conf.run_order_delay)
+                    ):
+                        # 有45秒冗余时间才返回基地主界面
+                        logger.info("跑单前返回主界面以保持登录状态")
+                        self.back_to_index()
+                        self.refresh_connecting = True
+                        return
+                    self.refresh_connecting = False
+                    self.agent_arrange(self.task.plan, get_time)
+                    if get_time:
+                        if not self.backup_plan_solver(
+                            PlanTriggerTiming.BEFORE_PLANNING
+                        ):
+                            self.plan_metadata()
+                        else:
+                            logger.info("检测到排班表切换，跳过plan")
+                    if TaskTypes.RE_ORDER == self.task.type:
+                        self.skip()
+                # 如果任务名称包含干员名,则为动态生成的
+                elif self.task.type == TaskTypes.FIAMMETTA:
+                    self.plan_fia()
+                elif self.task.type == TaskTypes.WORKSHOP:
+                    self.craft_material()
+                elif (
+                    self.task.meta_data.split(",")[0] in agent_list
+                    and self.task.type == TaskTypes.EXHAUST_OFF
+                ):
+                    self.overtake_room()
+                elif self.task.type == TaskTypes.CLUE_PARTY:
+                    self.party_time = None
+                    self.last_clue = None
+                    self.clue_new()
+                    self.last_clue = datetime.now()
+                    self.skip(["collect_notification"])
+                elif self.task.type == TaskTypes.REFRESH_TIME:
+                    self.plan_run_order(self.task.meta_data)
+                    self.skip(["todo_task", "collect_notification"])
+                elif self.task.type == TaskTypes.DEPOT:
+                    self.仓库扫描()
+                elif self.task.type == TaskTypes.NOT_SPECIFIC:
+                    pass
+                self.tasks[:] = [t for t in self.tasks if t is not self.task]
+                if self.tasks and self.tasks[0].type in [TaskTypes.SHIFT_ON]:
+                    self.backup_plan_solver(PlanTriggerTiming.AFTER_PLANNING)
+            except MowerExit:
+                raise
+            except Exception as e:
+                save_exception(e)
+                logger.exception(e)
+                if (
+                    type(e) is ConnectionAbortedError
+                    or type(e) is AttributeError
+                    or type(e) is ConnectionError
+                ):
+                    raise e
+                else:
+                    self.skip()
+                    self.error = True
+            self.task = None
+        elif not self.planned:
+            try:
+                # 如果有任何type 则会最后修正
+                if not self.no_pending_task(1):
+                    self.skip(["planned", "todo_task", "collect_notification"])
+                else:
+                    mood_result = self.agent_get_mood(skip_dorm=True)
+                    if self.restart_after_mood_read:
+                        self.restart_after_mood_read = False
+                        logger.info("缓存清零重启后心情读取完成，准备载入心情数据重启")
+                        return "restart_after_mood_read"
+                    if mood_result is not None:
+                        self.skip(["planned", "todo_task", "collect_notification"])
+                        return True
+                    self.run_order_solver()
+                    self.plan_solver()
+            except MowerExit:
+                raise
+            except Exception as e:
+                save_exception(e)
+                logger.exception(e)
+                if (
+                    type(e) is ConnectionAbortedError
+                    or type(e) is AttributeError
+                    or type(e) is ConnectionError
+                ):
+                    raise e
+                else:
+                    self.error = True
+            self.planned = True
+        elif not self.todo_task:
+            if (
+                self.enable_party
+                and (
+                    self.last_clue is None
+                    or datetime.now() - self.last_clue > timedelta(hours=1)
+                )
+                and self.no_pending_task(3)
+            ):
+                self.clue_new()
+                self.last_clue = datetime.now()
+            if (
+                self.drone_room not in self.op_data.run_order_rooms
+                and (
+                    self.drone_time is None
+                    or self.drone_time
+                    < datetime.now() - timedelta(hours=config.conf.drone_interval)
+                )
+                and self.drone_room is not None
+                and self.no_pending_task(2)
+            ):
+                self.drone(self.drone_room)
+                logger.info(f"记录本次无人机使用时间为:{datetime.now()}")
+                self.drone_time = datetime.now()
+            if (
+                self.reload_room is not None
+                and self.no_pending_task(2)
+                and (
+                    self.reload_time is None
+                    or self.reload_time
+                    < datetime.now() - timedelta(hours=config.conf.maa_gap)
+                )
+            ):
+                self.reload()
+                logger.info(f"记录本次补货时间为:{datetime.now()}")
+            self.todo_task = True
+        elif not self.collect_notification:
+            if self.no_pending_task(1):
+                notification = detector.infra_notification(self.recog.img)
+                if notification is None:
+                    self.sleep(1)
+                    notification = detector.infra_notification(self.recog.img)
+                if notification is not None:
+                    self.tap(notification)
+            self.collect_notification = True
+        else:
+            return self.handle_error()
+
+    def translate_room(self, room):
+        translations = {
+            "room": lambda parts: f"B{parts[1]}0{parts[2]}",
+            "dormitory": lambda parts: f"{parts[1]}层宿舍",
+            "contact": lambda parts: "办公室",
+            "central": lambda parts: "控制中枢",
+            "factory": lambda parts: "加工站",
+            "meeting": lambda parts: "会客室",
+            "train": lambda parts: "训练室",
+        }
+
+        for keyword, translation_func in translations.items():
+            if keyword in room:
+                parts = room.split("_")
+                return translation_func(parts)
+
+        return room
+
+    def agent_get_mood(self, skip_dorm=False, force=False):
+        # 暂时规定纠错只适用于主班表
+        need_read = set(
+            v.room
+            for k, v in self.op_data.operators.items()
+            if v.need_to_refresh() and v.room in base_room_list
+        )
+
+        for room in need_read:
+            error_count = 0
+            # 训练室与其他房间一致：当前房内干员都近期读过则跳过（2026-08-16 审计——
+            # 原 room != "train" 免除使训练室在「计划在训练室但未进驻的陈旧干员」把
+            # 训练室推进待读集合时每轮循环都强制进房读心情，2h 内十多次）。训练室进房
+            # 时的顺路 reconcile（破重启待收取死锁）不受影响：重启后无 current_room=
+            # "train" 的干员 → current_working 空 → 不跳过；平时占用干员心情 2.5h
+            # 陈旧 → 不跳过 → 照常读+reconcile。
+            current_working = [
+                value
+                for key, value in self.op_data.operators.items()
+                if value.current_room == room
+            ]
+
+            if current_working and all(
+                operator.time_stamp
+                and operator.time_stamp
+                > datetime.now()
+                - timedelta(
+                    hours=0.5 if operator.name in ["歌蕾蒂娅", "见行者"] else 2.5
+                )
+                for operator in current_working
+            ):
+                for e in current_working:
+                    logger.debug(e.time_stamp)
+                logger.debug(f"{room} 所有干员不满足扫描条件，跳过")
+                continue
+            while True:
+                try:
+                    self.enter_room(room)
+                    if room == "train":
+                        if config.conf.enable_mastery:
+                            # #94 统一读取：一次 read_room_state(want_mood=True) 开一次
+                            # 浮窗读全（协助位+训练位+心情）+ 左下角面板，消除原来
+                            # get_agent_from_room（读心情）后再 read_room_state（_read_slots
+                            # 再开一次浮窗读槽位）的重复浮窗开关（铁律 3 一次进房做全部）。
+                            from arknights_mower.solvers.mastery_reader import (
+                                read_room_state,
+                                reconcile_short,
+                            )
+
+                            try:
+                                room_state, mood_data = read_room_state(
+                                    self, enter=False, want_mood=True
+                                )
+                                mood_info = [
+                                    f"干员: '{item['agent']}', 心情: {round(item['mood'], 3)}"
+                                    for item in mood_data
+                                    if item.get("agent")
+                                ]
+                                if mood_info:
+                                    logger.info(
+                                        f"房间 {self.translate_room(room)}  {mood_info}"
+                                    )
+                                # 重启后训练室可能停在待收取（专精练完但没人收）：进训练室读
+                                # 心情时顺便 reconcile——发现待收取就收（defer_collect=False
+                                # 此刻就是要收），修正 DB（截图为准），打破「不收→等级不刷新
+                                # →材料不够→不调度→更不收」死锁。enable_mastery 关闭时不跑
+                                # 读取器（铁律 10），保留通用心情读取。
+                                if room_state is not None:
+                                    reconcile_short(
+                                        self, room_state, defer_collect=False
+                                    )
+                            except Exception as e:
+                                logger.warning(f"训练室顺路更新状态失败: {e}")
+                        else:
+                            # enable_mastery 关闭：不跑 mastery 读取器（铁律 10），保留
+                            # 通用心情读取。
+                            _mood_data = self.get_agent_from_room(room, None)
+                            mood_info = [
+                                f"干员: '{item['agent']}', 心情: {round(item['mood'], 3)}"
+                                for item in _mood_data
+                                if item.get("agent")
+                            ]
+                            if mood_info:
+                                logger.info(
+                                    f"房间 {self.translate_room(room)}  {mood_info}"
+                                )
+                    else:
+                        num = len(self.op_data.plan[room])
+                        _mood_data = self.get_agent_from_room(
+                            room,
+                            list(range(num))
+                            if room in self.op_data.true_exhaust_room
+                            else None,
+                        )
+                        mood_info = [
+                            f"干员: '{item['agent']}', 心情: {round(item['mood'], 3)}"
+                            for item in _mood_data
+                        ]
+                        logger.info(f"房间 {self.translate_room(room)}  {mood_info}")
+                    break
+                except MowerExit:
+                    raise
+                except Exception as e:
+                    save_exception(e)
+                    logger.exception(e)
+                    if error_count > 3:
+                        raise e
+                    error_count += 1
+                    self.back()
+                    continue
+            self.back()
+        plan = self.op_data.plan
+        fix_plan = {}
+        for key in plan:
+            need_fix = False
+            _current_room = self.op_data.get_current_room(key, True)
+            for idx, name in enumerate(_current_room):
+                # 如果是空房间
+                if name == "":
+                    if not need_fix:
+                        fix_plan[key] = ["Current"] * len(plan[key])
+                        need_fix = True
+                    fix_plan[key][idx] = plan[key][idx].agent
+                    continue
+                # 随意人员则跳过
+                if plan[key][idx].agent == "Free":
+                    continue
+                if not (
+                    name == plan[key][idx].agent
+                    or (
+                        (
+                            name in plan[key][idx].replacement
+                            and name not in TRADE_ORDER_AGENTS
+                        )
+                        and len(plan[key][idx].replacement) > 0
+                    )
+                ):
+                    if not need_fix:
+                        fix_plan[key] = ["Current"] * len(plan[key])
+                        need_fix = True
+                    fix_plan[key][idx] = plan[key][idx].agent
+        # 最后如果有任何高效组心情没有记录 或者高效组在宿舍
+        miss_list = {k: v for (k, v) in self.op_data.operators.items() if v.not_valid()}
+        if len(miss_list.keys()) > 0:
+            # 替换到他应该的位置
+            logger.debug(f"高效组心情没有记录{str(miss_list)}")
+            for key in miss_list:
+                _agent = miss_list[key]
+                if (
+                    _agent.group != ""
+                    and next(
+                        (
+                            k
+                            for k, v in self.op_data.operators.items()
+                            if v.group == _agent.group
+                            and not v.not_valid()
+                            and v.is_resting()
+                        ),
+                        None,
+                    )
+                    is not None
+                    and (
+                        _agent.current_mood() == _agent.upper_limit
+                        or _agent.workaholic
+                        or _agent.mood == _agent.upper_limit
+                    )
+                ):
+                    logger.debug(f"跳过检查{_agent}")
+                    continue
+                elif _agent.group != "":
+                    # 把所有小组成员都移到工作站（已在岗成员跳过，避免 no-op 假任务）
+                    _add_group_to_fix_plan(fix_plan, self.op_data, _agent.group)
+                if _agent.room not in fix_plan.keys():
+                    fix_plan[_agent.room] = ["Current"] * len(
+                        self.op_data.plan[_agent.room]
+                    )
+                fix_plan[_agent.room][_agent.index] = key
+                # 如果是错位：
+                if (
+                    _agent.current_index != -1 and _agent.current_index != _agent.index
+                ) or (_agent.current_room != "" and _agent.room != _agent.current_room):
+                    moved_room = _agent.current_room
+                    moved_index = _agent.current_index
+                    if moved_room not in fix_plan.keys():
+                        fix_plan[moved_room] = ["Current"] * len(
+                            self.op_data.plan[moved_room]
+                        )
+                    fix_plan[moved_room][moved_index] = self.op_data.plan[moved_room][
+                        moved_index
+                    ].agent
+        if len(fix_plan.keys()) > 0:
+            # 不能在房间里安排同一个人 如果有重复则换成Free
+            remove_keys = []
+            logger.debug(f"Fix_plan {str(fix_plan)}")
+            for key in fix_plan:
+                if "dormitory" in key:
+                    # 如果宿舍差Free干员  则跳过
+                    if (
+                        next(
+                            (e for e in fix_plan[key] if e not in ["Free", "Current"]),
+                            None,
+                        )
+                        is None
+                        and skip_dorm
+                    ):
+                        remove_keys.append(key)
+                        continue
+            if len(remove_keys) > 0:
+                for item in remove_keys:
+                    del fix_plan[item]
+            # 还要确保同一组在同时上班
+            for g in self.op_data.groups:
+                g_agents = self.op_data.groups[g]
+                is_any_working = next(
+                    (
+                        x
+                        for x in g_agents
+                        if self.op_data.operators[x].current_room != ""
+                        and not self.op_data.operators[x].is_resting()
+                    ),
+                    None,
+                )
+                if is_any_working is not None:
+                    # 确保所有人同时在上班
+                    is_any_resting = next(
+                        (
+                            x
+                            for x in g_agents
+                            if self.op_data.operators[x].current_room == ""
+                            or self.op_data.operators[x].is_resting()
+                        ),
+                        None,
+                    )
+                    if is_any_resting is not None:
+                        # 生成纠错任务
+                        for x in g_agents:
+                            if (
+                                self.op_data.operators[x].current_room == ""
+                                or self.op_data.operators[x].is_resting()
+                            ):
+                                room = self.op_data.operators[x].room
+                                if room not in fix_plan:
+                                    fix_plan[room] = ["Current"] * len(plan[room])
+                                fix_plan[room][self.op_data.operators[x].index] = x
+            # #207：训练室受专精管理或受保护时不参与纠错——弹掉 fix_plan 里的 train 项
+            # （受保护时发节流提醒邮件）。fix_plan 拿 op_data 缓存比对静态计划，专精
+            # 活跃/受保护时缓存与计划必然错位，不弹会每轮生成训练室纠错（反复进出）。
+            self._suppress_train_correction(fix_plan)
+            # Prefer replacements after all correction passes; if none are available,
+            # retain the original correction's recall instead of blocking it.
+            from arknights_mower.utils.resting_correction import (
+                prefer_resting_replacements,
+            )
+
+            prefer_resting_replacements(self.op_data, fix_plan, _is_mastery_busy)
+            if len(fix_plan.keys()) > 0:
+                # 如果5分钟之内有任务则跳过心情读取
+                next_task = self.find_next_task()
+                next_shift_off = self.find_next_task(task_type=TaskTypes.SHIFT_OFF)
+                second = (
+                    0
+                    if next_task is None
+                    else (next_task.time - datetime.now()).total_seconds()
+                )
+                # 如果下个任务的操作时间超过下个任务，则跳过
+                if (
+                    not force
+                    and next_task is not None
+                    and len(fix_plan.keys()) * 45 > second
+                ) or next_shift_off is not None:
+                    logger.info("有未完成的任务，跳过纠错")
+                    self.skip()
+                    return
+                else:
+                    self.tasks.append(
+                        SchedulerTask(
+                            task_plan=fix_plan, task_type=TaskTypes.SELF_CORRECTION
+                        )
+                    )
+                    logger.info(f"纠错任务为-->{fix_plan}")
+                    return "self_correction"
+
+    def _train_mastery_active(self) -> bool:
+        """训练室是否受专精管理：enable_mastery 开 + DB 有 active 计划 或 队列有专精任务。
+
+        #59：队列重启后可能没补回来，DB 为准；队列补队覆盖「idle 计划即将排」的竞态窗口。
+        """
+        if not config.conf.enable_mastery:
+            return False
+        try:
+            from arknights_mower.utils.mastery_db import get_active_plan
+
+            if get_active_plan() is not None:
+                return True
+        except Exception:
+            pass
+        return (
+            self.find_next_task(task_type=TaskTypes.SKILL_UPGRADE) is not None
+            or self.find_next_task(task_type=TaskTypes.SWAP_SUPPORT) is not None
+        )
+
+    def _train_protected(self) -> bool:
+        """训练室是否受保护：协助位（槽0）是逻各斯/艾丽妮（§16.5）。
+
+        铁律 10/§16.11：enable_mastery OFF 时保护全停、排班照常排训练室，故先按开关门控。
+        用 op_data 缓存判定（深读训练室浮窗会让纠错生成阶段反复进出训练室，反而放大
+        本票要消除的问题）；缓存漏过保护时，执行闸门 agent_arrange_room 在
+        enable_mastery ON 路径读 room_state.protected 兜底（OFF 时保护本就全停，不兜底）。
+        """
+        if not config.conf.enable_mastery:
+            return False
+        return self.op_data.get_train_support() in ("逻各斯", "艾丽妮")
+
+    def _suppress_train_correction(self, fix_plan: dict) -> None:
+        """训练室纠错是否应抑制：专精活跃或受保护时弹出 train 项（受保护时提醒）。"""
+        if "train" not in fix_plan:
+            return
+        if self._train_mastery_active():
+            fix_plan.pop("train")
+            logger.debug("训练室受专精管理，跳过训练室纠错")
+            return
+        if self._train_protected():
+            fix_plan.pop("train")
+            logger.debug("训练室受保护，跳过训练室纠错")
+            self._notify_train_correction_skipped()
+
+    def _notify_train_correction_skipped(self) -> None:
+        """训练室受保护导致纠错跳过 → 发节流提醒邮件（⑤ protected，key=协助位:训练位）。
+
+        复用 ⑤ 类型与其 key 约定（铁律 8 通知共 8 类）；与 mastery_reader 的
+        _notify_protected（mower 无法开始训练）同 key 去重——同一受保护组合至多一封。
+        """
+        from arknights_mower.utils.email import send_message
+        from arknights_mower.utils.mastery_db import should_notify
+
+        current = self.op_data.get_current_room("train", True)
+        support = current[0] if current and current[0] else "未知"
+        train_slot = current[1] if current and len(current) > 1 and current[1] else "空"
+        key = f"{support}:{train_slot}"
+        if should_notify("protected", key):
+            msg = (
+                f"训练室受保护（协助位 {support}），排班纠错已跳过该训练室，"
+                "mower 不调整该房间"
+            )
+            send_message(msg, level="WARNING")
+
+    def generate_product(self, agent: str, *, task=None, snapshot=None):
+        """
+        Process materials in a factory with specified operators
+        Args:
+            agent: List of operators that need two production cycles
+        """
+
+        from arknights_mower.utils.workshop_automation import (
+            restore_if_no_plans,
+            workshop_task_snapshot,
+        )
+        from arknights_mower.utils.workshop_config import workshop_lock
+        from arknights_mower.utils.workshop_limits import (
+            batch_delta,
+            batch_limit,
+            deer_batch_limit,
+            recipe_quantities,
+        )
+        from arknights_mower.utils.workshop_mood import mood_cost, operator_mood_rules
+
+        try:
+            if snapshot is None:
+                snapshot = workshop_task_snapshot(task)
+            if snapshot is None or not snapshot.is_current():
+                return
+            settings = snapshot.settings
+            is_9colored = agent == "九色鹿"
+            if agent not in [s.operator for s in settings]:
+                logger.info(f"当前干员{agent}不在加工站配置中")
+                return
+            item_list = next((s.items for s in settings if s.operator == agent))
+            from arknights_mower.utils.workshop_recommendation import (
+                scope_workshop_items,
+            )
+
+            item_list = scope_workshop_items(agent, item_list, workshop_formula)
+            if not item_list:
+                logger.info(f"{agent}没有符合材料范围的加工配置，跳过")
+                return
+            operator = self.op_data.operators[agent]
+            mood_budget = max(0, min(24, operator.mood))
+            if mood_budget < 1:
+                logger.info(f"{agent}心情不足1点，跳过加工任务")
+                return
+            cultivateDepotSolver().start()
+            restore_if_no_plans()
+            if not snapshot.is_current():
+                return
+            mood_rules, mood_rules_known = operator_mood_rules(agent)
+            unknown_cnt = 0
+            inventory_data = get_inventory_counts()
+            seen = set()
+            group = defaultdict(dict)
+            recipe_moods = {}
+            for item in item_list:
+                for name in item.item_names:
+                    if name in seen:
+                        logger.warning(
+                            f"当前干员{agent}的加工站配置中存在重复材料{item.item_names}，以第一个设置为准"
+                        )
+                        continue
+                    seen.add(name)
+                    metadata = workshop_formula[name]
+                    if is_9colored and metadata["apCost"] > 4:
+                        logger.warning("跳过心情大于4消耗的材料")
+                    else:
+                        group[metadata["tab"]][name] = item
+                        recipe_moods[name] = mood_cost(
+                            name, metadata, mood_rules, mood_rules_known
+                        )
+            blocked_materials = set()
+
+            def available_groups():
+                return {
+                    tab: eligible
+                    for tab, entries in group.items()
+                    if (
+                        eligible := {
+                            name: setting
+                            for name, setting in entries.items()
+                            if name not in blocked_materials
+                            and recipe_moods[name] <= mood_budget
+                            and batch_limit(
+                                name, workshop_formula[name], setting, inventory_data
+                            )
+                            > 0
+                        }
+                    )
+                }
+
+            tab_queue = deque(available_groups().items())
+            reset_scan = True
+            if not tab_queue:
+                logger.info(
+                    f"{agent}当前心情{mood_budget:.2f}，没有可加工材料，跳过加工"
+                )
+                return
+            tab_pos = {
+                "基建材料": (self.recog.w * 0.1, self.recog.h * 0.18),
+                "精英材料": (self.recog.w * 0.1, self.recog.h * 0.31),
+                "技巧概要": (self.recog.w * 0.1, self.recog.h * 0.45),
+                "芯片": (self.recog.w * 0.1, self.recog.h * 0.57),
+            }
+            current_material = None
+            current_name = None
+            tasks = ["enter", "select", "process"]
+            inf_material = "基建材料"
+            gap = 0
+            start_time = datetime.now()
+            while tasks:
+                if not snapshot.is_current():
+                    break
+                if datetime.now() - start_time > timedelta(
+                    minutes=5
+                ):  # 检测是否超过 5 分钟
+                    raise Exception("循环运行时间超过 5 分钟，可能卡死")
+                scene = self.factory_scene()
+                if scene == Scene.UNKNOWN:
+                    unknown_cnt += 1
+                    if unknown_cnt > 5:
+                        unknown_cnt = 0
+                        self.back_to_infrastructure()
+                        self.enter_room("factory")
+                    else:
+                        self.sleep()
+                elif scene == Scene.CONNECTING:
+                    self.sleep()
+                elif self.find("arrange_check_in") or self.find(
+                    "arrange_check_in_small"
+                ):
+                    self.tap((self.recog.w * 0.25, self.recog.h * 0.95), interval=0.5)
+                elif scene == Scene.FACTORY_DASHBOARD:
+                    if tasks[0] == "enter":
+                        if is_9colored:
+                            gap = 40 - self.get_number((290, 335, 95, 200))
+                            logger.debug(f"初次记录九色鹿技能差值{gap}")
+                        del tasks[0]
+                    elif tasks[0] == "select":
+                        self.tap(
+                            (self.recog.w * 0.45, self.recog.h * 0.65), interval=0.5
+                        )
+                    else:
+                        add_btn = (self.recog.w * 0.84, self.recog.h * 0.4)
+                        inventory_data = get_inventory_counts()
+                        batch_count = batch_limit(
+                            current_name,
+                            current_material,
+                            group[current_material["tab"]][current_name],
+                            inventory_data,
+                        )
+                        if batch_count == 0:
+                            tasks.insert(0, "select")
+                            tab_queue = deque(available_groups().items())
+                            reset_scan = True
+                            continue
+                        ap_cost = current_material["apCost"]
+                        material_tab = current_material["tab"]
+                        per_craft_mood = recipe_moods[current_name]
+                        batch_count = min(
+                            batch_count, int(mood_budget // per_craft_mood)
+                        )
+                        if batch_count == 0:
+                            blocked_materials.add(current_name)
+                            tasks.insert(0, "select")
+                            tab_queue = deque(available_groups().items())
+                            reset_scan = True
+                            continue
+                        is_crit = ap_cost == 4 and material_tab == "精英材料"
+                        if is_9colored:
+                            mood = self.op_data.operators[agent].mood
+                            gap = 40 - self.get_number((290, 335, 95, 200))
+                            logger.debug(f"九色鹿技能差值{gap}")
+                            if gap > 40:
+                                logger.error("识别九色鹿阈值出错拉!任务停止")
+                                return
+                            if 0 < gap < 5:
+                                if mood >= 4:
+                                    if not is_crit:
+                                        tasks.insert(0, "select")
+                                        tab_queue = deque(available_groups().items())
+                                        reset_scan = True
+                                        logger.info(
+                                            "检测到九色鹿即将暴击，即将切换成暴击用材料"
+                                        )
+                                        continue
+                                else:
+                                    logger.info("暴击心情不足，任务结束")
+                                    tasks = []
+                                    continue
+                            if gap >= 5:
+                                if is_crit:
+                                    tasks.insert(0, "select")
+                                    tab_queue = deque(available_groups().items())
+                                    reset_scan = True
+                                    logger.info("切换成垫刀材料")
+                                    continue
+                            batch_count = min(
+                                batch_count, deer_batch_limit(gap, ap_cost)
+                            )
+                        produce_btn = (self.recog.w * 0.88, self.recog.h * 0.88)
+                        batch_count = int(batch_count)
+                        logger.info(
+                            f"{agent}加工{current_name}：库存"
+                            f"{inventory_data[recipe_quantities(current_name, current_material)[0]]}，"
+                            f"上限{group[material_tab][current_name].self_upper_limit}，"
+                            f"本批最多{batch_count}次"
+                        )
+                        # The selected formula starts at one, as in the deer logic.
+                        # Never use MAX: mood can allow more than the stock deficit.
+                        for _ in range(batch_count - 1):
+                            self.tap(add_btn, interval=0.1)
+                        if self.find("factory_warning") or not self.item_valid():
+                            if (
+                                not self.item_valid()
+                                and self.find("factory_warning") is None
+                            ):
+                                # 材料不够重新选择
+                                blocked_materials.add(current_name)
+                                tasks.insert(0, "select")
+                                tab_queue = deque(available_groups().items())
+                                reset_scan = True
+                                logger.info("检测到当前材料用完，切换其他材料")
+                                continue
+                            tasks = []
+                            logger.info("检测到干员心情见底或材料不足，任务结束")
+                            self.op_data.operators[agent].mood = 0
+                            self.op_data.operators[agent].time_stamp = datetime.now()
+                            logger.debug("设置加工站干员心情为0，别问我，我懒得算了")
+                            continue
+                        batches = batch_count
+                        output, _, costs = recipe_quantities(
+                            current_name, current_material
+                        )
+                        try:
+                            # Only submission holds the config lock; result reads don't.
+                            with workshop_lock:
+                                if not snapshot.is_current():
+                                    break
+                                self.tap(produce_btn, interval=2)
+                            for _ in range(11):
+                                if (
+                                    self.factory_scene()
+                                    == Scene.FACTORY_PRODUCT_COLLECT
+                                ):
+                                    break
+                                self.sleep()
+                            else:
+                                raise ValueError("未确认加工完成")
+                            self.recog.save_screencap("workshop")
+                            delta = batch_delta(current_name, current_material, batches)
+                            apply_workshop_inventory(delta)
+                        except Exception:
+                            invalidate_workshop_inventory([output, *costs])
+                            send_message(
+                                f"{agent}加工{current_name}后未能确认加工完成，"
+                                "已暂停相关材料的加工，请重新读取仓库。",
+                                level="WARNING",
+                            )
+                            raise
+                        logger.info(
+                            f"{agent}加工{current_name}完成{batches}次，库存变化{delta}"
+                        )
+                        inventory_data = get_inventory_counts()
+                        blocked_materials.clear()
+                        mood_budget = max(0, mood_budget - batches * per_craft_mood)
+                        operator.mood = mood_budget
+                        operator.time_stamp = datetime.now()
+                        tab_queue = deque(available_groups().items())
+                        if not tab_queue:
+                            logger.info(
+                                f"{agent}当前心情{mood_budget:.2f}，已无可加工材料，结束加工"
+                            )
+                            break
+                        tasks.insert(0, "select")
+                        reset_scan = True
+                elif scene == Scene.FACTORY_FORMULA:
+                    if tasks[0] in ["enter", "process"]:
+                        self.back()
+                    else:
+                        if reset_scan:
+                            # 重新切换材料则重头开始
+                            self.tap(tab_pos["芯片"], interval=0.2)
+                            self.tap(tab_pos[inf_material], interval=0.2)
+                            logger.debug("切换到基建材料页")
+                            reset_scan = False
+                        if not tab_queue:
+                            logger.info("没有任何材料满足条件，任务结束")
+                            tasks = []
+                            continue
+                        tab, item_list = tab_queue.popleft()
+                        item_list = set(item_list)
+                        self.tap(tab_pos[tab], interval=0.2)
+                        logger.info(f"开始检索{tab}的材料")
+                        logger.debug(
+                            f"[workshop-scan] tab={tab} initial_candidates={sorted(item_list)}"
+                        )
+                        last_scaned = []
+                        scan_round = 0
+                        while True and item_list:
+                            scanned_items = self.item_list()
+                            current_scan = [item for item, pos, valid in scanned_items]
+                            logger.debug(
+                                f"[workshop-scan] tab={tab} round={scan_round} "
+                                f"current_scan={current_scan} remaining_candidates={sorted(item_list)}"
+                            )
+                            if current_scan == last_scaned:
+                                logger.debug(
+                                    f"[workshop-scan] tab={tab} reached_bottom "
+                                    f"round={scan_round} last_scan={last_scaned}"
+                                )
+                                logger.info("已经到底了")
+                                break
+                            last_scaned = current_scan
+                            for item, pos, valid in scanned_items:
+                                if item in item_list:
+                                    good_to_go = True
+                                    if is_9colored:
+                                        if 0 < gap < 5:
+                                            good_to_go = (
+                                                workshop_formula[item]["apCost"] == 4
+                                                and workshop_formula[item]["tab"]
+                                                != inf_material
+                                            )
+                                        else:
+                                            good_to_go = (
+                                                0 < workshop_formula[item]["apCost"] < 4
+                                                or workshop_formula[item]["tab"]
+                                                == inf_material
+                                            )
+                                    if valid and good_to_go:
+                                        logger.info(f"检测到{item}满足条件，开始加工")
+                                        self.tap(
+                                            (
+                                                (pos[0][0] + pos[1][0]) / 2,
+                                                (pos[0][1] + pos[1][1]) / 2,
+                                            ),
+                                            interval=0.5,
+                                        )
+                                        current_material = workshop_formula[item]
+                                        current_name = item
+                                        item_list = []
+                                        del tasks[0]
+                                        break
+                                    else:
+                                        logger.info(f"检测到{item}不满足条件，跳过")
+                                        item_list.remove(item)
+                            scan_round += 1
+                            self.swipe_noinertia(
+                                (0.5 * self.recog.w, 0.9 * self.recog.h),
+                                (0, -700),
+                                interval=1,
+                            )
+
+                elif scene == Scene.FACTORY_PRODUCT_COLLECT:
+                    self.recog.save_screencap("workshop")
+                    self.back()
+                elif scene == Scene.FACTORY_ROOM:
+                    self.tap((self.recog.w * 0.1, self.recog.h * 0.95), 0.5)
+                elif scene == Scene.INFRA_MAIN:
+                    self.enter_room("factory")
+                self.recog.update()
+            self.back()
+            self.back_to_infrastructure()
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+
+    def plan_run_order(self, room):
+        plan = self.op_data.plan
+        if self.find_next_task(meta_data=room, task_type=TaskTypes.RUN_ORDER):
+            return
+        in_out_plan = {room: ["Current"] * len(plan[room])}
+        for idx, x in enumerate(plan[room]):
+            if any(
+                any(char in replacement_str for replacement_str in x.replacement)
+                for char in TRADE_ORDER_AGENTS
+            ):
+                in_out_plan[room][idx] = x.replacement[0]
+        self.tasks.append(
+            SchedulerTask(
+                time=self.get_run_order_time(room),
+                task_plan=in_out_plan,
+                task_type=TaskTypes.RUN_ORDER,
+                meta_data=room,
+            )
+        )
+
+    def run_order_solver(self):
+        plan = self.op_data.plan
+        if len(self.op_data.run_order_rooms) > 0:
+            # 判定宿舍是否满员
+            valid = True
+            for key in plan.keys():
+                if "dormitory" in key:
+                    dorm = self.op_data.get_current_room(key)
+                    if dorm is not None and len(dorm) == 5:
+                        continue
+                    else:
+                        valid = False
+                        logger.info("宿舍未满员,跳过读取插拔时间")
+                        break
+            if valid:
+                # 处理龙舌兰/但书/佩佩的插拔
+                run_order_rooms = self.op_data.run_order_rooms
+                for k, v in run_order_rooms.items():
+                    self.plan_run_order(k)
+                adj_tasks = scheduling(
+                    self.tasks
+                )  # 修改scheduling 同时输出撞在一起的前后两个任务
+                max_execution = 3
+                adj_count = 0
+
+                if run_order_rooms is not None and len(run_order_rooms) >= 3:
+                    n = len(run_order_rooms)
+                    dp = [0] * (n + 1)
+                    dp[1] = 0
+                    if n > 1:
+                        dp[2] = 1
+                    for i in range(3, n + 1):
+                        dp[i] = 3 * dp[i - 1] + 2 * dp[i - 2]
+                    max_execution = min(
+                        dp[n] * 1.25, 15
+                    )  # 通过跑单房间计算得到循环次数 同时限制最大次数
+                    logger.debug(f"max_execution = {max_execution}")
+                    logger.info(run_order_rooms)
+                    logger.info(
+                        f"当前跑单房间数量为：{n}，计算最大循环次数为: {max_execution + 1}"
+                    )
+                while (
+                    adj_tasks is not None and adj_count <= max_execution
+                ):  # 由于改动会增加触发次数 改为<= 多触发一次
+                    # logger.error("<UNK>,<UNK>")
+                    adjust_0_room = self.get_run_order_adjust_room(
+                        adj_tasks
+                    )  # 抽离成单独的
+                    if adjust_0_room is None:
+                        logger.error(
+                            f"adjust_0_room的结果为：{adjust_0_room}，获取跑单房间失败，停止循环"
+                        )
+                        return
+                    is_run = self.drone(adjust_0_room, adjust_time=True)
+                    adj_tasks = scheduling(self.tasks)
+                    adj_count += 1
+                    logger.info(f"第{adj_count}次循环结束")
+                    if is_run is not None and not is_run:
+                        return
+        fia_plan, fia_room = self.check_fia()
+        if fia_room is not None and fia_plan is not None:
+            if self.find_next_task(task_type=TaskTypes.FIAMMETTA) is None:
+                fia_data = self.op_data.operators["菲亚梅塔"]
+                fia_idx = (
+                    fia_data.current_index
+                    if fia_data.current_index != -1
+                    else fia_data.index
+                )
+                result = [{}] * (fia_idx + 1)
+                result[fia_idx]["time"] = datetime.now()
+                if fia_data.mood != 24:
+                    if (
+                        fia_data.time_stamp is not None
+                        and fia_data.time_stamp > datetime.now()
+                    ):
+                        result[fia_idx]["time"] = fia_data.time_stamp
+                    else:
+                        self.enter_room(fia_room)
+                        result = self.get_agent_from_room(fia_room, [fia_idx])
+                        self.back()
+                logger.info(
+                    "下一次进行菲亚梅塔充能："
+                    + result[fia_idx]["time"].strftime("%H:%M:%S")
+                )
+                self.tasks.append(
+                    SchedulerTask(
+                        time=result[fia_idx]["time"], task_type=TaskTypes.FIAMMETTA
+                    )
+                )
+        for name in self.op_data.exhaust_agent:
+            op = self.op_data.operators[name]
+            # skip operator_protected check (TrainingStateMachine removed)
+            if (
+                op.is_resting()
+                or not op.is_high()
+                or op.current_room not in base_room_list
+            ):
+                continue
+            if op.current_mood() <= op.lower_limit + 2:
+                if (
+                    self.find_next_task(
+                        task_type=TaskTypes.EXHAUST_OFF, meta_data=op.name
+                    )
+                    is None
+                ):
+                    self.enter_room(op.current_room)
+                    result = self.get_agent_from_room(
+                        op.current_room, [op.current_index]
+                    )
+                    _time = datetime.now()
+                    margin = 20 if name not in self.op_data.rest_in_full_group else 0
+                    if (
+                        result[op.current_index]["time"] is not None
+                        and result[op.current_index]["time"] > _time
+                    ):
+                        _time = result[op.current_index]["time"] - timedelta(
+                            minutes=10 + margin
+                        )
+                    elif (
+                        op.current_mood() > 0.25 + op.lower_limit
+                        and op.depletion_rate != 0
+                    ):
+                        _time = (
+                            datetime.now()
+                            + timedelta(
+                                hours=(op.current_mood() - op.lower_limit - 0.25)
+                                / op.depletion_rate
+                            )
+                            - timedelta(minutes=10 + margin)
+                        )
+                    self.back()
+                    exhausted_time = _time < datetime.now()
+                    if exhausted_time:
+                        logger.info(
+                            f"{op.name}的下班任务时间{_time}已早于当前时间，改为立即执行"
+                        )
+                        _time = datetime.now()
+                    # plan 是空的是因为得动态生成
+                    update_time = False
+                    if op.group != "":
+                        # 检查是否有其他同组任务，刷新时间
+                        for item in self.op_data.groups[op.group]:
+                            if item not in self.op_data.exhaust_agent:
+                                continue
+                            elif self.find_next_task(
+                                task_type=TaskTypes.EXHAUST_OFF, meta_data=item
+                            ):
+                                update_time = True
+                                exh_task = self.find_next_task(
+                                    task_type=TaskTypes.EXHAUST_OFF,
+                                    meta_data=item,
+                                )
+                                if _time < exh_task.time:
+                                    logger.info(
+                                        f"检测到用尽同组{op.name}比{item}提前下班，更新任务时间为{_time}"
+                                    )
+                                    exh_task.time = _time
+                                exh_task.meta_data += f",{op.name}"
+                                logger.debug(f"更新用尽meta_data为{exh_task.meta_data}")
+                    if not update_time:
+                        logger.info(f"生成{op.name}的下班任务")
+
+                        self.tasks.append(
+                            SchedulerTask(
+                                time=_time,
+                                task_type=TaskTypes.EXHAUST_OFF,
+                                meta_data=op.name,
+                            )
+                        )
+                    # 如果是生成的过去时间，则停止 plan 其他
+                    if exhausted_time:
+                        break
+
+    # 根据优先级获取跑单冲突时应该要加速的房间
+    def get_run_order_adjust_room(self, adj_tasks):
+        # 此处出异常会一直运行，抛出None会终止循环，下面还没考虑过会出什么问题，可自行添加
+        try:
+            adj_0_task, adj_task = adj_tasks
+        except TypeError:
+            return None
+        # A mastery handoff is a fixed deadline, never a drone target.
+        run_orders = [
+            t for t in adj_tasks if t.type == TaskTypes.RUN_ORDER and t.meta_data
+        ]
+        if len(run_orders) != 2:
+            return run_orders[0].meta_data if len(run_orders) == 1 else None
+        adjust_0_room = adj_0_task.meta_data
+        adjust_room = adj_task.meta_data
+        # 如果加速房间为跑单房间，则优先使用
+        drone_room = self.drone_room
+        if any(task.meta_data == drone_room for task in adj_tasks):
+            logger.info("检测到加速房间在冲突的跑单任务中，直接采用")
+            adjust_0_room = drone_room
+        else:
+            logger.info("开始比较跑单任务")
+            run_order_rooms = self.op_data.run_order_rooms
+            logger.debug(f"run_order_rooms：{run_order_rooms}")
+            logger.debug(f"adjust_0_room：{adjust_0_room}")
+            logger.debug(f"adjust_room：{adjust_room}")
+
+            adjust_0_room_len = len(self.op_data.plan[adjust_0_room])  # 跑单任务首个
+            adjust_room_len = len(self.op_data.plan[adjust_room])  # 跑单任务第二个
+            # 正常情况按照82算法 1>3>2 进行加速
+            # 如果 adjust_0_room 为 2 adjust_room 为 3 则是 2>3, 两者收益比较接近，先加速前面的订单可能更优，故保留特性
+            if (
+                adjust_0_room_len == 3 and adjust_room_len != 1
+            ):  # 参考82算法 优先加速3级
+                logger.debug(f"adjust_0_room_len ===> {adjust_0_room_len}")
+                logger.debug(f"adjust_room_len ===> {adjust_room_len}")
+            elif (
+                adjust_0_room_len > adjust_room_len
+            ):  # 如果首个任务房间比第二个大 #参考82算法
+                adjust_0_room = adjust_room
+                adjust_0_room_len = adjust_room_len
+            logger.info(f"加速房间 :{adjust_0_room}")
+            logger.info(f"加速房间长度 :{adjust_0_room_len}")
+
+        # return adjust_0_room , adjust_0_room_len
+        return adjust_0_room
+
+    def plan_solver(self):
+        # 准备数据
+        logger.debug(self.op_data.print())
+        # 根据剩余心情排序
+        self.total_agent = list(
+            v
+            for v in self.op_data.operators.values()
+            if (v.is_high() or (v.current_room == "" and v.room == ""))
+            and not v.room.startswith("dorm")
+        )
+        self.total_agent.sort(key=lambda x: x.current_mood(), reverse=False)
+        # 目前有换班的计划后面改
+        logger.debug(f"当前基地数据--> {self.total_agent}")
+        new_plan = {}
+        try:
+            # 重新排序
+            if self.find_next_task(task_type=TaskTypes.SHIFT_OFF):
+                logger.info("有未完成的下班任务")
+                return
+            self.plan_metadata()
+            new_plan = self.resting()
+        except MowerExit:
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+        # 更新宿舍任务
+        re_order_dorm_plan = try_reorder(self.op_data, new_plan)
+        if re_order_dorm_plan:
+            logger.debug(f"新增宿舍任务{re_order_dorm_plan}")
+            task = SchedulerTask(
+                task_plan=re_order_dorm_plan,
+                task_type=TaskTypes.SHIFT_OFF if new_plan else TaskTypes.NOT_SPECIFIC,
+            )
+            self.tasks.append(task)
+        if not self.find_next_task(datetime.now() + timedelta(minutes=5)):
+            try_workshop_tasks(self.op_data, self.tasks)
+        if not self.find_next_task(datetime.now() + timedelta(minutes=5)):
+            try_add_release_dorm({}, None, self.op_data, self.tasks)
+        if self.find_next_task(datetime.now() + timedelta(seconds=15)):
+            logger.info("有其他任务,跳过宿舍纠错")
+            return
+        if self.agent_get_mood() is None:
+            self.backup_plan_solver()
+
+    def resting(self):
+        self.total_agent.sort(
+            key=lambda x: (
+                self._resting_tier(x),
+                x.current_mood() - x.lower_limit,
+            ),
+            reverse=False,
+        )
+        self.plan_metadata()
+        # 理想休息人数只描述主力轮休；低优占床另由 available_free("low")
+        # 管理，不能抬高这里的当前人数或挡住可接管床位上的大组。
+        current_resting = self.op_data.active_high_resting_count()
+        # 阈值暂定为 0.5
+        self.ideal_resting_count = (
+            4
+            if self.op_data.average_mood()
+            > self.op_data.config.resting_threshold * config.conf.rescue_threshold
+            else len(self.op_data.dorm)
+        )
+        logger.debug(f"当前理想休息人数是{self.ideal_resting_count}")
+        # #59：训练室干员跳过休息规划改为「DB 有没有 active 计划」，
+        # 不再依赖队列里的 SKILL_UPGRADE（重启后队列可能没补回来 → 失真）。
+        # #109：再挂 enable_mastery 门——OFF 时恒 False（残留 active DB 计划
+        # 不得让训练室干员永不 SHIFT_OFF 耗光心情，§9 OFF 语义）。
+        try:
+            from arknights_mower.utils.mastery_db import get_active_plan
+
+            has_active_mastery = (
+                config.conf.enable_mastery and get_active_plan() is not None
+            )
+        except Exception:
+            has_active_mastery = False
+        _replacement = []
+        _plan = {}
+        _high_done = False
+        _low_used = set()
+        for op in self.total_agent:
+            if op.is_high() and not op.is_workshop():
+                if _high_done:
+                    continue
+                if (
+                    current_resting + len(_replacement) >= self.ideal_resting_count
+                    and self.op_data.available_free() == 0
+                ):
+                    _high_done = True
+                    continue
+            elif self.op_data.available_free("low") == 0:
+                break
+            if op.name in self.op_data.workaholic_agent:
+                continue
+            if (
+                op.is_resting()
+                or op.current_room in ["factory"]
+                or (op.current_room in ["train"] and has_active_mastery)
+                or op.room in ["factory"]
+                or (op.room in ["train"] and has_active_mastery)
+            ):
+                continue
+            # 忽略掉心情太高的
+            if op.upper_limit - op.current_mood() < 2:
+                continue
+            # 忽略 用尽，已经处理
+            if op.name in self.op_data.exhaust_agent:
+                continue
+            # 忽略掉心情值没低于上限的的
+            if op.current_mood() > int(
+                (op.upper_limit - op.lower_limit)
+                * self.op_data.config.resting_threshold
+                + op.lower_limit
+            ):
+                continue
+            if not op.is_high():
+                _dorm = self.op_data.assign_dorm(op.name, True, used=_low_used)
+                if _dorm is not None:
+                    logger.debug(f"安排低优{op.name}休息 -> {_dorm.position}")
+                continue
+            if op.group != "":
+                if op.group in self.op_data.exhaust_group:
+                    # 忽略掉用尽心情的分组
+                    continue
+                group_resting = self.op_data.groups[op.group]
+                self.get_resting_plan(
+                    group_resting, _replacement, _plan, current_resting
+                )
+            else:
+                self.get_resting_plan([op.name], _replacement, _plan, current_resting)
+        if len(_plan.keys()) > 0:
+            self.tasks.append(
+                SchedulerTask(task_plan=_plan, task_type=TaskTypes.SHIFT_OFF)
+            )
+            logger.info(f"生成{_plan}的下班任务")
+        return _plan
+
+    _REST_TIER_HIGH = 0
+    _REST_TIER_MARKED_LOW = 1
+    _REST_TIER_REPLACEMENT = 2
+
+    @staticmethod
+    def _resting_tier(op):
+        if op.is_workshop():
+            return 3
+        if op.is_high() and op.resting_priority == "high":
+            return BaseSchedulerSolver._REST_TIER_HIGH
+        if op.is_high():
+            return BaseSchedulerSolver._REST_TIER_MARKED_LOW
+        return BaseSchedulerSolver._REST_TIER_REPLACEMENT
+
+    def backup_plan_solver(self, timing=None, append_empty_task=True):
+        if timing is None:
+            timing = PlanTriggerTiming.END
+        try:
+            new_task = False
+            if self.op_data.backup_plans:
+                con = copy.deepcopy(self.op_data.plan_condition)
+                current_con = self.op_data.plan_condition
+                for idx, bp in enumerate(self.op_data.backup_plans):
+                    func = str(bp.trigger)
+                    logger.debug(func)
+                    con[idx] = self.op_data.evaluate_expression(func)
+                    if (
+                        current_con[idx] != con[idx]
+                        and bp.trigger_timing.value <= timing.value
+                    ):
+                        task = self.op_data.backup_plans[idx].task
+                        if task and con[idx]:
+                            new_task = True
+                            self.tasks.append(
+                                SchedulerTask(task_plan=copy.deepcopy(task))
+                            )
+                    else:
+                        # 不切换
+                        con[idx] = current_con[idx]
+                # 不满足条件且为其他排班表，则切换回来
+                if con != current_con:
+                    logger.info(
+                        f"检测到副班条件变更，启动超级变换形态, 当前条件:{current_con}"
+                    )
+                    logger.info(f"新条件列表:{con}")
+                    self.op_data.swap_plan(con, refresh=True)
+                    if append_empty_task and not new_task:
+                        self.tasks.append(SchedulerTask(task_plan={}))
+            return new_task
+        except MowerExit:
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+        return False
+
+    def rearrange_resting_priority(self, group):
+        operators = self.op_data.groups[group]
+        # 肥鸭充能新模式：https://github.com/ArkMowers/arknights-mower/issues/551
+        fia_plan, fia_room = self.check_fia()
+        # 排序
+        # 1. 肥鸭充能列表中的干员靠前
+        # 2. 不在加工站的干员靠前
+        # 3. 心情低的干员靠前
+        operators.sort(
+            key=lambda y: (
+                y not in fia_plan if fia_plan else True,
+                self.op_data.operators[y].current_room in ["factory", "train"],
+                self.op_data.operators[y].current_mood()
+                - self.op_data.operators[y].lower_limit,
+            )
+        )
+
+        high_count = 0
+        for operator in operators:
+            if self.op_data.operators[operator].workaholic:
+                continue
+            if self.op_data.operators[operator].resting_priority == "high":
+                high_count += 1
+        for operator in operators:
+            if self.op_data.operators[operator].workaholic:
+                continue
+            self.op_data.operators[operator].resting_priority = (
+                "high" if high_count > 0 else "low"
+            )
+            high_count -= 1
+
+    def get_resting_plan(self, agents, exist_replacement, plan, current_resting):
+        __replacement = []
+        __plan = {}
+        required = 0
+        for x in agents:
+            op = self.op_data.operators[x]
+            if op.workaholic:
+                continue
+            required += 1
+        logger.debug(f"需求:{current_resting} 当前休息")
+        logger.debug(f"需求:{required}宿舍空位")
+        logger.debug(f"需求:{exist_replacement} 当前安排")
+        logger.debug(f"当前计划{plan}")
+        success = True
+
+        fia_plan, fia_room = self.check_fia()
+        agents.sort(
+            key=lambda y: (
+                y not in fia_plan if fia_plan else True,
+                self.op_data.operators[y].current_room in ["factory", "train"],
+                self.op_data.operators[y].current_mood()
+                - self.op_data.operators[y].lower_limit,
+            )
+        )
+        logger.debug(f"计算排班:{agents}")
+        for agent in agents:
+            if not success:
+                break
+            x = self.op_data.operators[agent]
+            if x.room not in base_room_list:
+                logger.debug(f"干员房间出错:{agent}")
+                success = False
+                break
+            if self.op_data.get_dorm_by_name(x.name)[0] is not None:
+                # 如果干员已经被安排了
+                success = False
+                break
+            _rep = next(
+                (
+                    obj
+                    for obj in x.replacement
+                    if (
+                        not (
+                            self.op_data.operators[obj].current_room != ""
+                            and not self.op_data.operators[obj].is_resting()
+                        )
+                    )
+                    and obj not in TRADE_ORDER_AGENTS
+                    and not _is_mastery_busy(obj)
+                    and obj not in exist_replacement
+                    and obj not in __replacement
+                    and self.op_data.operators[obj].current_room != x.room
+                ),
+                None,
+            )
+            if _rep is not None:
+                __replacement.append(_rep)
+                if x.room not in __plan.keys():
+                    __plan[x.room] = ["Current"] * len(self.op_data.plan[x.room])
+                __plan[x.room][x.index] = _rep
+            else:
+                success = False
+        if success:
+            resting_agents = [
+                x for x in agents if not self.op_data.operators[x].workaholic
+            ]
+            # 床位判断和分配使用同一套规则。先为整组模拟预留，避免低优占床
+            # 提前挡住大组，也避免分到一半才失败留下脏状态。
+            dorms = self.op_data.assign_dorm_group(resting_agents)
+            if dorms is None:
+                return
+            logger.debug(f"当前替换{__replacement}")
+            exist_replacement.extend(__replacement)
+            logger.debug(dorms)
+            for k, v in __plan.items():
+                if k not in plan.keys():
+                    plan[k] = __plan[k]
+                for idx, name in enumerate(__plan[k]):
+                    if plan[k][idx] == "Current" and name != "Current":
+                        plan[k][idx] = name
+            logger.debug(f"当前plan{plan}")
+
+    def initialize_operators(self):
+        self.op_data = Operators(self.global_plan)
+        Operators.current_room_changed_callback = self.current_room_changed
+        return self.op_data.init_and_validate()
+
+    def check_fia(self):
+        if "菲亚梅塔" in self.op_data.operators.keys() and self.op_data.operators[
+            "菲亚梅塔"
+        ].room.startswith("dormitory"):
+            return self.op_data.operators[
+                "菲亚梅塔"
+            ].replacement, self.op_data.operators["菲亚梅塔"].room
+        return None, None
+
+    def _run_order_time_region(self):
+        """#85：跑单剩余时间的双端坐标（三处调用点曾各自复制，UI 调整只改这里）。"""
+        return (
+            (int(self.recog.w * 650 / 2496), int(self.recog.h * 660 / 1404)),
+            (int(self.recog.w * 815 / 2496), int(self.recog.h * 710 / 1404)),
+        )
+
+    def _wait_drone_interface(self, interval=0.5, accelerate_template=None):
+        """#85：等待进入无人机界面（出现预期的加速按钮）。
+
+        ``accelerate_template`` 用于贸易站专属流程；未指定时制造站/贸易站任一
+        加速按钮都视为成功。
+        """
+        error_count = 0
+        templates = (
+            (accelerate_template,)
+            if accelerate_template is not None
+            else ("factory_accelerate", "bill_accelerate")
+        )
+        while all(self.find(template) is None for template in templates):
+            if error_count > 5:
+                raise Exception("未成功进入无人机界面")
+            self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=interval)
+            error_count += 1
+
+    def get_run_order_time(self, room):
+        logger.info("基建：读取插拔时间")
+        # 点击进入该房间
+        self.enter_room(room)
+        # 进入房间详情
+        self._wait_drone_interface(interval=1, accelerate_template="bill_accelerate")
+        execute_time = self.double_read_time(
+            self._run_order_time_region(),
+            use_digit_reader=True,
+        )
+        execute_time = execute_time - timedelta(
+            seconds=(60 * config.conf.run_order_delay)
+        )
+        logger.info("下一次进行插拔的时间为：" + execute_time.strftime("%H:%M:%S"))
+        self.scene_graph_navigation(Scene.INFRA_MAIN)
+        return execute_time
+
+    def todo_list(self) -> None:
+        """处理基建 Todo 列表"""
+        tapped = False
+        collect = {"bill": "订单", "factory": "制造站产物", "trust": "信赖"}
+        if self.last_execution["todo"] is None or self.last_execution[
+            "todo"
+        ] < datetime.now() - timedelta(minutes=15):
+            for res, name in collect.items():
+                tap_times = 0
+                while pos := self.find(f"infra_collect_{res}"):
+                    logger.info(f"收取{name}")
+                    self.tap(pos)
+                    tapped = True
+                    tap_times += 1
+                    if tap_times > 0:
+                        break
+            self.last_execution["todo"] = datetime.now()
+        if not tapped:
+            # 点击右上角的通知图标
+            # 可能被产物收取提示挡住，所以直接点位置
+            self.tap((1840, 140))
+            self.todo_task = True
+
+    def clue_new(self):
+        try:
+            logger.info("基建：线索")
+            self.scene_graph_navigation(Scene.INFRA_MAIN)
+            self.enter_room("meeting")
+
+            clue_size = (162, 216)
+            clue_top_left = {
+                "daily": (1118, 334),
+                "receive": (1305, 122),
+                "give_away": (30, 208),
+                # 摆放线索界面，线索框的左上角
+                1: (72, 228),
+                2: (374, 334),
+                3: (679, 198),
+                4: (1003, 265),
+                5: (495, 660),
+                6: (805, 573),
+                7: (154, 608),
+            }
+            dot_offset = (168, -8)
+            main_offset = (425, 0)
+            main_time_offset = (443, 257)
+
+            def va(a, b):
+                return a[0] + b[0], a[1] + b[1]
+
+            def tl2p(top_left):
+                return top_left, va(top_left, clue_size)
+
+            def is_orange(dot):
+                orange_dot = (255, 104, 1)
+                return all([abs(dot[i] - orange_dot[i]) < 3 for i in range(3)])
+
+            clue_scope = {}
+            for index, top_left in clue_top_left.items():
+                clue_scope[index] = tl2p(top_left)
+            clue_dots = {}
+            main_dots = {}
+            main_time = {}
+            main_scope = {}
+            for i in range(1, 8):
+                clue_dots[i] = va(clue_top_left[i], dot_offset)
+                main_dots[i] = va(clue_dots[i], main_offset)
+                main_time[i] = va(clue_top_left[i], main_time_offset)
+                main_scope[i] = tl2p(va(clue_top_left[i], main_offset))
+
+            class ClueTaskManager:
+                def __init__(self):
+                    # 操作顺序：信息板信用、领取每日线索、接收好友线索、摆线索、送线索、更新线索交流结束时间
+                    self.task_list = [
+                        "message_board",
+                        "daily",
+                        "receive",
+                        "place",
+                        "give_away",
+                        "party_time",
+                    ]
+                    self.task = self.task_list[0]
+
+                def complete(self, task):
+                    task = task or self.task
+                    if task in self.task_list:
+                        self.task_list.remove(task)
+                    self.task = self.task_list[0] if self.task_list else None
+
+            tm_thres = 0.6
+
+            def clue_cls(scope):
+                scope_dict = clue_scope if isinstance(scope, str) else main_scope
+                img = cropimg(self.recog.img, scope_dict[scope])
+                for i in range(1, 8):
+                    res = loadres(f"clue/{i}")
+                    result = cv2.matchTemplate(img, res, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                    if max_val > tm_thres:
+                        return i
+                return None
+
+            exit_pos = (1239, 144)
+
+            ctm = ClueTaskManager()
+
+            clue_status = {}
+
+            def place_index():
+                for cl, st in clue_status.items():
+                    if st in ["available", "self", "available_self_only"]:
+                        return cl, st
+                return None, None
+
+            def detect_unlock():
+                unlock_pos = self.find("clue/button_unlock")
+                if unlock_pos is None:
+                    return None
+                color = self.get_color(self.get_pos(unlock_pos))
+                if all(color > [252] * 3):
+                    return unlock_pos
+                return None
+
+            while ctm.task:
+                scene = self.scene()
+
+                if scene == Scene.INFRA_DETAILS:
+                    logger.info("INFRA_DETAILS")
+                    if ctm.task == "message_board":
+                        if self.find("clue/title_party"):
+                            self.tap_element("clue/title_party")
+                        self.tap((680, 1000))
+
+                        board_pos = None
+                        for _ in range(3):
+                            self.recog.update()
+                            board_pos = self.find("clue/message_board")
+                            if board_pos:
+                                break
+                            self.sleep(0.5)
+
+                        if board_pos:
+                            logger.info("打开会客室信息板")
+                            self.tap(board_pos)
+                            self.sleep(0.5)
+
+                            for _ in range(3):
+                                self.recog.update()
+
+                                if collect := self.find("clue/message_board_collect"):
+                                    logger.info("领取信息板信用")
+                                    self.tap(collect)
+                                    for _ in range(6):
+                                        self.sleep(0.5)
+                                        self.recog.update()
+                                        if not self.find("clue/message_board_collect"):
+                                            self.tap((680, 1000))
+                                            break
+                                    break
+
+                                if self.find("room/meeting"):
+                                    self.back()
+                                    break
+
+                                self.tap((680, 1000))
+                                self.sleep(0.5)
+                        ctm.complete("message_board")
+                    elif ctm.task == "party_time":
+                        if pos := self.find("clue/check_party"):
+                            logger.info("tap")
+                            self.tap(pos)
+                        self.party_time = self.double_read_time(
+                            ((1768, 438), (1902, 480))
+                        )
+                        if self.party_time > datetime.now():
+                            logger.info(f"线索交流结束时间：{self.party_time}")
+                            if not find_next_task(
+                                self.tasks,
+                                task_type=TaskTypes.CLUE_PARTY,
+                            ):
+                                self.tasks.append(
+                                    SchedulerTask(
+                                        time=self.party_time
+                                        - timedelta(milliseconds=1),
+                                        task_type=TaskTypes.CLUE_PARTY,
+                                    )
+                                )
+                        else:
+                            self.party_time = None
+                            logger.info("线索交流未开启")
+                        ctm.complete("party_time")
+                    else:
+                        # 点击左下角，关闭进驻信息，进入线索界面
+                        self.tap((330, 1000))
+
+                elif scene == Scene.INFRA_CONFIDENTIAL:
+                    logger.info("INFRA_CONFIDENTIAL")
+                    if ctm.task == "daily":
+                        # 检查是否领过线索
+                        daily_scope = ((1815, 200), (1895, 250))
+                        if self.find("clue/badge_new", scope=daily_scope):
+                            self.tap((1800, 270))
+                        else:
+                            ctm.complete("daily")
+                    elif ctm.task == "receive":
+                        receive_scope = ((1815, 360), (1895, 410))
+                        if self.find("clue/badge_new", scope=receive_scope):
+                            self.ctap((1800, 430))
+                        else:
+                            ctm.complete("receive")
+                    elif ctm.task == "place":
+                        if fast_place := self.find("clue/fast_place"):
+                            logger.info("快速摆放线索")
+                            self.tap(fast_place, interval=2)
+                            if unlock_pos := detect_unlock():
+                                self.tap(unlock_pos)
+                        ctm.complete("place")
+                    elif ctm.task == "give_away":
+                        self.ctap((1799, 578))
+                    elif ctm.task == "party_time":
+                        self.back()
+
+                elif scene == Scene.CLUE_DAILY:
+                    logger.info("CLUE_DAILY")
+                    if not self.find(
+                        "clue/icon_notification", scope=((1400, 0), (1920, 400))
+                    ) and (clue := clue_cls("daily")):
+                        logger.info(f"领取今日线索（{clue}号）")
+                        self.tap_element("clue/button_get")
+                        ctm.complete("daily")
+                    else:
+                        # 今日线索已领取，点X退出
+                        self.tap((1484, 152))
+
+                elif scene == Scene.CLUE_RECEIVE:
+                    logger.info("CLUE_RECEIVE")
+                    if self.find(
+                        "infra_trust_complete",
+                        scope=((1230, 0), (1920, 1080)),
+                        score=0.1,
+                    ):
+                        self.sleep()
+                        continue
+                    if clue := clue_cls("receive"):
+                        name_scope = ((1580, 220), (1880, 255))
+                        name_img = cropimg(self.recog.gray, name_scope)
+                        name_img = cv2.copyMakeBorder(
+                            name_img, 48, 48, 48, 48, cv2.BORDER_REPLICATE
+                        )
+                        name = rapidocr.engine(
+                            name_img,
+                            use_det=True,
+                            use_cls=False,
+                            use_rec=True,
+                        )[0][0][1]
+                        name = name.strip() if name else "好友"
+                        logger.info(f"接收{name}的{clue}号线索")
+                        self.tap(name_scope)
+                    else:
+                        ctm.complete("receive")
+                        self.tap(exit_pos)
+
+                elif scene == Scene.CLUE_PLACE:
+                    logger.info("CLUE_PLACE")
+                    cl, st = place_index()
+                    if cl is None:
+                        if unlock_pos := detect_unlock():
+                            self.tap(unlock_pos)
+                        else:
+                            ctm.complete("place")
+                            self.tap(exit_pos)
+                        continue
+                    if self.get_color((1328 + 77 * cl, 114))[0] < 150:
+                        # 右上角 1-7
+                        self.tap(clue_scope[cl])
+                        continue
+                    receive = st in ["available", "self"]
+                    filter_receive = (1900, 45)
+                    filter_self = (1610, 70)
+                    filter_pos = filter_receive if receive else filter_self
+                    if not all(self.get_color(filter_pos) > [252] * 3):
+                        self.tap(filter_pos)
+                        continue
+                    clue_pos = ((1305, 208), (1305, 503), (1305, 797))
+                    clue_list = []
+                    for cp in clue_pos:
+                        clue_img = cropimg(self.recog.img, tl2p(cp))
+                        res = loadres(f"clue/{cl}")
+                        result = cv2.matchTemplate(clue_img, res, cv2.TM_CCOEFF_NORMED)
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                        if max_val > tm_thres:
+                            name_scope = (va(cp, (274, 99)), va(cp, (580, 134)))
+                            name_img = cropimg(self.recog.gray, name_scope)
+                            name_img = cv2.copyMakeBorder(
+                                name_img, 48, 48, 48, 48, cv2.BORDER_REPLICATE
+                            )
+                            name = rapidocr.engine(
+                                name_img,
+                                use_det=True,
+                                use_cls=False,
+                                use_rec=True,
+                            )[0][0][1]
+                            if name:
+                                name = name.strip()
+                            time_scope = (va(cp, (45, 222)), va(cp, (168, 255)))
+                            time_hsv = cropimg(self.recog.img, time_scope)
+                            time_hsv = cv2.cvtColor(time_hsv, cv2.COLOR_RGB2HSV)
+                            if 165 < time_hsv[0][0][0] < 175:
+                                time_img = thres2(
+                                    cropimg(self.recog.gray, time_scope), 180
+                                )
+                                time_img = cv2.copyMakeBorder(
+                                    time_img, 48, 48, 48, 48, cv2.BORDER_REPLICATE
+                                )
+                                time = rapidocr.engine(
+                                    time_img,
+                                    use_det=True,
+                                    use_cls=False,
+                                    use_rec=True,
+                                )[0][0][1]
+                                if time:
+                                    time = time.strip()
+                            else:
+                                time = None
+                            clue_list.append(
+                                {"name": name, "time": time, "scope": tl2p(cp)}
+                            )
+                        else:
+                            break
+                    if clue_list:
+                        list_name = "接收库" if receive else "自有库"
+                        logger.info(f"{cl}号线索{list_name}：{clue_list}")
+                        selected = None
+                        for c in clue_list:
+                            if c["time"]:
+                                selected = c
+                                break
+                        selected = selected or clue_list[0]
+                        self.tap(selected["scope"])
+                        if clue_status[cl] == "available":
+                            clue_status[cl] = "friend"
+                        elif clue_status[cl] == "available_self_only":
+                            clue_status[cl] = "self_only"
+                        elif clue_status[cl] == "self":
+                            clue_status[cl] = "friend"
+                        else:
+                            clue_status[cl] = None
+                    else:
+                        if clue_status[cl] == "available":
+                            clue_status[cl] = "available_self_only"
+                        elif clue_status[cl] == "available_self_only":
+                            clue_status[cl] = None
+                        elif clue_status[cl] == "self":
+                            clue_status[cl] = "self_only"
+                        else:
+                            clue_status[cl] = None
+
+                elif scene == Scene.CLUE_GIVE_AWAY:
+                    give_away_true = self.leifeng_mode or (
+                        not self.leifeng_mode
+                        and self.clue_count > self.clue_count_limit
+                    )
+                    if give_away_true and (
+                        fast_giveaway := self.find("clue/fast_giveaway")
+                    ):
+                        logger.info("快速送出线索")
+                        self.tap(fast_giveaway)
+                    ctm.complete("give_away")
+                    self.tap((1868, 54))
+
+                elif scene == Scene.CLUE_SUMMARY:
+                    logger.info("CLUE_SUMMARY")
+                    self.back()
+                elif scene == Scene.INFRA_ARRANGE_ORDER:
+                    self.back()
+                elif scene in self.waiting_scene:
+                    logger.info("waiting_scene")
+                    self.waiting_solver()
+
+                else:
+                    self.scene_graph_navigation(Scene.INFRA_MAIN)
+                    self.enter_room("meeting")
+            shop_solver = CreditShop(self.device, self.recog)
+            shop_solver.run()
+            self.scene_graph_navigation(Scene.INFRA_MAIN)
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+            return
+
+    def adjust_order_time(self, accelerate, room):
+        action_required_task = scheduling(self.tasks)
+        # logger.error(f"action_required_task:{action_required_task}")
+        logger.debug(f"room:{room}")
+        logger.debug(self.get_run_order_adjust_room(action_required_task) == room)
+        # while  action_required_task is not None and any(task.meta_data == room for task in action_required_task):
+
+        # 设置为每次循环都验证一次当前房间 是否适合加速
+        while (
+            action_required_task is not None
+            and self.get_run_order_adjust_room(action_required_task) == room
+        ):
+            # 如果不加判断 在无人机为0时将会一直触发循环 暂时设置默认值为20 可以考虑动态值
+            drone_count = self.digit_reader.get_drone(self.recog.gray)
+            logger.info(f"当前无人机数量为：{drone_count}")
+            if drone_count <= 20:
+                logger.error("无人机数量不足无法加速")
+                # 看订单加速本体触发的频率，考虑到无人机回复较慢暂时先不加延迟触发了
+                return False
+            self.tap(accelerate)
+            if self.scene() in self.waiting_scene:
+                if not self.waiting_solver():
+                    return None
+            self.tap((self.recog.w * 1320 // 1920, self.recog.h * 502 // 1080))
+            if self.scene() in self.waiting_scene:
+                if not self.waiting_solver():
+                    return None
+            self.tap((self.recog.w * 3 // 4, self.recog.h * 4 // 5))
+            if self.scene() in self.waiting_scene:
+                if not self.waiting_solver():
+                    return None
+
+            self._wait_drone_interface(
+                interval=1, accelerate_template="bill_accelerate"
+            )
+
+            _time = self.double_read_time(
+                (
+                    (self.recog.w * 650 // 2496, self.recog.h * 660 // 1404),
+                    (self.recog.w * 815 // 2496, self.recog.h * 710 // 1404),
+                ),
+                use_digit_reader=True,
+            )
+            task_time = _time - timedelta(minutes=config.conf.run_order_delay)
+            if task := find_next_task(
+                self.tasks, task_type=TaskTypes.RUN_ORDER, meta_data=room
+            ):
+                task.time = task_time
+                logger.info(
+                    f"房间 {room} 无人机加速后接单时间为 {task_time.strftime('%H:%M:%S')}"
+                )
+                action_required_task = scheduling(self.tasks)
+            else:
+                break
+        return None
+
+    def _tap_drone_accelerate(
+        self,
+        accelerate_res: str,
+        all_in_res: str,
+        max_retry: int = 3,
+        interval: float = 1,
+    ) -> Optional[tp.Scope]:
+        """点击无人机加速按钮并确认加速面板打开，有界重试。
+
+        首次点击可能因界面未响应而未打开面板，此时仍停留在详情页；若不确认
+        all_in 出现就继续操作，会在详情页上误触。每次重试前重新识别加速按钮，
+        确认仍处于可点击的详情页后再点击。持续失败时抛出异常，让上层保留任务
+        并按既有策略退避，而不是把未执行的跑单当成已完成。
+        """
+        accelerate = self.find(accelerate_res)
+        for _ in range(max_retry):
+            if accelerate is None:
+                break
+            self.tap(accelerate, interval=interval)
+            all_in = self.find(all_in_res)
+            if all_in is not None:
+                return all_in
+            logger.debug(f"无人机加速面板未出现，重新识别 {accelerate_res} 后重试")
+            accelerate = self.find(accelerate_res)
+            if accelerate is None:
+                # 加速按钮消失通常意味着面板已打开：等一帧再确认 all_in，避免误判
+                self.sleep(0.5)
+                all_in = self.find(all_in_res)
+                if all_in is not None:
+                    return all_in
+                break
+        raise RecognizeError(f"无人机加速面板未出现：未识别到 {all_in_res}")
+
+    def drone(
+        self,
+        room: str,
+        not_customize=False,
+        not_return=False,
+        adjust_time=False,
+        skip_enter=False,
+    ):
+        logger.info("基建：无人机加速" if not adjust_time else "开始调整订单时间")
+        all_in = 0
+        if not not_customize:
+            all_in = len(self.op_data.run_order_rooms)
+        # 点击进入该房间
+        if not skip_enter:
+            self.enter_room(room)
+        # 进入房间详情
+
+        self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=3)
+        # 关闭掉房间总览
+        self._wait_drone_interface(interval=3)
+
+        accelerate = self.find("factory_accelerate")
+        if accelerate:
+            drone_count = self.digit_reader.get_drone(self.recog.gray)
+            logger.info(f"当前无人机数量为：{drone_count}")
+            if drone_count < config.conf.drone_count_limit:
+                logger.info(f"无人机数量小于{config.conf.drone_count_limit}->停止")
+                return
+            logger.info("制造站加速")
+            all_in_scope = self._tap_drone_accelerate("factory_accelerate", "all_in")
+            # 如果不是全部all in
+            if all_in > 0:
+                tap_times = (
+                    drone_count - config.conf.drone_count_limit
+                )  # 修改为无人机阈值
+                for _count in range(tap_times):
+                    self.tap((self.recog.w * 0.7, self.recog.h * 0.5), interval=0.1)
+            else:
+                self.tap(all_in_scope)
+            self.tap(accelerate, y_rate=1)
+        else:
+            accelerate = self.find("bill_accelerate")
+            while accelerate and not adjust_time:
+                logger.info("贸易站加速")
+                all_in_scope = self._tap_drone_accelerate("bill_accelerate", "all_in")
+                self.tap(all_in_scope)
+                self.tap((self.recog.w * 0.75, self.recog.h * 0.8))
+                if self.scene() in self.waiting_scene:
+                    if not self.waiting_solver():
+                        return
+                self.recog.update()
+                self.accept_order()
+                if not (
+                    self.drone_room is None
+                    or (
+                        self.drone_room == room and room in self.op_data.run_order_rooms
+                    )
+                ):
+                    break
+                if not_customize:
+                    drone_count = self.digit_reader.get_drone(self.recog.gray)
+                    logger.info(f"当前无人机数量为：{drone_count}")
+                    # 200 为识别错误
+                    if (
+                        drone_count < config.conf.drone_count_limit
+                        or drone_count == 201
+                    ):
+                        logger.info(
+                            f"无人机数量小于{config.conf.drone_count_limit}->停止"
+                        )
+                        break
+                accelerate = self.find("bill_accelerate")
+            if adjust_time:
+                return self.adjust_order_time(accelerate, room)
+        if not_return:
+            return
+        self.scene_graph_navigation(Scene.INFRA_MAIN)
+
+    # 用于制造站切换产物，请注意在调用该函数前有足够的无人机，并补足相应制造站产物，目前仅支持中级作战记录与赤金之间的切换
+    # def 制造站切换产物(self, room: str, 目标产物: str, not_customize=False, not_return=False):
+    #     # 点击进入该房间
+    #     self.enter_room(room)
+    #     while self.get_infra_scene() == 9:
+    #         time.sleep(1)
+    #         self.recog.update()
+    #     # 进入房间详情
+    #     self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=3)
+    #     # 关闭掉房间总览
+    #     error_count = 0
+    #     while self.find('factory_accelerate') is None:
+    #         if error_count > 5:
+    #             raise Exception('未成功进入制造详情界面')
+    #         self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=3)
+    #         error_count += 1
+    #     accelerate = self.find('factory_accelerate')
+    #     无人机数量 = self.digit_reader.get_drone(self.recog.gray, self.recog.h, self.recog.w)
+    #     if accelerate:
+    #         self.tap_element('factory_accelerate')
+    #         self.recog.update()
+    #         剩余制造加速总时间 = self.digit_reader.识别制造加速总剩余时间(self.recog.gray, self.recog.h, self.recog.w)
+    #         # logger.info(f'制造站 B{room[5]}0{room[7]} 剩余制造总时间为 {剩余制造加速总时间}')
+    #         时 = int(剩余制造加速总时间[0:3])
+    #         if 时 > 118: 当前产物 = '经验'
+    #         else:   当前产物 = '赤金'
+    #         if 当前产物 == 目标产物:
+    #             logger.info('返回基建主界面')
+    #             while self.get_infra_scene() != 201:
+    #                 if self.find('index_infrastructure') is not None:
+    #                     self.tap_element('index_infrastructure')
+    #                 elif self.find('12cadpa') is not None:
+    #                     self.device.tap((self.recog.w // 2, self.recog.h // 2))
+    #                 else:
+    #                     self.back()
+    #                 self.recog.update()
+    #         else:
+    #             logger.info(f'制造站 B{room[5]}0{room[7]} 当前产物为{当前产物}，切换产物为{目标产物}')
+    #             需要无人机数 = 0
+    #             while 需要无人机数 < 10:
+    #                 总分钟数 = int(剩余制造加速总时间[4:6]) + 60 * 时
+    #                 if 当前产物 == '赤金':
+    #                     需要无人机数 = (总分钟数 % 72) // 3 + 1
+    #                 elif 当前产物 == '经验':
+    #                     需要无人机数 = (总分钟数 % 180) // 3 + 1
+    #                 else:
+    #                     logger.warning('目前不支持该产物切换策略，尚待完善')
+    #                     logger.info('返回基建主界面')
+    #                     while self.get_infra_scene() != 201:
+    #                         if self.find('index_infrastructure') is not None:
+    #                             self.tap_element('index_infrastructure')
+    #                         elif self.find('12cadpa') is not None:
+    #                             self.device.tap((self.recog.w // 2, self.recog.h // 2))
+    #                         else:
+    #                             self.back()
+    #                         self.recog.update()
+    #                 if 需要无人机数 > 无人机数量 - 10:
+    #                     logger.warning(f'''
+    #                     切换产物需要无人机{需要无人机数}个，当前仅有{无人机数量}个，
+    #                     无法切换产物，建议该任务至少在{(需要无人机数 - 无人机数量 + 10) * 3.5 // 3}分钟后再执行
+    #                     ''')
+    #                     logger.info('返回基建主界面')
+    #                     while self.get_infra_scene() != 201:
+    #                         if self.find('index_infrastructure') is not None:
+    #                             self.tap_element('index_infrastructure')
+    #                         elif self.find('12cadpa') is not None:
+    #                             self.device.tap((self.recog.w // 2, self.recog.h // 2))
+    #                         else:
+    #                             self.back()
+    #                         self.recog.update()
+    #                 else:
+    #                     logger.warning(f'需要加无人机{需要无人机数}个')
+    #                     for 次数 in range(需要无人机数):
+    #                         self.tap((self.recog.w * 1320 // 1920, self.recog.h * 502 // 1080), interval=0.05)
+    #                     self.recog.update()
+    #                     剩余制造加速总时间 = self.digit_reader.识别制造加速总剩余时间(
+    #                         self.recog.gray, self.recog.h, self.recog.w)
+    #                     # logger.info(f'制造站 B{room[5]}0{room[7]} 剩余制造总时间为 {剩余制造加速总时间}')
+    #                 总分钟数 = int(剩余制造加速总时间[4:6]) + 60 * 时
+    #                 if 当前产物 == '赤金':
+    #                     需要无人机数 = (总分钟数 % 72) // 3 + 1
+    #                 elif 当前产物 == '经验':
+    #                     需要无人机数 = (总分钟数 % 180) // 3 + 1
+    #                 else:
+    #                     logger.warning('目前不支持该产物切换策略，尚待完善')
+    #                     logger.info('返回基建主界面')
+    #                     while self.get_infra_scene() != 201:
+    #                         if self.find('index_infrastructure') is not None:
+    #                             self.tap_element('index_infrastructure')
+    #                         elif self.find('12cadpa') is not None:
+    #                             self.device.tap((self.recog.w // 2, self.recog.h // 2))
+    #                         else:
+    #                             self.back()
+    #                         self.recog.update()
+    #             self.tap((self.recog.w * 3 // 4, self.recog.h * 4 // 5), interval=3)    # 确认加速
+    #             self.tap((self.recog.w * 9 // 10, self.recog.h // 2), interval=1)     # 点击当前产品
+    #             if 目标产物 == '经验':
+    #                 self.tap((self.recog.w // 2, self.recog.h // 2), interval=1)    # 点击中级作战记录
+    #             elif 目标产物 == '赤金':
+    #                 self.tap((self.recog.w // 10, self.recog.h // 3), interval=1)   # 进入贵金属分类
+    #                 self.tap((self.recog.w // 2, self.recog.h // 4), interval=1)    # 点击赤金
+    #             self.tap((self.recog.w * 3 // 4, self.recog.h * 2 // 7), interval=1)    # 点击最多
+    #             self.tap((self.recog.w * 3 // 4, self.recog.h * 5 // 6), interval=1)    # 确认数量
+    #             self.tap((self.recog.w * 3 // 4, self.recog.h * 7 // 10), interval=1)   # 确认更改
+
+    def get_order(self, name):
+        if name in self.op_data.operators:
+            return True, self.op_data.operators[name].arrange_order
+        else:
+            return False, ["技能", "false"]
+
+    def tap_confirm(self, room, new_plan=None):
+        if new_plan is None:
+            new_plan = {}
+        self.recog.update()
+        if (
+            room in self.op_data.run_order_rooms
+            and len(new_plan) == 1
+            and config.conf.run_order_buffer_time > 0
+        ):
+            wait_confirm = round(
+                (
+                    (self.task.time - datetime.now()).total_seconds()
+                    + config.conf.run_order_delay * 60
+                    - config.conf.run_order_buffer_time
+                ),
+                1,
+            )
+            if wait_confirm > 0:
+                logger.info(f"等待跑单 {str(wait_confirm)} 秒")
+                self.sleep(wait_confirm)
+        retry_count = 0
+        while self.find("confirm_blue") and retry_count < 4:
+            self.tap_element("confirm_blue")
+            self.sleep(0.5)
+            self.recog.update()
+            retry_count += 1
+        retry_count = 0
+        while self.find("confirm_train") and retry_count < 4:
+            self.tap_element("confirm_train")
+            self.sleep(0.5)
+            self.recog.update()
+            retry_count += 1
+        retry_count = 0
+        while self.find("arrange_confirm") and retry_count < 4:
+            _x0 = self.recog.w // 3 * 2  # double confirm
+            _y0 = self.recog.h - 10
+            self.tap((_x0, _y0))
+            self.sleep(0.5)
+            self.recog.update()
+            retry_count += 1
+
+    def _open_check_in_detail(self):
+        """#92：训练室主页面点 arrange_check_in（屏幕左侧 ~(101,441)）开进驻信息浮窗。
+
+        旧代码 tap((0.25w, 0.95h))=(480,1026)——该坐标在训练室落在左下角技能/进度
+        面板，弹出技能详情浮窗而非进驻信息浮窗（Scene -1 空转 7s 后出房重进）。
+        与 turn_on_room_detail 同源：找不到模板就 sleep 等动画重扫。
+        """
+        if pos := self.find("arrange_check_in"):
+            self.tap(pos, interval=0.5)
+        elif pos := self.find("arrange_check_in_small"):
+            self.tap(pos, interval=0.5)
+        else:
+            self.sleep()
+
+    def choose_train(self, agents: list[str], fast_mode=True):
+        tasks = ["scan"]
+        select_targets = []
+        unknown_cnt = 0
+        start_time = datetime.now()
+        while tasks:
+            if datetime.now() - start_time > timedelta(minutes=2):
+                raise Exception("选人流程超时，自动退出")
+            scene = self.scene()
+            if scene == Scene.UNKNOWN:
+                unknown_cnt += 1
+                if unknown_cnt > 5:
+                    unknown_cnt = 0
+                    self.back_to_infrastructure()
+                    self.enter_room("train")
+                else:
+                    self.sleep()
+                continue
+            elif scene == Scene.CONNECTING:
+                self.sleep(1)
+                continue
+            elif scene == Scene.INFRA_DETAILS and not self.find("room_detail"):
+                self._open_check_in_detail()
+                continue
+            elif scene == Scene.INFRA_MAIN:
+                self.enter_room("train")
+                continue
+            elif scene == Scene.INFRA_DETAILS and self.find("room_detail"):
+                if tasks[0] == "scan":
+                    scan_result = self.get_agent_from_room("train")
+                    logger.debug(f"需要选择的干员：{scan_result}")
+                    if len(scan_result) < len(agents):
+                        scan_result.extend([""] * (len(agents) - len(scan_result)))
+                    desired = list(agents)
+                    logger.debug(f"需要选择的desired干员：{desired}")
+                    for idx, name in enumerate(desired):
+                        if name == "Current":
+                            # #53：替换为实际干员名（scan_result[idx] 是 dict，不能直接当名字）
+                            desired[idx] = scan_result[idx]["agent"]
+                    select_targets = [
+                        (idx, desired_name)
+                        for idx, desired_name in enumerate(desired)
+                        if scan_result[idx]["agent"] != desired_name
+                    ]
+                    if not select_targets:
+                        tasks = []
+                        return
+                    # #211：训练位锁定判断已归调用方（gate 冻结 idx1 / 坐错人纠正
+                    # 用三态判空闲），choose_train 不再自查锁定，只执行换人。
+                    tasks[0] = "select"
+                    logger.debug(f"需要选择的干员：{select_targets}")
+                else:
+                    if not select_targets:
+                        tasks = []
+                        return
+                    idx = select_targets[0][0]
+                    self.ctap((self.recog.w * 0.82, self.recog.h * 0.18 * (idx + 1)))
+                continue
+            elif scene == Scene.TRAIN_FINISH:
+                self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=0.5)
+                continue
+            elif scene == Scene.TRAIN_MAIN:
+                self._open_check_in_detail()
+                continue
+            elif scene == Scene.INFRA_ARRANGE_ORDER:
+                logger.info(tasks)
+                if tasks[0] == "scan":
+                    self.back()
+                else:
+                    if not select_targets:
+                        tasks = []
+                        return
+                    logger.info(f"需要选择的干员：{select_targets}")
+                    idx = select_targets[0][0]
+                    if idx == 0:
+                        if agents[idx] == "Free":
+                            select_targets.pop(0)
+                            if select_targets:
+                                continue
+                            tasks[0] = "scan"
+                            continue
+                        # #53：选人用 desired[idx]（Current 已替换为实际干员名），
+                        # 不能用 agents[idx]——否则 Current 会被当干员名选人、必然失败
+                        self.choose_agent([desired[idx]], "train", fast_mode)
+                    else:
+                        self.choose_train_ope(desired[idx])
+                    self.tap_confirm("train")
+                    select_targets.pop(0)
+                    if select_targets:
+                        continue
+                    tasks[0] = "scan"
+            else:
+                self.back_to_infrastructure()
+
+    def choose_train_ope(self, ope: str):
+        found = False
+        profession = "ALL"
+        if ope != "阿米娅" and ope not in ["Current", "Free"]:
+            profession = agent_profession[ope]
+            self.profession_filter(profession)
+        if ope == "Free":
+            self.profession_filter("ALL")
+        first_ret = None
+        right_swipe = 0
+        max_swipe = 50
+        while not found:
+            sel, ret = self.scan_agent(
+                [ope] if ope != "Free" else self.get_free_list([]),
+                max_agent_count=1,
+                train=True,
+            )
+            if sel == [ope] or ope == "Free":
+                ope = sel[0]
+                found = True
+                break
+            if ret == first_ret and right_swipe >= 3:
+                max_swipe = right_swipe
+            else:
+                first_ret = ret
+            st = ret[-2][1][0]  # 起点
+            ed = ret[0][1][0]  # 终点
+            self.swipe_noinertia(st, (ed[0] - st[0], 0))
+            right_swipe += 1
+            if right_swipe >= 3:
+                self.sleep(0.3)
+            if right_swipe >= max_swipe:
+                break
+        right_swipe = self.swipe_left(right_swipe, special_filter=profession)
+        self.ctap((1280, 60), 0.3)
+        self.ctap((1280, 60), 0.3)
+        logger.debug("验证训练位干员选择")
+        if not self.verify_agent([ope], "train", train=True):
+            logger.debug([ope])
+            raise Exception("检测到干员选择错误，重新选择")
+        self.last_room = "train"
+
+    def get_free_list(self, agents: list[str] = None) -> list[str]:
+        free_list = [
+            v.name
+            for k, v in self.op_data.operators.items()
+            if v.name not in agents
+            and v.operator_type != "high"
+            and v.current_room == ""
+        ]
+        free_list.extend(
+            [
+                _name
+                for _name in agent_list
+                if _name not in self.op_data.operators.keys() and _name not in agents
+            ]
+        )
+        train_support = self.op_data.get_train_support()
+        # 获取所有要移除的字符串集合（排除 'Crueent'）
+        remove_set = set()
+        for key, value_list in self.task.plan.items():
+            remove_set.update(value_list)  # 加入所有列表中的元素
+        remove_set.discard("Current")
+        remove_set.discard("Free")
+        logger.debug(f"去除被安排的人员{remove_set}")
+        free_list = list(
+            set(free_list) - set(self.op_data.config.free_blacklist) - remove_set
+        )
+        if train_support in free_list:
+            free_list.remove(train_support)
+        if any(
+            name in self.op_data.operators
+            and not self.op_data.operators[name].is_workshop()
+            and self.op_data.operators[name].current_mood() <= 22
+            for name in free_list
+        ):
+            # The game sorts by mood, so list ordering alone cannot put crafters
+            # behind replacements. Exclude them from this free-slot selection.
+            free_list = [
+                name
+                for name in free_list
+                if name not in self.op_data.operators
+                or not self.op_data.operators[name].is_workshop()
+            ]
+        return free_list
+
+    def preserve_resting_crafters(self, agents, room):
+        """Resolve Free placeholders before UI selection can evict a crafter.
+
+        Reserve each qualifying replacement once. A generic Free selection must
+        not substitute an almost-full replacement for a recovering crafter.
+        """
+        if not room.startswith("dorm") or "Free" not in agents:
+            return
+        replacements = sorted(
+            (
+                self.op_data.operators[name]
+                for name in self.get_free_list(agents)
+                if name in self.op_data.operators
+                and not self.op_data.operators[name].is_workshop()
+                and self.op_data.operators[name].current_mood() <= 22
+            ),
+            key=lambda op: op.current_mood(),
+        )
+        for index, name in enumerate(agents):
+            if name != "Free":
+                continue
+            current = self.op_data.get_current_operator(room, index)
+            if (
+                current is None
+                or not current.is_workshop()
+                or current.current_mood() >= current.upper_limit
+                or current.name in agents
+            ):
+                continue
+            agents[index] = replacements.pop(0).name if replacements else current.name
+
+    def choose_agent(
+        self, agents: list[str], room: str, fast_mode=True, train_index=0
+    ) -> None:
+        """
+        :param order: ArrangeOrder, 选择干员时右上角的排序功能
+        """
+        first_name = ""
+        max_swipe = 50
+        position = [
+            (0.35, 0.35),
+            (0.35, 0.75),
+            (0.45, 0.35),
+            (0.45, 0.75),
+            (0.55, 0.35),
+        ]
+        # 空位置跳过安排
+        if "" in agents:
+            fast_mode = False
+            agents = [item for item in agents if item != ""]
+        self.preserve_resting_crafters(agents, room)
+        current_list = set()
+        for idx, n in enumerate(agents):
+            if n not in current_list:
+                current_list.add(n)
+            elif n != "Free":
+                agents[idx] = "Free"
+            if room.startswith("dorm") and agents[idx] in self.op_data.operators.keys():
+                __agent = self.op_data.operators[agents[idx]]
+                if __agent.mood == __agent.upper_limit and not __agent.room.startswith(
+                    "dorm"
+                ):
+                    agents[idx] = "Free"
+                    __agent.depletion_rate = 0
+                    logger.info("检测满心情释放休息位")
+                elif agents[idx] == "Free" and self.task.type != TaskTypes.RE_ORDER:
+                    if self.op_data.config.free_room:
+                        current_free = self.op_data.get_current_operator(room, idx)
+                        if (
+                            current_free
+                            and current_free.mood < current_free.upper_limit
+                        ):
+                            agents[idx] = current_free.name
+        agent = copy.deepcopy(agents)
+        exists = []
+        if fast_mode:
+            current_room = self.op_data.get_current_room(room, True)
+            # 如果空位置进房间会被向前挤
+            current_room = sorted(current_room, key=lambda x: x == "")
+            differences = []
+            for i in range(len(current_room)):
+                if current_room[i] not in agents:
+                    differences.append(i)
+                else:
+                    exists.append(current_room[i])
+            if room == "train":
+                differences = [x for x in differences if x == train_index]
+            for pos in differences:
+                if current_room[pos] != "":
+                    self.tap(
+                        (
+                            self.recog.w * position[pos][0],
+                            self.recog.h * position[pos][1],
+                        ),
+                        interval=0,
+                    )
+            agent = [x for x in agents if x not in exists]
+        logger.info(f"安排干员 ：{agent}")
+        # 若不是空房间，则清空工作中的干员
+        is_dorm = room.startswith("dorm")
+        not_production = not room.startswith("room")
+        first_time = True
+        # 在 agent 中 'Free' 表示任意空闲干员
+        free_num = agent.count("Free")
+        for i in range(agent.count("Free")):
+            agent.remove("Free")
+        index_change = False
+        pre_order = ["技能", False]
+        right_swipe = 0
+        retry_count = 0
+        selected = []
+        logger.debug(f"上次进入房间为：{self.last_room},本次房间为：{room}")
+        self.profession_filter()
+        if self.detect_arrange_order(room)[0] == "信赖值":
+            self.switch_arrange_order("工作状态", room)
+        siege = False  # 推进之王
+        last_special_filter = "ALL"
+        start_time, finish_time = datetime.now(), datetime.now()
+        while len(agent) > 0:
+            if retry_count > 1:
+                raise Exception("到达最大尝试次数 1次")
+            if right_swipe > max_swipe:
+                # 到底了则返回再来一次
+                self.choose_error.add(agent[0])
+                raise Exception("重试一次")
+            if first_time:
+                # 清空
+                if is_dorm:
+                    self.switch_arrange_order("心情", room, "true")
+                    pre_order = [3, "true"]
+                if not fast_mode:
+                    self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
+                changed, ret = self.scan_agent(
+                    agent, full_scan=last_special_filter == "ALL"
+                )
+                if changed:
+                    selected.extend(changed)
+                    if len(agent) == 0:
+                        break
+                    index_change = True
+
+            # 如果选中了人，则可能需要重新排序
+            if index_change or first_time:
+                # 第一次则调整
+                is_custom, arrange_type = self.get_order(agent[0])
+                if is_dorm and not (
+                    agent[0] in self.op_data.operators.keys()
+                    and self.op_data.operators[agent[0]].room.startswith("dormitory")
+                ):
+                    arrange_type = ("心情", "true")
+                # 如果重新排序则滑到最左边
+                if pre_order[0] != arrange_type[0] or pre_order[1] != arrange_type[1]:
+                    self.switch_arrange_order(arrange_type[0], room, arrange_type[1])
+                    # 滑倒最左边
+                    self.sleep(interval=0.5)
+                    if not siege:
+                        right_swipe = self.swipe_left(right_swipe, last_special_filter)
+                    pre_order = arrange_type
+            first_time = False
+            if (
+                not siege
+                and not is_dorm
+                and agent
+                and all(element in self.op_data.profession_filter for element in agent)
+            ):
+                siege = True
+                if agent[0] in self.op_data.profession_filter:
+                    profession = agent_profession[agent[0]]
+                    if last_special_filter != profession:
+                        self.profession_filter(profession)
+                        right_swipe = 0
+                    last_special_filter = profession
+            elif agent and agent[0] in agent_list:
+                if (is_dorm or not_production) and agent[0] != "阿米娅":
+                    # 在宿舍并且不是阿米娅则打开职介筛选
+                    profession = agent_profession[agent[0]]
+                    if last_special_filter != profession:
+                        self.profession_filter(profession)
+                        right_swipe = 0
+                        if index_change:
+                            self.switch_arrange_order("心情", room, "true")
+                    last_special_filter = profession
+                elif (
+                    (is_dorm or not_production)
+                    and agent[0] == "阿米娅"
+                    and last_special_filter != "ALL"
+                ):
+                    # 如果是阿米娅且filter 不是all
+                    self.profession_filter("ALL")
+                    right_swipe = 0
+                    last_special_filter = "ALL"
+                if (
+                    agent[0] in self.op_data.operators
+                    and self.op_data.operators[agent[0]].is_resting()
+                    and fast_mode
+                    and is_dorm
+                    and agent[0] != "阿米娅"
+                    and agent[0] not in self.choose_error
+                ):
+                    # 如果在休息，则直接翻最后:
+                    swipe_map = [20, 3, 5, 3, 3, 3, 3, 3, 3]
+                    skip_swipe_count = swipe_map[
+                        self.profession_labels.index(last_special_filter)
+                    ]
+                    for i in range(skip_swipe_count):
+                        self.swipe_noinertia(
+                            (0.8 * self.recog.w, 0.5 * self.recog.h),
+                            (-1900, 0),
+                            interval=0,
+                        )
+                    right_swipe = skip_swipe_count
+                    self.sleep(1)
+            changed, ret = self.scan_agent(
+                agent, full_scan=last_special_filter == "ALL"
+            )
+            if changed:
+                selected.extend(changed)
+                # 如果找到了
+                index_change = True
+                siege = False
+            else:
+                # 如果没找到 而且右移次数大于5
+                if ret[0][0] == first_name and right_swipe >= 3:
+                    max_swipe = right_swipe
+                else:
+                    first_name = ret[0][0]
+                index_change = False
+                st = ret[-2][1][0]  # 起点
+                ed = ret[0][1][0]  # 终点
+                self.swipe_noinertia(st, (ed[0] - st[0], 0))
+                right_swipe += 1
+                if right_swipe >= 3:
+                    self.sleep(0.3)
+            if len(agent) == 0:
+                if siege:
+                    if last_special_filter != "ALL":
+                        right_swipe = 0
+                break
+
+        # 安排空闲干员
+        if free_num:
+            if free_num == len(agents):
+                self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
+            if not first_time:
+                # 滑动到最左边
+                right_swipe = self.swipe_left(right_swipe, last_special_filter)
+            if last_special_filter != "ALL":
+                self.profession_filter("ALL")
+                last_special_filter = "ALL"
+                right_swipe = 0
+            self.switch_arrange_order("心情", room, "true")
+            # 只选择在列表里面的
+            # 替换组小于20才休息，防止进入就满心情进行网络连接
+            free_list = self.get_free_list(agents)
+            while free_num:
+                selected_name, ret = self.scan_agent(
+                    free_list,
+                    max_agent_count=free_num,
+                    full_scan=last_special_filter == "ALL",
+                )
+                selected.extend(selected_name)
+                free_num -= len(selected_name)
+                while len(selected_name) > 0:
+                    agents[agents.index("Free")] = selected_name[0]
+                    selected_name.remove(selected_name[0])
+                if free_num == 0:
+                    break
+                else:
+                    st = ret[-2][1][0]  # 起点
+                    ed = ret[0][1][0]  # 终点
+                    self.swipe_noinertia(st, (ed[0] - st[0], 0))
+                    right_swipe += 1
+        # 排序
+        if len(agents) != 1:
+            # 左移
+            right_swipe = self.swipe_left(right_swipe, last_special_filter)
+            self.switch_arrange_order("技能", room)
+            exists.extend(selected)
+            logger.info(exists)
+            click_order = []
+            for a in agents:
+                if a in exists:
+                    click_order.append(exists.index(a))
+                else:
+                    raise Exception("检测到干员选择错误，重新选择")
+            if click_order:
+                # 清空
+                self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
+                for p_idx in click_order:
+                    x = self.recog.w * position[p_idx][0]
+                    y = self.recog.h * position[p_idx][1]
+                    self.tap((x, y), interval=0)
+        logger.debug("验证干员选择..")
+        self.swipe_left(right_swipe, last_special_filter)
+        self.switch_arrange_order("技能", room)
+        finish_time = datetime.now()
+        if finish_time - start_time > timedelta(seconds=15) * len(agents):
+            # 如果超过5分钟，则所有里面的干员自动用职介筛选
+            for agent in agents:
+                if agent != "阿米娅" and agent:
+                    logger.debug(f"检测到{agent}选择时间过长，自动使用职介筛选")
+                    self.op_data.profession_filter.add(agent)
+        if not self.verify_agent(agents, room):
+            logger.debug(agents)
+            logger.debug(room)
+            raise Exception("检测到干员选择错误，重新选择")
+        self.last_room = room
+
+    def reset_room_time(self, room):
+        for _operator in self.op_data.operators.keys():
+            if self.op_data.operators[_operator].room == room:
+                self.op_data.operators[_operator].time_stamp = None
+
+    def turn_on_room_detail(self, room):
+        for enter_times in range(3):
+            for retry_times in range(10):
+                if pos := self.find("room_detail"):
+                    if all(self.get_color((1233, 1)) > [252] * 3):
+                        return
+                    logger.info("等待动画")
+                    self.sleep(interval=0.5)
+                elif pos := self.find("arrange_check_in"):
+                    self.tap(pos, interval=0.7)
+                elif pos := self.find("arrange_check_in_small"):
+                    self.tap(pos, interval=0.7)
+                else:
+                    self.sleep()
+            for back_time in range(3):
+                if pos := self.find("control_central"):
+                    break
+                self.back()
+            if not pos:
+                self.back_to_infrastructure()
+            self.enter_room(room)
+        self.reset_room_time(room)
+        raise Exception("未成功进入房间")
+
+    def get_agent_from_room(self, room, read_time_index=None):
+        if read_time_index is None:
+            read_time_index = []
+        if room == "meeting" and not self.leifeng_mode:
+            self.sleep(0.5)
+            self.recog.update()
+            clue_res = self.read_screen(
+                self.recog.img, limit=10, cord=((439, 987), (577, 1033))
+            )
+            if clue_res != 11:
+                self.clue_count = clue_res
+                logger.info(f"当前拥有线索数量为{self.clue_count}")
+        self.turn_on_room_detail(room)
+        # 如果是宿舍则全读取
+        if room.startswith("dorm"):
+            read_time_index = [
+                i
+                for i, obj in enumerate(self.op_data.plan[room])
+                if obj.agent == "Free" or obj.agent == "菲亚梅塔"
+            ]
+        while self.detect_product_complete():
+            logger.info("检测到产物收取提示")
+            self.sleep(1)
+        if room == "train":
+            length = len(self.op_data.plan.get(room, [None, None]))
+        else:
+            length = len(self.op_data.plan[room])
+        if length > 3:
+            while self.get_color((1800, 138))[0] > 51:
+                self.swipe(
+                    (self.recog.w * 0.8, self.recog.h * 0.5),
+                    (0, self.recog.h * 0.45),
+                    duration=500,
+                    interval=1,
+                )
+        name_x = (1288, 1869)
+        name_y = [(135, 326), (344, 535), (553, 744), (532, 723), (741, 932)]
+        name_p = [tuple(zip(name_x, y)) for y in name_y]
+        time_x = (1650, 1780)
+        time_y = [(270, 305), (480, 515), (690, 725), (668, 703), (877, 912)]
+        time_p = [tuple(zip(time_x, y)) for y in time_y]
+        mood_x = (1470, 1780)
+        mood_y = (219, 428, 637, 615, 823)
+        mood_y = [(y, y + 1) for y in mood_y]
+        mood_p = [tuple(zip(mood_x, y)) for y in mood_y]
+        result = []
+        swiped = False
+        for i in range(0, length):
+            if i >= 3 and not swiped:
+                while self.get_color((1800, 930))[0] > 51:
+                    self.swipe(
+                        (self.recog.w * 0.8, self.recog.h * 0.5),
+                        (0, -self.recog.h * 0.45),
+                        duration=500,
+                        interval=1,
+                    )
+                swiped = True
+            data = {}
+            if self.find("infra_no_operator", scope=name_p[i]):
+                _name = ""
+            else:
+                _name = self.read_screen(
+                    cropimg(self.recog.gray, name_p[i]), type="name"
+                )
+            _mood = 24
+            # 如果房间不为空
+            update_time = False
+            if _name != "":
+                if _name not in self.op_data.operators.keys() and _name in agent_list:
+                    self.op_data.add(Operator(_name, ""))
+
+                agent = self.op_data.operators[_name]
+                if (
+                    self.op_data.operators[_name].need_to_refresh(r=room)
+                    or (self.tasks and self.tasks[0].type == TaskTypes.SHIFT_ON)
+                    or i in read_time_index
+                ):
+                    _mood = self.read_accurate_mood(cropimg(self.recog.gray, mood_p[i]))
+                    update_time = True
+                else:
+                    _mood = self.op_data.operators[_name].current_mood()
+                high_no_time = self.op_data.update_detail(
+                    _name, _mood, room, i, update_time
+                )
+                data["depletion_rate"] = agent.depletion_rate
+                if high_no_time is not None and high_no_time not in read_time_index:
+                    logger.debug(
+                        f"检测到高效组休息时间数据不存在:{room},{high_no_time}"
+                    )
+                    read_time_index.append(high_no_time)
+            else:
+                _mood = -1
+            data["agent"] = _name
+            data["mood"] = _mood
+            if i in read_time_index and _name != "":
+                if _mood == 24 or room in ["meeting", "factory"] and not update_time:
+                    data["time"] = datetime.now()
+                else:
+                    logger.debug(f"开始记录时间:{room},{i}")
+                    data["time"] = self.double_read_time(
+                        time_p[i], use_digit_reader=True
+                    )
+                self.op_data.refresh_dorm_time(room, i, data)
+                logger.debug(f"停止记录时间:{str(data)}")
+            result.append(data)
+        for _operator in self.op_data.operators.keys():
+            if self.op_data.operators[
+                _operator
+            ].current_room == room and _operator not in [
+                res["agent"] for res in result
+            ]:
+                self.op_data.operators[_operator].current_room = ""
+                self.op_data.operators[_operator].current_index = -1
+                if (
+                    self.op_data.config.free_room
+                    and self.task is not None
+                    and self.task.type != TaskTypes.SHIFT_OFF
+                ):
+                    release_task = self.find_next_task(
+                        task_type=TaskTypes.RELEASE_DORM, meta_data=_operator
+                    )
+                    if release_task and self.task != release_task:
+                        self.tasks.remove(release_task)
+                logger.info(f"重设 {_operator} 至空闲")
+        return result
+
+    def refresh_current_room(self, room, current_index=None):
+        _current_room = self.op_data.get_current_room(room, current_index=current_index)
+        if _current_room is None:
+            self.get_agent_from_room(room)
+            _current_room = self.op_data.get_current_room(room, True)
+        return _current_room
+
+    def get_order_remaining_time(self):
+        self._wait_drone_interface()
+        # 订单剩余时间
+        execute_time = self.double_read_time(
+            self._run_order_time_region(),
+            use_digit_reader=True,
+        )
+        return round((execute_time - datetime.now()).total_seconds(), 1)
+
+    def current_room_changed(self, instance):
+        if not self.op_data.first_init:
+            logger.info(f"{instance.name} 房间变动")
+            ref_rooms = (
+                instance.refresh_order_room[1]
+                if instance.refresh_order_room[1]
+                else list(self.op_data.run_order_rooms.keys())
+            )
+            for ref_room in ref_rooms:
+                self.refresh_run_order_time(ref_room)
+            if (
+                instance.name in self.op_data.operators
+                and self.op_data.operators[instance.name].refresh_drained
+            ):
+                self.refresh_drained_time()
+
+    def refresh_drained_time(self):
+        logger.debug("刷新用尽倒计时")
+        solved = []
+        for agent in self.op_data.exhaust_agent:
+            if agent in solved:
+                continue
+            logger.debug(f"开始检查{agent}")
+            shift_off = self.find_next_task(
+                datetime.now() + timedelta(minutes=1),
+                task_type=TaskTypes.EXHAUST_OFF,
+                meta_data=agent,
+                compare_type=">",
+            )
+            if shift_off:
+                logger.info(f"移除 {shift_off.meta_data} 用尽下班任务以刷新时间")
+                exhausts = shift_off.meta_data.split(",")
+                solved.extend(exhausts)
+                self.tasks.remove(shift_off)
+                for o in exhausts:
+                    self.op_data.operators[o].time_stamp = None
+                self.task
+            else:
+                self.op_data.operators[agent].time_stamp = None
+        if solved:
+            self.tasks.append(
+                (
+                    SchedulerTask(
+                        time=datetime.now(),
+                        task_plan={},
+                        task_type=TaskTypes.NOT_SPECIFIC,
+                    )
+                )
+            )
+
+    def refresh_run_order_time(self, room):
+        logger.debug("检测到插拔房间人员变动！")
+        limit = 15
+        if run_order_task := self.find_next_task(
+            datetime.now() + timedelta(minutes=limit),
+            task_type=TaskTypes.RUN_ORDER,
+            meta_data=room,
+            compare_type=">",
+        ):
+            logger.info(f"移除超过{limit}分钟的跑单任务以刷新时间")
+            self.tasks.remove(run_order_task)
+        run_order_task = self.find_next_task(
+            datetime.now() + timedelta(minutes=limit),
+            task_type=TaskTypes.RUN_ORDER,
+            meta_data=room,
+            compare_type="<",
+        )
+        if run_order_task and run_order_task.time > datetime.now():
+            task_time = datetime.now()
+            if len(self.tasks) > 0 and self.tasks[0].type != TaskTypes.FIAMMETTA:
+                task_time = self.tasks[0].time - timedelta(seconds=1)
+            logger.info(f"移除{limit}分钟以内的跑单任务以强X刷新时间")
+            self.tasks.remove(run_order_task)
+            logger.info("新增强X刷新跑单时间任务")
+            self.tasks.append(
+                (
+                    SchedulerTask(
+                        time=task_time,
+                        task_plan={},
+                        task_type=TaskTypes.REFRESH_TIME,
+                        meta_data=room,
+                    )
+                )
+            )
+
+    def agent_arrange_room(
+        self, new_plan, room, plan, skip_enter=False, get_time=False
+    ):
+        finished = False
+        choose_error = 0
+        checked = False
+        while not finished:
+            try:
+                error_count = 0
+                if not skip_enter:
+                    self.enter_room(room)
+                    if room == "train":
+                        # #74 gate L0 先读再判：删除「DB active 就跳过」的预判（原
+                        # base_schedule.py:3257 死锁——DB 是意图缓存可能过期，排班一进门
+                        # 就因 DB active 整房跳过、永不读屏幕、永不修正 DB → 重启后训练室
+                        # 僵住，违背「截图为准」铁律）。现在一律先进房读屏幕，截图权威更新
+                        # DB，再按锁定/保护判定跳过/冻结；空闲×未保护正常安排。
+                        from arknights_mower.solvers.mastery_reader import (
+                            _compute_protected,
+                            read_room_state,
+                            reconcile_short,
+                        )
+
+                        try:
+                            room_state = read_room_state(self, enter=False)
+                        except Exception as e:
+                            logger.warning(f"训练室状态读取失败: {e}")
+                            room_state = None
+                        if room_state is not None and config.conf.enable_mastery:
+                            # #61 短动作排班路径内联：顺路核实/帮收/重置/更新状态，并据截图
+                            # 修正 DB（空闲×DB active 冲突 → 重置 idle，以截图为准）。不
+                            # 开始训练；退出训练室由本 gate 的跳过/冻结分支统一负责。
+                            # #75 方案 C：defer_collect=True——待收取格若队列已有任一
+                            # 专精任务则跳过收集（留给队列任务收，避免残留任务空闲房
+                            # 触发开始训练）；队列空时照常收集兜底。
+                            collected = False
+                            try:
+                                # #210：返回是否收集——收集后房间物理变空闲（面板全空），
+                                # gate 用 ① 的槽位 + 状态设空闲 + 按空闲规则重算保护，
+                                # 不再重读 read_room_state；没收集时状态/保护都没变。
+                                collected = reconcile_short(
+                                    self, room_state, defer_collect=True
+                                )
+                            except Exception as e:
+                                logger.warning(f"训练室顺路更新状态失败: {e}")
+                            if room_state.state == "waiting_collect" and collected:
+                                if room_state.slots_read:
+                                    # ① 在 TRAIN_MAIN 读过槽位（收集不挪人）→ 复用 +
+                                    # 状态设空闲 + 按空闲规则重算保护（深读保留）
+                                    room_state.state = "empty"
+                                    room_state.protected = _compute_protected(
+                                        self, room_state
+                                    )
+                                else:
+                                    # ① 在 TRAIN_FINISH 横幅页首次进房，未读槽位 →
+                                    # 收集后面板回到主页面，重读拿进驻数据 + 保护
+                                    try:
+                                        room_state = read_room_state(self, enter=False)
+                                    except Exception:
+                                        room_state = None
+                        # §16.5 保护检查：locked（训练中/待收取）、protected（逻各斯/艾丽妮
+                        # 保护训练室）或读失败（room_state=None）都算「不能排班」→ 冻结/
+                        # 跳过（#211：读失败保守不碰训练位，替代已删除的 train_slot_locked）。
+                        if (
+                            room_state is None
+                            or room_state.locked
+                            or room_state.protected
+                        ):
+                            if config.conf.assistant_follows_schedule:
+                                if len(plan[room]) > 1:
+                                    plan[room][1] = "Current"
+                            else:
+                                del plan[room]
+                                self.back()
+                                return new_plan
+                self.turn_on_room_detail(room)
+                error_count = 0
+                if not checked:
+                    if (
+                        any(
+                            any(char in item for item in plan[room])
+                            for char in TRADE_ORDER_AGENTS
+                        )
+                        and not room.startswith("dormitory")
+                        and room != "train"
+                    ):
+                        new_plan[room] = self.refresh_current_room(room)
+                    if "菲亚梅塔" in plan[room] and len(plan[room]) == 2:
+                        new_plan[room] = self.refresh_current_room(room)
+                        working_room = self.op_data.operators[plan[room][0]].room
+                        new_plan[working_room] = self.op_data.get_current_room(
+                            working_room, True
+                        )
+                    if "Current" in plan[room] or "" in plan[room]:
+                        self.refresh_current_room(
+                            room,
+                            [
+                                index
+                                for index, value in enumerate(plan[room])
+                                if value == "Current"
+                            ],
+                        )
+                        _current_room = self.op_data.get_current_room(room, True)
+                        for current_idx, _name in enumerate(plan[room]):
+                            if _name == "Current":
+                                plan[room][current_idx] = (
+                                    _current_room[current_idx]
+                                    if _current_room[current_idx] != ""
+                                    else "Free"
+                                )
+                            if _name == "":
+                                plan[room][current_idx] = "Free"
+                    if (
+                        room in self.op_data.run_order_rooms
+                        and len(new_plan) == 0
+                        and self.task.type != TaskTypes.RUN_ORDER
+                    ):
+                        if plan[room] != self.op_data.get_current_room(room):
+                            self.refresh_run_order_time(room)
+                checked = True
+                current_room = self.op_data.get_current_room(room, True)
+                same = len(plan[room]) == len(current_room)
+                if same:
+                    for item1, item2 in zip(plan[room], current_room):
+                        if item1 != item2:
+                            same = False
+                if not same:
+                    # choose_error <= 0 选人如果失败则马上重新选过
+                    if (
+                        len(new_plan) == 1
+                        and config.conf.run_order_buffer_time > 0
+                        and choose_error <= 0
+                    ):
+                        remaining_time = self.get_order_remaining_time()
+                        if 0 < remaining_time < (config.conf.run_order_delay + 10) * 60:
+                            if config.conf.run_order_buffer_time > 0:
+                                self.task.time = (
+                                    datetime.now()
+                                    + timedelta(seconds=remaining_time)
+                                    - timedelta(minutes=config.conf.run_order_delay)
+                                )
+                                logger.info(f"订单倒计时 {remaining_time}秒")
+                                self.back()
+                                self.turn_on_room_detail(room)
+                        elif self.task.adjusted:
+                            self.back()
+                            self.turn_on_room_detail(room)
+                        else:
+                            logger.info("检测到漏单")
+                            send_message("检测到漏单！", level="WARNING")
+                            self.reset_room_time(room)
+                            raise Exception("检测到漏单！")
+                    if room == "train":
+                        # #59：idx1 冻结已在 gate L1 按锁定状态处理好（Current），
+                        # 不再依赖 find_next_task(SKILL_UPGRADE) 的脆弱信号。
+                        self.choose_train(plan[room], choose_error <= 0)
+                    else:
+                        while self.find("confirm_blue") is None:
+                            if error_count > 3:
+                                raise Exception("未成功进入干员选择界面")
+                            self.ctap((self.recog.w * 0.82, self.recog.h * 0.2))
+                            error_count += 1
+                        self.choose_agent(plan[room], room, choose_error <= 0)
+                        self.tap_confirm(room, new_plan)
+                    read_time_index = []
+                    if get_time:
+                        read_time_index = self.op_data.get_refresh_index(
+                            room, plan[room]
+                        )
+                    if len(new_plan) > 1:
+                        self.op_data.operators["菲亚梅塔"].time_stamp = None
+                        self.op_data.operators[plan[room][0]].time_stamp = None
+                    current = self.get_agent_from_room(room, read_time_index)
+                    for idx, name in enumerate(plan[room]):
+                        if current[idx]["agent"] != name and name != "Free":
+                            if not (room == "train" and idx == 1):
+                                logger.error(
+                                    f"检测到的干员{current[idx]['agent']},需要安排的干员{name}"
+                                )
+                                raise Exception("检测到安排干员未成功")
+                else:
+                    logger.info(f"任务与当前房间相同，跳过安排{room}人员")
+                finished = True
+                skip_enter = False
+                # 如果完成则移除该任务
+                del plan[room]
+                # back to 基地主界面
+                if self.scene() in self.waiting_scene:
+                    if not self.waiting_solver():
+                        return
+            except MowerExit:
+                raise
+            except Exception as e:
+                save_exception(e)
+                logger.exception(e)
+                choose_error += 1
+                self.recog.update()
+                if "检测到漏单！" in str(e):
+                    return {}
+                if choose_error > 3:
+                    raise e
+                if "检测到安排干员未成功" in str(e):
+                    skip_enter = True
+                    continue
+                back_count = 0
+                while self.scene() != Scene.INFRA_MAIN:
+                    self.back(interval=0.5)
+                    back_count += 1
+                    if back_count > 3:
+                        raise e
+                continue
+        if len(new_plan) != 1:
+            self.back(0.5)
+        else:
+            if config.conf.run_order_buffer_time <= 0:
+                self.back(0.5)
+        return new_plan
+
+    def accept_order(self):
+        wait = 0
+        # 等待订单完成
+        while self.find("order_ready", scope=((450, 675), (600, 750))) is None:
+            if wait > 6:
+                break
+            self.recog.update()
+            self.sleep(0.5)
+            wait += 1
+        not_take = True
+        while self.find("order_ready", scope=((450, 675), (600, 750))) is not None:
+            if not_take:
+                self.recog.save_screencap("run_order")
+                self.order_reader.save(self.recog.img)
+                not_take = False
+            self.tap((self.recog.w * 0.25, self.recog.h * 0.25), interval=0.5)
+
+    def agent_arrange(self, plan: tp.BasePlan, get_time=False):
+        logger.info("基建：排班")
+        rooms = list(plan.keys())
+        # 保存原班：#907 无人机加速失败时恢复，避免任务以空 plan 在下一轮被误消费
+        original_plan = (
+            copy.deepcopy(plan) if self.task.type == TaskTypes.RUN_ORDER else None
+        )
+        new_plan = {}
+        # 优先替换工作站再替换宿舍
+        rooms.sort(
+            key=lambda x: (
+                x.startswith("dormitory_"),
+                int(x.split("_")[1]) if x.startswith("dormitory_") else 0,
+            )
+        )
+        for room in rooms:
+            new_plan = self.agent_arrange_room(new_plan, room, plan, get_time=get_time)
+        if len(new_plan) == 1 and room != "train":
+            if config.conf.run_order_buffer_time <= 0 or self.task.adjusted:
+                if self.task.adjusted:
+                    logger.info("检测到跑单已调整，强制使用无人机跑单")
+                logger.info("开始插拔")
+                try:
+                    self.drone(room, not_customize=True)
+                except Exception:
+                    # #907：无人机加速失败时恢复原班，避免任务以空 plan 在下轮被误消费
+                    if original_plan is not None:
+                        self.task.plan = original_plan
+                    raise
+            else:
+                # 葛朗台跑单模式
+                self._wait_drone_interface()
+                # 订单剩余时间
+                execute_time = self.double_read_time(
+                    self._run_order_time_region(),
+                    use_digit_reader=True,
+                )
+                wait_time = round((execute_time - datetime.now()).total_seconds(), 1)
+                logger.debug(f"停止{wait_time}秒等待订单完成")
+                if 0 < wait_time < config.conf.run_order_delay * 60:
+                    logger.info(f"停止{wait_time}秒等待订单完成")
+                    self.sleep(wait_time)
+                    # 等待服务器交互
+                    if self.scene() in self.waiting_scene:
+                        if not self.waiting_solver():
+                            return
+                else:
+                    logger.info("检测到漏单")
+                    save_exception(Exception("检测到漏单"))
+                    send_message("检测到漏单！", level="WARNING")
+                self.accept_order()
+                if self.drone_room is None or (
+                    self.drone_room == room and room in self.op_data.run_order_rooms
+                ):
+                    drone_count = self.digit_reader.get_drone(self.recog.gray)
+                    logger.info(f"当前无人机数量为：{drone_count}")
+                    if drone_count >= config.conf.drone_count_limit:
+                        self.drone(
+                            room, not_return=True, not_customize=True, skip_enter=True
+                        )
+                if config.conf.run_order_buffer_time > 0:
+                    while self.find("bill_accelerate") is not None:
+                        self.back(interval=0.5)
+                else:
+                    self.back(interval=0.5)
+                    self.back(interval=0.5)
+            # 防止由于意外导致的死循环
+            run_order_room = next(iter(new_plan))
+            if any(
+                any(char in item for item in new_plan[run_order_room])
+                for char in TRADE_ORDER_AGENTS
+            ):
+                new_plan[run_order_room] = [
+                    data.agent for data in self.op_data.plan[room]
+                ]
+            if config.conf.run_order_buffer_time > 0:
+                self.agent_arrange_room({}, run_order_room, new_plan, skip_enter=True)
+            else:
+                self.tasks.append(
+                    SchedulerTask(
+                        time=self.tasks[0].time,
+                        task_plan=new_plan,
+                        task_type=TaskTypes.RUN_ORDER,
+                    )
+                )
+                self.skip()
+        elif len(new_plan) > 1:
+            self.tasks.append(
+                SchedulerTask(
+                    time=self.tasks[0].time,
+                    task_plan=new_plan,
+                    task_type=TaskTypes.FIAMMETTA,
+                )
+            )
+            # 急速换班
+            self.skip()
+        logger.info("返回基建主界面")
+
+    def skip(self, task_names="All"):
+        if task_names == "All":
+            task_names = ["planned", "collect_notification", "todo_task"]
+        if "planned" in task_names:
+            self.planned = True
+        if "todo_task" in task_names:
+            self.todo_task = True
+        if "collect_notification" in task_names:
+            self.collect_notification = True
+
+    def no_pending_task(self, minute=0):
+        return self.find_next_task(datetime.now() + timedelta(minutes=minute)) is None
+
+    def reload(self):
+        error = False
+        for room in self.reload_room:
+            try:
+                logger.info(f"开始搓玉补货:{room}")
+                self.enter_room(room)
+                self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=0.25)
+                self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=0.25)
+                self.tap((self.recog.w * 0.05, self.recog.h * 0.95), interval=0.25)
+                # 补货
+                self.tap((self.recog.w * 0.75, self.recog.h * 0.3), interval=0.5)
+                self.tap((self.recog.w * 0.75, self.recog.h * 0.9), interval=0.5)
+                if self.scene() in self.waiting_scene:
+                    if not self.waiting_solver():
+                        return
+                self.scene_graph_navigation(Scene.INFRA_MAIN)
+            except MowerExit:
+                raise
+            except Exception as e:
+                save_exception(e)
+                logger.exception(e)
+                error = True
+                self.recog.update()
+                back_count = 0
+                while self.scene() != Scene.INFRA_MAIN:
+                    self.back()
+                    back_count += 1
+                    if back_count > 3:
+                        raise e
+        if not error:
+            self.reload_time = datetime.now()
+
+    @CFUNCTYPE(None, c_int, c_char_p, c_void_p)
+    def log_maa(msg, details, arg):
+        m = Message(msg)
+        d = json.loads(details.decode("utf-8"))
+        logger.debug(d)
+        logger.debug(m)
+        logger.debug(arg)
+        if "what" in d and d["what"] == "StageDrops":
+            global stage_drop
+            stage_drop["details"].append(d["details"]["drops"])
+            stage_drop["summary"] = d["details"]["stats"]
+
+        elif "what" in d and d["what"] == "RecruitTagsSelected":
+            global recruit_tags_selected
+            recruit_tags_selected["tags"].append(d["details"]["tags"])
+
+        elif "what" in d and d["what"] == "RecruitResult":
+            global recruit_results
+            temp_dict = {
+                "tags": d["details"]["tags"],
+                "level": d["details"]["level"],
+                "result": d["details"]["result"],
+            }
+            recruit_results["results"].append(temp_dict)
+
+        elif "what" in d and d["what"] == "RecruitSpecialTag":
+            global recruit_special_tags
+            recruit_special_tags["tags"].append(d["details"]["tags"])
+        # elif d.get("what") == "DepotInfo" and d["details"].get("done") is True:
+        #     logger.info(f"开始扫描仓库（MAA）")
+        #     process_itemlist(d)
+
+    def initialize_maa(self):
+        if os.environ.get("MOWER_ANDROID") == "1":
+            from mower_android.maa import Asst
+            # This callback only logs the numeric message; no desktop DLL is used.
+            globals()["Message"] = int
+            config.stop_maa.clear()
+            self.MAA = Asst(callback=self.log_maa)
+            self.stages = []
+            if not self.MAA.connect():
+                raise RuntimeError("安卓 MAA 引擎未连接")
+            return
+        config.stop_maa.clear()
+        conf = config.conf
+        path = pathlib.Path(resolve_config_path(conf.maa_path))
+        asst_path = os.path.dirname(path / "Python" / "asst")
+        if asst_path not in sys.path:
+            sys.path.append(asst_path)
+        global Message
+
+        try:
+            from asst.asst import Asst
+            from asst.utils import InstanceOptionType, Message
+
+            logger.info("MAA Python模块导入成功")
+        except Exception as e:
+            save_exception(e)
+            logger.exception(f"MAA Python模块导入失败：{str(e)}")
+            raise Exception("MAA Python模块导入失败")
+
+        try:
+            logger.debug("开始更新MAA活动关卡导航……")
+            ota_tasks_url = (
+                "https://api.maa.plus/MaaAssistantArknights/api/resource/tasks.json"
+            )
+            ota_tasks_path = path / "cache" / "resource" / "tasks.json"
+            ota_tasks_path.parent.mkdir(parents=True, exist_ok=True)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
+            }
+            with requests.get(ota_tasks_url, headers=headers, timeout=60) as response:
+                response.raise_for_status()
+                res = response.content.decode("utf-8")
+            with open(ota_tasks_path, "w", encoding="utf-8") as f:
+                f.write(res)
+            logger.info("MAA活动关卡导航更新成功")
+        except Exception as e:
+            logger.error(f"MAA活动关卡导航更新失败：{str(e)}")
+            save_exception(e)
+
+        Asst.load(path=path, incremental_path=path / "cache")
+
+        self.MAA = Asst(callback=self.log_maa)
+        self.stages = []
+        self.MAA.set_instance_option(
+            InstanceOptionType.touch_type, conf.maa_touch_option
+        )
+        if self.MAA.connect(
+            resolve_config_path(conf.maa_adb_path),
+            self.device.client.device_id,
+            conf.maa_conn_preset,
+        ):
+            logger.info("MAA 连接成功")
+        else:
+            logger.info("MAA 连接失败")
+            raise Exception("MAA 连接失败")
+
+    def append_maa_task(self, type):
+        if type == "StartUp":
+            self.MAA.append_task("StartUp", {"client_type": _maa_client_type()})
+        elif type == "Fight":
+            self.maybe_switch_expired_activity_plan()
+            conf = config.conf
+            server_weekday = get_server_weekday()
+            _plan = conf.maa_weekly_plan[server_weekday]
+            logger.info(f"现在服务器是{_plan.weekday}")
+            medicine_expire_days = 0
+            if conf.medicine_expire_days > 0:
+                if conf.expiring_medicine_on_weekend:
+                    medicine_expire_days = (
+                        conf.medicine_expire_days if server_weekday >= 5 else 0
+                    )
+                else:
+                    medicine_expire_days = conf.medicine_expire_days
+            stages = self.apply_maa_stage_inventory_rules(_plan.stage)
+            for stage in stages:
+                logger.info(f"添加关卡:{stage}")
+                self.MAA.append_task(
+                    "Fight",
+                    {
+                        # 空值表示上一次
+                        # 'stage': '',
+                        "stage": stage,
+                        "medicine": _plan.medicine,
+                        "stone": 999 if conf.maa_eat_stone else 0,
+                        "times": 999,
+                        "series": 0,
+                        "report_to_penguin": True,
+                        "client_type": _maa_client_type(),
+                        "penguin_id": conf.maa_penguin_id,
+                        "DrGrandet": False,
+                        "server": "CN",
+                        "medicine_expire_days": medicine_expire_days,
+                        "report_to_yituliu": conf.maa_report_to_yituliu,
+                        "yituliu_id": conf.maa_yituliu_id,
+                    },
+                )
+                self.stages.append(stage)
+
+        elif type == "Mall":
+            conf = config.conf
+            self.MAA.append_task(
+                "Mall",
+                {
+                    "shopping": True,
+                    "buy_first": conf.maa_mall_buy.split(","),
+                    "blacklist": conf.maa_mall_blacklist.split(","),
+                    "credit_fight": conf.maa_credit_fight
+                    and "" not in self.stages
+                    and self.credit_fight is None,
+                    "formation_index": max(0, min(4, conf.credit_fight.squad)),
+                    "force_shopping_if_credit_full": conf.maa_mall_ignore_blacklist_when_full,
+                    "visit_friends": conf.visit_friend_enable
+                    and conf.visit_friend_mode == "maa",
+                    "only_buy_discount": conf.maa_mall_only_buy_discount,
+                    "reserve_max_credit": conf.maa_mall_reserve_max_credit,
+                },
+            )
+        elif type == "Award":
+            self.MAA.append_task(
+                "Award",
+                {
+                    "award": True,
+                    "mail": config.conf.maa_mail,
+                    "recruit": config.conf.maa_recruit,
+                    "orundum": config.conf.maa_orundum,
+                    "mining": config.conf.maa_mining,
+                    "specialaccess": config.conf.maa_specialaccess,
+                },
+            )
+
+    def maybe_switch_expired_activity_plan(self):
+        """刷理智实际选关前，根据活动方案的切换时间更新周计划。"""
+        try:
+            from arknights_mower.utils.config.weekly_plan_loader import (
+                get_weekly_plan_manager,
+            )
+
+            return get_weekly_plan_manager().maybe_switch_expired_activity_plan()
+        except Exception:
+            logger.exception("检测活动结束并切换刷理智周计划失败，继续使用当前方案")
+            return None
+
+    def maa_stop(self, stop=True):
+        if stop:
+            self.MAA.stop()
+        logger.debug(stage_drop)
+        # 有掉落东西再发
+        if stage_drop["details"] and not self.drop_send:
+            send_message(
+                maa_template.render(stage_drop=stage_drop),
+                "MAA停止",
+            )
+            self.drop_send = True
+
+    def restore_maa_theme(self):
+        """本轮 MAA 任务收尾时恢复指定主题，为下次调度预留时间。"""
+        conf = config.conf
+        if not conf.maa_restore_theme_enable or self.MAA is None:
+            return
+        theme = conf.maa_restore_theme.strip()
+        if not theme:
+            logger.warning("未选择目标主题，跳过恢复主题")
+            return
+        if config.stop_maa.is_set() or config.stop_mower.is_set():
+            return
+
+        queued = False
+        try:
+            version = self.MAA.get_version()
+            try:
+                supported = Version(version) >= Version("6.17.3")
+            except InvalidVersion:
+                supported = False
+            if not supported:
+                logger.warning(
+                    f"恢复主题需要 MAA v6.17.3 或更高版本，当前为 {version}，跳过恢复"
+                )
+                return
+
+            deadline = min(
+                datetime.now() + timedelta(seconds=120),
+                self.tasks[0].time - timedelta(seconds=5),
+            )
+            if (deadline - datetime.now()).total_seconds() < 10:
+                logger.info("距离下次调度时间过近，跳过恢复主题")
+                return
+
+            # 大型任务可能被调度器中断；清空原队列后只运行恢复任务。
+            self.MAA.stop()
+            if config.stop_maa.is_set() or config.stop_mower.is_set():
+                return
+            task_id = self.MAA.append_task("SwitchTheme", {"themes": [theme]})
+            if not task_id:
+                logger.warning("添加恢复主题任务失败，请检查 MAA 核心及配套资源版本")
+                return
+            queued = True
+            if not self.MAA.start():
+                logger.warning("恢复主题任务启动失败")
+                return
+            logger.info(f"开始恢复游戏主题：{theme}")
+            while self.MAA.running():
+                if config.stop_maa.is_set():
+                    logger.info("收到停止指令，停止恢复主题")
+                    return
+                if (
+                    datetime.now() >= deadline
+                    or (self.tasks[0].time - datetime.now()).total_seconds() <= 5
+                ):
+                    logger.warning("恢复主题超时或即将开始下次调度，停止恢复")
+                    return
+                csleep(1)
+            logger.info("恢复主题任务结束，具体切换结果请查看 MAA 日志")
+        except MowerExit:
+            raise
+        except Exception:
+            logger.exception("恢复主题失败，继续原定调度")
+        finally:
+            if queued:
+                self.MAA.stop()
+                self.recog.reset_after_external_control()
+
+    def maa_plan_solver(self, tasks="All", one_time=False):
+        """清日常"""
+        try:
+            self.drop_send = False
+            restore_theme = False
+            conf = config.conf
+            if (
+                not one_time
+                and self.last_execution["maa"] is not None
+                and (
+                    delta := (
+                        timedelta(hours=conf.maa_gap)
+                        + self.last_execution["maa"]
+                        - datetime.now()
+                    )
+                )
+                > timedelta()
+            ):
+                logger.info(f"{format_time(delta.total_seconds())}后开始做日常任务")
+            else:
+                send_message("启动MAA")
+                self.back_to_index()
+                # 任务及参数请参考 docs/集成文档.md
+                self.initialize_maa()
+                if tasks == "All":
+                    tasks = ["StartUp", "Fight", "Mall", "Award"]
+                for maa_task in tasks:
+                    self.append_maa_task(maa_task)
+                self.MAA.start()
+                stop_time = None
+                if one_time:
+                    stop_time = datetime.now() + timedelta(minutes=5)
+                else:
+                    global stage_drop
+                    stage_drop = {"details": [], "summary": {}}
+
+                logger.info("MAA 启动")
+                hard_stop = False
+                while self.MAA.running():
+                    logger.info("MAA 运行中...")
+                    self.recog.update()
+                    self.recog.save_screencap(None)
+                    # 单次任务默认5分钟
+                    if one_time and stop_time < datetime.now():
+                        self.maa_stop()
+                        hard_stop = True
+                    # 5分钟之前就停止
+                    elif (
+                        not one_time
+                        and (self.tasks[0].time - datetime.now()).total_seconds() < 300
+                    ):
+                        self.maa_stop()
+                        hard_stop = True
+                    elif config.stop_maa.is_set():
+                        self.maa_stop()
+                        hard_stop = True
+                    else:
+                        self.sleep(5)
+                # MAA 运行期间只保存截图，没有连续执行 Mower 场景识别。
+                self.recog.reset_after_external_control()
+                restore_theme = not hard_stop
+                if hard_stop:
+                    hard_stop_msg = "MAA任务未完成，等待3分钟"
+                    logger.info(hard_stop_msg)
+                    send_message(hard_stop_msg)
+                    self.sleep(180)
+                    self.device.exit()
+                    if self.device.check_current_focus():
+                        self.recog.update()
+                elif not one_time:
+                    logger.info("记录MAA 本次执行时间")
+                    self.last_execution["maa"] = datetime.now()
+                    logger.info(self.last_execution["maa"])
+                    if "Mall" in tasks and self.credit_fight is None:
+                        self.credit_fight = get_server_weekday()
+                        logger.info("记录首次信用作战")
+                        self.maa_stop(False)
+                else:
+                    send_message("MAA单次任务停止")
+                    if (
+                        self.find_next_task(datetime.now() + timedelta(minutes=15))
+                        is None
+                    ):
+                        logger.debug(
+                            "MAA单次任务结束15分钟内没有其他任务，新增单次任务防止漏单"
+                        )
+                        self.tasks.insert(0, SchedulerTask(time=datetime.now()))
+            conf = config.conf
+            now_time = datetime.now().time()
+            try:
+                min_time = datetime.strptime(conf.maa_rg_sleep_min, "%H:%M").time()
+                max_time = datetime.strptime(conf.maa_rg_sleep_max, "%H:%M").time()
+                if max_time < min_time:
+                    rg_sleep = now_time > min_time or now_time < max_time
+                else:
+                    rg_sleep = min_time < now_time < max_time
+            except ValueError:
+                rg_sleep = False
+            if (conf.RG or conf.SSS or conf.RCL) and not rg_sleep:
+                logger.info("准备开始：肉鸽/保全/盐酸")
+                send_message("启动 肉鸽/保全/盐酸")
+                while True:
+                    restore_theme = False
+                    self.MAA = None
+                    self.initialize_maa()
+                    self.recog.reset_after_external_control()
+                    self.back_to_index()
+                    if conf.RG:
+                        # Roguelike 通用字段按协议条件下发（#264）：投资类字段仅在
+                        # investment_enabled 时下发（值内联各自的策略/主题限制，与 MAA 一致），
+                        # stop_at_final_boss 除 Phantom 外可用且仅策略 0 下发，
+                        # expected_collapsal_paradigms 仅 Sami + 策略 5 且列表非空时下发，
+                        # 烧水字段仅策略 4 下发，勾选「只凹开局干员直升精二」时
+                        # 撤销 collectible_mode_start_list，指路鳞的值内联 Mizuki 限制。
+                        # 月度小队/深入调查字段仅策略 6/7 下发（通信检查需先勾自动切换），
+                        # first_floor_foldartal 与 start_foldartal_list 仅 Sami + 策略 4
+                        # （板子列表另限生活至上分队），黑流树海字段仅刷襁褓动物模式下发，
+                        # find_playTime_target 仅界园刷常乐节点模式下发。
+                        professional = conf.rogue.squad in _PROFESSIONAL_SQUADS
+                        rogue_params = {
+                            "theme": conf.maa_rg_theme,
+                            "squad": conf.rogue.squad,
+                            "roles": conf.rogue.roles,
+                            "core_char": conf.rogue.core_char,
+                            "use_support": conf.rogue.use_support,
+                            "use_nonfriend_support": conf.rogue.use_nonfriend_support,
+                            "mode": conf.rogue.mode,
+                            "starts_count": 9999999,
+                            "investments_count": 9999999,
+                            "difficulty": conf.rogue.difficulty,
+                            "investment_enabled": conf.rogue.investment_enabled,
+                            "refresh_trader_with_dice": (
+                                conf.maa_rg_theme == "Mizuki"
+                                and conf.rogue.refresh_trader_with_dice
+                            ),
+                        }
+                        if conf.rogue.investment_enabled:
+                            rogue_params["investment_with_more_score"] = (
+                                conf.maa_rg_theme != "BlackFlow"
+                                and conf.rogue.investment_with_more_score
+                                and conf.rogue.mode == 1
+                            )
+                            rogue_params["stop_when_investment_full"] = (
+                                conf.rogue.stop_when_investment_full
+                                and conf.rogue.mode == 1
+                            )
+                        if conf.maa_rg_theme != "Phantom" and conf.rogue.mode == 0:
+                            rogue_params["stop_at_final_boss"] = (
+                                conf.rogue.stop_at_final_boss
+                            )
+                        if conf.rogue.mode == 0:
+                            rogue_params["stop_at_max_level"] = (
+                                conf.rogue.stop_at_max_level
+                            )
+                        if (
+                            conf.maa_rg_theme == "Sami"
+                            and conf.rogue.mode == 5
+                            and conf.rogue.expected_collapsal_paradigms
+                        ):
+                            rogue_params["expected_collapsal_paradigms"] = (
+                                conf.rogue.expected_collapsal_paradigms
+                            )
+                        if conf.rogue.mode == 4:
+                            rogue_params["collectible_mode_shopping"] = (
+                                conf.rogue.collectible_mode_shopping
+                            )
+                            rogue_params["collectible_mode_squad"] = (
+                                conf.rogue.collectible_mode_squad
+                            )
+                            # 协议值语义：直升需与战术分队类同步，只凹仅受主题/策略限制
+                            rogue_params["start_with_elite_two"] = (
+                                conf.rogue.start_with_elite_two
+                                and professional
+                                and conf.maa_rg_theme in ("Mizuki", "Sami")
+                            )
+                            rogue_params["only_start_with_elite_two"] = (
+                                conf.rogue.only_start_with_elite_two
+                                and conf.maa_rg_theme in ("Mizuki", "Sami")
+                            )
+                            # 勾选「只凹开局干员直升精二」时不刷奖励，撤销下发
+                            elite_two_only = (
+                                conf.rogue.only_start_with_elite_two
+                                and conf.rogue.start_with_elite_two
+                                and conf.maa_rg_theme != "Phantom"
+                                and professional
+                            )
+                            if not elite_two_only:
+                                rogue_params["collectible_mode_start_list"] = {
+                                    key: conf.rogue.collectible_mode_start_list.get(
+                                        key, False
+                                    )
+                                    for key in _COLLECTIBLE_START_KEYS
+                                }
+                        if conf.rogue.mode == 6:
+                            rogue_params["monthly_squad_auto_iterate"] = (
+                                conf.rogue.monthly_squad_auto_iterate
+                            )
+                            if conf.rogue.monthly_squad_auto_iterate:
+                                rogue_params["monthly_squad_check_comms"] = (
+                                    conf.rogue.monthly_squad_check_comms
+                                )
+                        if conf.rogue.mode == 7:
+                            rogue_params["deep_exploration_auto_iterate"] = (
+                                conf.rogue.deep_exploration_auto_iterate
+                            )
+                        if (
+                            conf.maa_rg_theme == "Sami"
+                            and conf.rogue.mode == 4
+                            and conf.rogue.first_floor_foldartal
+                        ):
+                            rogue_params["first_floor_foldartal"] = (
+                                conf.rogue.first_floor_foldartal
+                            )
+                        if (
+                            conf.maa_rg_theme == "Sami"
+                            and conf.rogue.mode == 4
+                            and conf.rogue.squad == "生活至上分队"
+                            and conf.rogue.start_foldartal_list
+                        ):
+                            rogue_params["start_foldartal_list"] = (
+                                conf.rogue.start_foldartal_list
+                            )
+                        if (
+                            conf.maa_rg_theme == "BlackFlow"
+                            and conf.rogue.mode == 30001
+                        ):
+                            # 协议固定刷襁褓动物策略，仅目标品种可选
+                            rogue_params["blackflow_strategy"] = "baby_animal"
+                            rogue_params["blackflow_cultivation_target"] = (
+                                conf.rogue.blackflow_cultivation_target
+                            )
+                        if (
+                            conf.maa_rg_theme == "JieGarden"
+                            and conf.rogue.mode == 20001
+                        ):
+                            rogue_params["find_playTime_target"] = (
+                                conf.rogue.find_playtime_target
+                            )
+                        self.MAA.append_task("Roguelike", rogue_params)
+                    elif conf.SSS:
+                        copilot = get_path("@app/sss.json")
+                        if (
+                            not copilot.is_file()
+                            or conf.sss.type not in [1, 2]
+                            or conf.sss.ec not in [1, 2, 3]
+                        ):
+                            raise Exception("保全派驻配置错误")
+                        if self.to_sss():
+                            raise Exception("保全派驻导航失败")
+                        self.MAA.append_task(
+                            "SSSCopilot",
+                            {"filename": str(copilot), "loop_times": 9999999},
+                        )
+                    elif conf.RCL:
+                        self.to_reclamation(conf.maa_rcl_theme, conf.rcl.mode)
+                        self.MAA.append_task(
+                            "Reclamation",
+                            {
+                                "theme": conf.maa_rcl_theme,
+                                "mode": conf.rcl.mode,
+                                "tools_to_craft": conf.rcl.tools_to_craft,
+                                "increment_mode": conf.rcl.increment_mode,
+                                "num_craft_batches": conf.rcl.num_craft_batches,
+                            },
+                        )
+                    logger.info("启动")
+                    self.MAA.start()
+                    maa_crash = True
+                    while self.MAA.running():
+                        csleep(5)
+                        logger.info("MAA 运行中...")
+                        self.recog.update()
+                        self.recog.save_screencap(None)
+                        if (
+                            self.tasks[0].time - datetime.now() < timedelta(seconds=30)
+                            or config.stop_maa.is_set()
+                        ):
+                            maa_crash = False
+                            self.maa_stop()
+                            restore_theme = True
+                            break
+                    self.recog.reset_after_external_control()
+                    if maa_crash:
+                        logger.error("MAA 肉鸽/保全/盐酸运行中断")
+                        send_message("MAA 肉鸽/保全/盐酸运行中断", level="ERROR")
+                    break
+
+            elif not rg_sleep:
+                if conf.RA:
+                    self.back_to_index()
+                    ra_solver = ReclamationAlgorithm(self.device, self.recog)
+                    ra_solver.run(self.tasks[0].time - datetime.now())
+                elif conf.SF:
+                    self.back_to_index()
+                    sf_solver = SecretFront(self.device, self.recog)
+                    sf_solver.run(self.tasks[0].time - datetime.now())
+
+            if restore_theme:
+                self.restore_maa_theme()
+            self.rest_until_next_task()
+            self.MAA = None
+        except MowerExit:
+            if self.MAA is not None:
+                self.maa_stop()
+                logger.info("停止MAA")
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+            self.MAA = None
+            send_message(str(e), "MAA调用出错！", level="ERROR")
+            remaining_time = (self.tasks[0].time - datetime.now()).total_seconds()
+            if remaining_time > 0:
+                # 参照 rest_until_next_task：休眠前重置场景计时，避免 check_freeze
+                # 把这段休眠当成「同一场景超时」而再次调用 device.exit() 关闭游戏。
+                self.recog.last_scene = None
+                logger.info(
+                    f"休息 {format_time(remaining_time)}，到{self.tasks[0].time.strftime('%H:%M:%S')}开始工作"
+                )
+                self._idle_sleep(remaining_time)
+
+    def skland_plan_solver(self):
+        try:
+            return SKLand().start()
+        except MowerExit:
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(f"森空岛签到失败:{e}")
+            send_message(f"森空岛签到失败: {e}", level="ERROR")
+        # 仅尝试一次 不再尝试
+        return (datetime.now() - timedelta(hours=4)).date()
+
+    def recruit_plan_solver(self):
+        if self.last_execution[
+            "recruit"
+        ] is None or datetime.now() > self.last_execution["recruit"] + timedelta(
+            hours=config.conf.recruit_gap
+        ):
+            RecruitSolver(self.device, self.recog).run()
+
+            self.last_execution["recruit"] = datetime.now()
+            logger.info(f"下一次公开招募执行时间在{config.conf.recruit_gap}小时之后")
+
+    def apply_maa_stage_inventory_rules(self, stages) -> list[str]:
+        conf = config.conf
+        original = list(stages)
+        if not conf.maa_stage_inventory_enable:
+            return original
+        if not conf.maa_stage_limit_rules and not conf.maa_stage_ratio_rules:
+            return original
+
+        from arknights_mower.utils.maa_stage_inventory import (
+            load_inventory_snapshot,
+            select_stages_by_inventory,
+        )
+
+        try:
+            cultivateDepotSolver().start()
+        except Exception:
+            logger.exception("刷新森空岛库存失败，继续使用本地库存快照")
+        inventory, updated_at = load_inventory_snapshot()
+        selection = select_stages_by_inventory(
+            original,
+            limit_rules=conf.maa_stage_limit_rules,
+            ratio_rules=conf.maa_stage_ratio_rules,
+            inventory=inventory,
+        )
+        if selection["limit_fallback"]:
+            logger.info("全部关卡均达到库存上限，本次忽略库存跳过设置")
+        elif selection["limit_skipped"]:
+            logger.info(
+                "库存达到上限，跳过关卡: %s",
+                selection["limit_skipped"],
+            )
+        for decision in selection["ratio_decisions"]:
+            logger.info(
+                "库存比例选关 | rule=%s | selected=%s | candidates=%s",
+                decision["name"],
+                decision["selected"],
+                decision["candidates"],
+            )
+        logger.info(
+            "库存选关完成 | snapshot=%s | original=%s | selected=%s",
+            updated_at,
+            original,
+            selection["stages"],
+        )
+        return selection["stages"]
+
+    def mower_stage_plan(self) -> list[str]:
+        self.maybe_switch_expired_activity_plan()
+        plan = config.conf.maa_weekly_plan[get_server_weekday()]
+        stages = []
+        for stage in plan.stage:
+            if not isinstance(stage, str):
+                continue
+            stage = stage.strip()
+            if not stage:
+                continue
+            stages.append(stage)
+        return self.apply_maa_stage_inventory_rules(stages)
+
+    def mower_stage_ap_cost(self, stage_id: str) -> int | None:
+        stage_meta = next(
+            (item for item in stage_data_full if item.get("id") == stage_id),
+            None,
+        )
+        if stage_meta is None:
+            return self._ap_fallback_or_none()
+        ap_cost = stage_meta.get("apCost")
+        if not isinstance(ap_cost, int) or ap_cost <= 0:
+            return self._ap_fallback_or_none()
+        return ap_cost
+
+    def _ap_fallback_or_none(self) -> int | None:
+        from arknights_mower.utils.config import conf
+
+        fallback = conf.ap_fallback
+        if isinstance(fallback, int) and fallback > 0:
+            return fallback
+        return None
+
+    def clear_local_operation_followups(self):
+        existing_count = sum(
+            1 for task in self.tasks if task.meta_data == FOLLOWUP_TASK_META
+        )
+        self.tasks = [
+            task for task in self.tasks if task.meta_data != FOLLOWUP_TASK_META
+        ]
+        self.local_operation_followup_time = None
+        if existing_count:
+            logger.info(
+                "clear local operation follow-up tasks | count=%s",
+                existing_count,
+            )
+
+    def upsert_local_operation_followup(self, run_at: datetime | None):
+        self.clear_local_operation_followups()
+        if run_at is None:
+            logger.info("skip local operation follow-up insert because run_at is empty")
+            return
+        self.tasks.append(SchedulerTask(time=run_at, meta_data=FOLLOWUP_TASK_META))
+        self.tasks.sort(key=lambda task: task.time)
+        self.local_operation_followup_time = run_at
+        logger.info(
+            "schedule local operation follow-up task | run_at=%s",
+            run_at.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def get_local_operation_stage_target(
+        self,
+        stage: str,
+        simulated_current_ap: int | None,
+        threshold_control_failed: bool,
+        threshold: int,
+        maa_gap: float,
+    ):
+        ap_cost = self.mower_stage_ap_cost(stage)
+        projection = None
+        if threshold_control_failed:
+            target_total_runs = get_stage_drain_runs_total(
+                simulated_current_ap,
+                ap_cost,
+            )
+        else:
+            target_total_runs, projection = get_required_runs_total(
+                simulated_current_ap,
+                threshold,
+                maa_gap,
+                ap_cost,
+            )
+        return ap_cost, target_total_runs, projection
+
+    def run_local_operation_stage(
+        self,
+        stage: str,
+        next_task_time: datetime,
+        simulated_current_ap: int | None,
+        ap_cost: int | None,
+        target_total_runs: int | None,
+        mode: str,
+        threshold: int | None = None,
+    ):
+        remaining_runs = target_total_runs
+        executed_any = False
+
+        while True:
+            if next_task_time - datetime.now() < timedelta(minutes=5):
+                logger.info("skip local operation because time is not enough")
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": True,
+                }
+            if remaining_runs is not None and remaining_runs <= 0:
+                logger.info(
+                    "local operation stage completed | stage=%s | mode=%s",
+                    stage,
+                    mode,
+                )
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": False,
+                }
+
+            logger.info(
+                "start navigation before operation | stage=%s | mode=%s | simulated_current_ap=%s | ap_cost=%s | remaining_runs=%s",
+                stage,
+                mode,
+                simulated_current_ap,
+                ap_cost,
+                remaining_runs,
+            )
+            if not NavigationSolver(self.device, self.recog).run(stage):
+                logger.warning(f"navigation failed, skip stage: {stage}")
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": False,
+                }
+
+            logger.info(
+                "navigation succeeded, start operation | stage=%s | mode=%s | target_total_runs=%s",
+                stage,
+                mode,
+                remaining_runs,
+            )
+            result = OperationSolver(self.device, self.recog).run(
+                next_task_time=next_task_time,
+                stage_id=stage,
+                target_total_runs=remaining_runs,
+                simulated_current_ap=simulated_current_ap,
+                ap_cost=ap_cost,
+                sanity_threshold=threshold,
+            )
+            logger.info(
+                "local operation stage result | stage=%s | mode=%s | result=%s",
+                stage,
+                mode,
+                result,
+            )
+
+            simulated_current_ap = (
+                simulated_current_ap
+                if result["simulated_current_ap"] is None
+                else result["simulated_current_ap"]
+            )
+            if result["executed_runs"] > 0:
+                executed_any = True
+            if result["sanity_drain"] or result["stopped_by_deadline"]:
+                logger.info(
+                    "stop local operation stage loop | stage=%s | mode=%s | sanity_drain=%s | stopped_by_deadline=%s",
+                    stage,
+                    mode,
+                    result["sanity_drain"],
+                    result["stopped_by_deadline"],
+                )
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": True,
+                }
+            if remaining_runs is None:
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": False,
+                }
+
+            next_remaining_runs = result["remaining_runs"]
+            if next_remaining_runs is None or next_remaining_runs <= 0:
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": False,
+                }
+            if result["executed_runs"] <= 0:
+                logger.warning(
+                    "local operation stage made no progress, stop rerun loop | stage=%s | mode=%s | remaining_runs=%s",
+                    stage,
+                    mode,
+                    next_remaining_runs,
+                )
+                return {
+                    "simulated_current_ap": simulated_current_ap,
+                    "executed_any": executed_any,
+                    "should_break": False,
+                }
+
+            remaining_runs = next_remaining_runs
+            logger.info(
+                "local operation stage has remaining runs, rerun after renavigation | stage=%s | mode=%s | remaining_runs=%s | simulated_current_ap=%s",
+                stage,
+                mode,
+                remaining_runs,
+                simulated_current_ap,
+            )
+
+    def mower_plan_solver(self, one_time=False):
+        try:
+            conf = config.conf
+            followup_due = (
+                self.local_operation_followup_time is not None
+                and datetime.now() >= self.local_operation_followup_time
+            )
+            if followup_due:
+                self.local_operation_followup_time = None
+            logger.info(
+                "start mower_plan_solver | one_time=%s | followup_due=%s | last_execution=%s | current_tasks=%s",
+                one_time,
+                followup_due,
+                self.last_execution["maa"],
+                len(self.tasks),
+            )
+            if (
+                not one_time
+                and not followup_due
+                and self.last_execution["maa"] is not None
+                and (
+                    delta := (
+                        timedelta(hours=conf.maa_gap)
+                        + self.last_execution["maa"]
+                        - datetime.now()
+                    )
+                )
+                > timedelta()
+            ):
+                logger.info(
+                    f"{format_time(delta.total_seconds())} later start local daily tasks"
+                )
+            else:
+                stages = self.mower_stage_plan()
+                logger.info(f"local operation plan: {stages}")
+                next_task_time = (
+                    datetime.now() + timedelta(days=1)
+                    if one_time
+                    else self.tasks[0].time
+                )
+                logger.info(
+                    "local operation scheduling window | next_task_time=%s | one_time=%s",
+                    next_task_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    one_time,
+                )
+
+                executed_any = False
+                threshold_control_failed = False
+                threshold_control_reason = ""
+                next_threshold_time = None
+                simulated_current_ap = None
+                threshold = 0
+
+                if stages:
+                    player_info = PlayerInfoClient()
+                    snapshot = player_info.get_first_available_snapshot()
+                    if snapshot is None:
+                        logger.warning(
+                            "failed to fetch skland player info, fallback to drain sanity"
+                        )
+                        threshold_control_failed = True
+                        threshold_control_reason = "missing_player_info"
+                    else:
+                        player_info.log_snapshot(snapshot)
+                        # Fetch SKLand AP once before operation starts; after this point
+                        # all AP changes are simulated locally by OperationSolver.
+                        simulated_current_ap = snapshot.current_ap
+                        threshold = max(
+                            0,
+                            int(
+                                getattr(
+                                    config.conf.maa_weekly_plan[get_server_weekday()],
+                                    "sanity_threshold",
+                                    0,
+                                )
+                                or 0
+                            ),
+                        )
+                        logger.info(
+                            "loaded local operation sanity context | skland_seed_ap=%s | threshold=%s | maa_gap=%s",
+                            simulated_current_ap,
+                            threshold,
+                            conf.maa_gap,
+                        )
+                        if threshold <= 0:
+                            logger.info(
+                                "disable threshold control because threshold <= 0, fallback to drain sanity mode"
+                            )
+                            threshold_control_failed = True
+                            threshold_control_reason = "threshold_non_positive"
+                        if any(
+                            self.mower_stage_ap_cost(stage) is None for stage in stages
+                        ):
+                            missing = [
+                                stage
+                                for stage in stages
+                                if self.mower_stage_ap_cost(stage) is None
+                            ]
+                            logger.error(
+                                f"关卡信息未找到，无法获取体力消耗: {missing}，"
+                                "请在「刷理智周计划」中设置 AP fallback（关卡体力消耗默认值）"
+                            )
+                            logger.warning(
+                                "stage apCost missing in weekly plan, disable threshold control and fallback to drain sanity"
+                            )
+                            threshold_control_failed = True
+                            threshold_control_reason = "missing_ap_cost"
+
+                if not stages:
+                    logger.info(
+                        "skip local operation because weekly plan has no stages"
+                    )
+                    self.clear_local_operation_followups()
+                else:
+                    mode = "fallback" if threshold_control_failed else "threshold"
+                    logger.info(
+                        "enter local operation stage loop | mode=%s | reason=%s",
+                        mode,
+                        threshold_control_reason or "",
+                    )
+                    self.back_to_index()
+                    if threshold_control_failed:
+                        self.clear_local_operation_followups()
+
+                    for stage in stages:
+                        if next_task_time - datetime.now() < timedelta(minutes=5):
+                            logger.info(
+                                "skip local operation because time is not enough"
+                            )
+                            break
+
+                        ap_cost, target_total_runs, projection = (
+                            self.get_local_operation_stage_target(
+                                stage,
+                                simulated_current_ap,
+                                threshold_control_failed,
+                                threshold,
+                                conf.maa_gap,
+                            )
+                        )
+
+                        if threshold_control_failed:
+                            logger.info(
+                                "local operation fallback evaluation | stage=%s | ap_cost=%s | simulated_current_ap=%s | target_total_runs=%s",
+                                stage,
+                                ap_cost,
+                                simulated_current_ap,
+                                target_total_runs,
+                            )
+                        else:
+                            logger.info(
+                                "local operation threshold evaluation | stage=%s | ap_cost=%s | simulated_current_ap=%s | threshold=%s | projection_minutes=%s | projected_ap=%s | excess_ap=%s | target_total_runs=%s",
+                                stage,
+                                ap_cost,
+                                simulated_current_ap,
+                                threshold,
+                                projection.projection_minutes,
+                                projection.projected_ap,
+                                projection.excess_ap,
+                                target_total_runs,
+                            )
+
+                        if (
+                            simulated_current_ap is not None
+                            and ap_cost is not None
+                            and simulated_current_ap < ap_cost
+                        ):
+                            logger.info(
+                                "skip stage because simulated ap is below stage cost | stage=%s | simulated_current_ap=%s | ap_cost=%s",
+                                stage,
+                                simulated_current_ap,
+                                ap_cost,
+                            )
+                            continue
+                        if target_total_runs is not None and target_total_runs <= 0:
+                            logger.info(
+                                "skip stage because target_total_runs is zero | stage=%s",
+                                stage,
+                            )
+                            continue
+
+                        stage_run_result = self.run_local_operation_stage(
+                            stage=stage,
+                            next_task_time=next_task_time,
+                            simulated_current_ap=simulated_current_ap,
+                            ap_cost=ap_cost,
+                            target_total_runs=target_total_runs,
+                            mode=mode,
+                            threshold=None if threshold_control_failed else threshold,
+                        )
+                        simulated_current_ap = stage_run_result["simulated_current_ap"]
+                        executed_any = executed_any or stage_run_result["executed_any"]
+                        if stage_run_result["should_break"]:
+                            break
+
+                    if (
+                        not threshold_control_failed
+                        and not one_time
+                        and simulated_current_ap is not None
+                    ):
+                        projection = build_sanity_projection(
+                            simulated_current_ap,
+                            threshold,
+                            conf.maa_gap,
+                        )
+                        next_threshold_time = compute_next_threshold_time(
+                            simulated_current_ap,
+                            threshold,
+                        )
+                        if projection.excess_ap > 0:
+                            next_threshold_time = max(
+                                datetime.now() + timedelta(minutes=1),
+                                next_threshold_time,
+                            )
+                        logger.info(
+                            "computed local operation follow-up time | simulated_current_ap=%s | threshold=%s | projection_minutes=%s | projected_ap=%s | excess_ap=%s | next_threshold_time=%s",
+                            simulated_current_ap,
+                            threshold,
+                            projection.projection_minutes,
+                            projection.projected_ap,
+                            projection.excess_ap,
+                            next_threshold_time.strftime("%Y-%m-%d %H:%M:%S")
+                            if next_threshold_time is not None
+                            else None,
+                        )
+                        self.upsert_local_operation_followup(next_threshold_time)
+
+                logger.info("run mission solver after local operation")
+                MissionSolver(self.device, self.recog).run()
+                if executed_any:
+                    self.last_execution["maa"] = datetime.now()
+                    logger.info(
+                        f"record local task execution time: {self.last_execution['maa']}"
+                    )
+                else:
+                    logger.info("local operation finished without executing any stage")
+
+            scheduling(self.tasks)
+            self.rest_until_next_task()
+        except MowerExit:
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+            self.device.exit()
+            send_message(str(e), "mower local operation error", level="ERROR")
+            remaining_time = (self.tasks[0].time - datetime.now()).total_seconds()
+            if remaining_time > 0:
+                logger.info(
+                    f"休息 {format_time(remaining_time)}，到{self.tasks[0].time.strftime('%H:%M:%S')}开始工作"
+                )
+                self._idle_sleep(remaining_time)
+            self.check_current_focus()
+
+    def mail_plan_solver(self):
+        if config.conf.check_mail_enable:
+            MailSolver(self.device, self.recog).run()
+        return True
+
+    def report_plan_solver(self):
+        if config.conf.report_enable:
+            return ReportSolver(self.device, self.recog).run()
+
+    def visit_friend_plan_solver(self):
+        if config.conf.visit_friend_enable and config.conf.visit_friend_mode == "mower":
+            return CreditSolver(self.device, self.recog).run()
+
+    def sign_in_plan_solver(self):
+        if not config.conf.sign_in.enable:
+            return
+        try:
+            import sign_in
+
+            sign_in_solver = sign_in.SignInSolver(self.device, self.recog)
+            return sign_in_solver.run()
+        except MowerExit:
+            raise
+        except Exception as e:
+            save_exception(e)
+            logger.exception(e)
+            return True
+
+    def 仓库扫描(self):
+        try:
+            cultivateDepotSolver().start()
+            DepotSolver(self.device, self.recog).run()
+            self._auto_schedule_mastery_after_scan()
+        except Exception as e:
+            save_exception(e)
+            logger.exception(f"先不运行 出bug了 : {e}")
+            return False
+        return True
+
+    def _auto_schedule_mastery_after_scan(self):
+        try:
+            from arknights_mower.utils.mastery_db import retry_failed_plans
+
+            retried = retry_failed_plans()
+            if retried > 0:
+                logger.info(f"仓库扫描: 已重置 {retried} 个失败的专精计划为待执行")
+
+            from arknights_mower.utils.mastery_recommendation import (
+                auto_schedule_mastery_tasks,
+            )
+
+            res = auto_schedule_mastery_tasks()
+            logger.debug(
+                "仓库扫描: 专精调度完毕, "
+                f"scheduled={len(res.get('scheduled', []))}, "
+                f"skipped={len(res.get('skipped', []))}"
+            )
+
+            # #74 第3段：扫描 = 唯一周期派发点。对 DB 里材料足够的 idle 计划入队
+            # 「开始训练」SKILL_UPGRADE（plan_key 指定计划；房间状态决定开始/收集）。
+            # 材料判断用 auto_schedule 的 scheduled 结果（扫描时核算），不违背「删材料
+            # 门控」——删的是开始前现场查那套。受 enable_mastery 门控（OFF 停专精自动化）。
+            if config.conf.enable_mastery:
+                self._dispatch_scan_start_tasks(res.get("scheduled", []))
+
+            from arknights_mower.utils.workshop_automation import update_workshop_config
+
+            update_workshop_config()
+        except Exception as e:
+            logger.exception(f"自动安排专精/合成配置失败: {e}")
+
+    def _dispatch_scan_start_tasks(self, scheduled):
+        """#74 第3段：扫描确认材料后，为材料足够的 idle 计划入队「开始训练」任务。
+
+        scheduled 来自 auto_schedule_mastery_tasks（已按链级材料核算），元素带
+        char_id/skill_index。按 (char_id, skill_index) 匹配 DB 里 status=='idle' 的
+        计划（get_all_plans 按 priority 排序 → 高优先级计划先入队先开始），入队一条
+        plan_key=计划id 的开始任务（meta_data 仅描述性标签，无逻辑标记）。TASK-01 按
+        plan_key 去重恒 ≤1 条，重复扫描原地刷新；计划开始训练后该任务原位升级为收取任务。
+        """
+        if not scheduled:
+            return
+        from arknights_mower.solvers.mastery_reader import _schedule_scan_start
+        from arknights_mower.utils.mastery_db import get_all_plans
+
+        # 带 current_level 的扫描条目：安排步级 = 当前级 + 1（森空岛数据，最可靠）
+        confirmed = {
+            (entry.get("char_id"), entry.get("skill_index")): entry
+            for entry in scheduled
+        }
+        dispatched = 0
+        for plan in get_all_plans():  # 非终态，按 priority, id 排序
+            if plan["status"] != "idle":
+                continue
+            entry = confirmed.get((plan["char_id"], plan["skill_index"]))
+            if entry is None:
+                continue
+            step_level = entry.get("current_level", 0) + 1
+            _schedule_scan_start(self, plan, step_level=step_level)
+            dispatched += 1
+        if dispatched:
+            logger.info(
+                f"仓库扫描: 已为 {dispatched} 个材料足够的空闲专精计划安排开始训练"
+            )
+
+    def _idle_sleep(self, remaining_time):
+        """任务之间真正的休眠——全工程里唯一维护 `sleeping` 状态的地方。
+
+        所有「等到下一个任务」的等待都必须经过这里，这样 /status 读到的
+        `sleeping` 永远和实际行为一致；以后新增休息路径也不可能再漏设标志。
+        用 try/finally 保证即使被 MowerExit（点停止）打断也能复位。
+        #141：web 一键专精派发 now 任务后设 `config.wake_scheduler` 事件打断休眠，
+        让调度器下一轮立即执行新任务（不依赖 csleep——csleep 全工程共用，不能全局
+        加唤醒检查）。轮询每 ~1s，保持 csleep 的停止检查粒度；结束时照常 recog.update
+        刷新场景缓存（原 self.sleep 结尾行为）。
+        """
+        self.sleeping = True
+        try:
+            end_time = datetime.now() + timedelta(seconds=remaining_time)
+            while datetime.now() < end_time:
+                refresh_resource_at_boundary()
+                if config.wake_scheduler.is_set():
+                    config.wake_scheduler.clear()
+                    break
+                csleep(min(1, (end_time - datetime.now()).total_seconds()))
+            if config.stop_mower.is_set():
+                raise MowerExit
+            refresh_resource_at_boundary()
+            if (
+                config.conf.close_simulator_when_idle
+                and self._simulator_closed_for_idle
+            ):
+                logger.info("休眠结束，启动自动关闭的模拟器")
+                if not restart_simulator(stop=False, start=True):
+                    raise ConnectionError("休眠结束后模拟器启动失败")
+                # 启动成功即结束本轮的主动启动，后续连接故障交由正常重连恢复。
+                self._simulator_closed_for_idle = False
+                self.device.reconnect()
+            self.recog.update()
+        finally:
+            self.sleeping = False
+
+    def rest_until_next_task(self):
+        """完成本轮任务后休息到 `tasks[0].time`，是调度器唯一的「任务间空闲」收尾。
+
+        发休息通知、累计任务计数、并真正睡到下个任务。
+        maa_plan_solver / mower_plan_solver / __main__ 主循环此前各自复制了
+        一份几乎相同的实现，其中两份漏掉了 `sleeping`，正是 /status 卡在
+        working 的根因。现在全部收口到这里，只有 `_idle_sleep` 一个状态写入点。
+        """
+        first = self.tasks[0]
+        remaining_time = (first.time - datetime.now()).total_seconds()
+        self.handle_idle_action(remaining_time)
+        timezone_offset = config.conf.timezone_offset
+        subject = (
+            f"休息 {format_time(remaining_time)}，到"
+            f"{first.time.strftime('%H:%M:%S')}开始工作"
+        )
+        context = f"下一次任务:{first.plan if len(first.plan) != 0 else '空任务' if first.type == '' else first.type}"
+        logger.info(context)
+        logger.info(subject)
+        self.task_count += 1
+        logger.info(f"第{self.task_count}次任务结束")
+        body = task_template.render(
+            tasks=[obj.format(timezone_offset) for obj in self.tasks],
+            base_scheduler=self,
+        )
+        send_message(
+            body,
+            f"休息 {format_time(remaining_time)}，到{first.format(timezone_offset).time.strftime('%H:%M:%S')}开始工作",
+        )
+        if remaining_time > 0:
+            self.recog.last_scene = None
+            self._idle_sleep(remaining_time)
+            self.check_current_focus()
+
+    def handle_idle_action(self, remaining_time=0):
+        if config.conf.close_simulator_when_idle and remaining_time > 300:
+            if restart_simulator(start=False):
+                self._simulator_closed_for_idle = True
+        elif config.conf.exit_game_when_idle and remaining_time > 300:
+            self.device.exit()
+        elif config.conf.return_home_when_idle:
+            self.device.return_home()
