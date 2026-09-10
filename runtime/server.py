@@ -407,6 +407,10 @@ def _run_maa_resource_update(
             callback=_set_maa_resource_update_progress,
         )
         if result["updated"]:
+            if os.environ.get("MOWER_ANDROID") == "1":
+                from mower_android.managed import pack_component
+                pack_component(result["target"])
+                result["restart_required"] = True
             clear_loaded_maa_cache(result["target"])
         result["installed"] = read_maa_resource_info(result["target"])
     except Exception as e:
@@ -427,6 +431,7 @@ def _run_maa_resource_update(
     source_label = "Mirror酱" if result["source"] == "mirrorchyan" else "GitHub"
     if result["updated"]:
         message = f"MAA 资源 {result['version']} 已通过 {source_label}更新完成"
+        if result.get("restart_required"): message += "，重启安卓服务后生效"
     else:
         message = f"MAA 资源 {result['version']} 已是最新版本"
     with maa_resource_update_lock:

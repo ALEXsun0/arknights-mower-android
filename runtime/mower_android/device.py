@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from mower_android.bridge import Bridge
 
 
-class MeowDevice:
+class AndroidDevice:
     """Mower's Device contract backed by the engine's 1920×1080 virtual display."""
 
     def __init__(self, *args, **kwargs):
@@ -78,6 +78,8 @@ class MeowDevice:
             raise RuntimeError('后台画面不是 1920×1080，请重新启动后台游戏')
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        from arknights_mower.utils.log import save_screenshot
+        save_screenshot(png)
         config.screenshot_time = datetime.now()
         elapsed = (time.monotonic() - started) * 1000
         config.screenshot_avg = elapsed if config.screenshot_avg is None else config.screenshot_avg * .9 + elapsed * .1

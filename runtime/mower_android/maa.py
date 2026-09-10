@@ -7,6 +7,7 @@ class Asst:
 
     def __init__(self, callback=None):
         self.bridge = Bridge()
+        self.bridge.call('prepare')
         self.callback = callback
         self.cursor = self.bridge.call('maa_reset')
 

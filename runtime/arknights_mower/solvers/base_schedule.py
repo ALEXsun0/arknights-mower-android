@@ -4019,7 +4019,6 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
     def initialize_maa(self):
         if os.environ.get("MOWER_ANDROID") == "1":
             from mower_android.maa import Asst
-            # This callback only logs the numeric message; no desktop DLL is used.
             globals()["Message"] = int
             config.stop_maa.clear()
             self.MAA = Asst(callback=self.log_maa)

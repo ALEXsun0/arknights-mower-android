@@ -598,7 +598,7 @@ class Device:
         return False
 
 
-# Android owns capture and input through the embedded Meow engine.
+# Android owns capture and input through the background display service.
 import os as _os
 if _os.environ.get("MOWER_ANDROID") == "1":
-    from mower_android.device import MeowDevice as Device
+    from mower_android.device import AndroidDevice as Device

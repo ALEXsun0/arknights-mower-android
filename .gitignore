@@ -1,5 +1,6 @@
 artifacts/
 **/.gradle/
+**/.kotlin/
 **/build/
 **/local.properties
 **/.cxx/
@@ -7,11 +8,11 @@ artifacts/
 **/__pycache__/
 **/.pytest_cache/
 **/ui/dist/
-meow/app/src/main/assets/python-runtime.zip
-meow/app/src/main/assets/MaaSync/MaaResource/
-meow/app/src/main/jniLibs/
 *.keystore
 *.jks
 runtime/config/
 runtime/log/
 runtime/temp/
+
+android/app/src/main/assets/*.zip
+android/app/src/main/jniLibs/
