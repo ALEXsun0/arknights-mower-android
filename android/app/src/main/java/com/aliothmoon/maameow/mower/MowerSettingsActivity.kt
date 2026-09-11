@@ -148,7 +148,7 @@ class MowerSettingsActivity : Activity() {
         button("导出诊断日志") { exportLogs() }
         button("恢复屏幕显示") { execute { MowerScreenSaver.hide(); "已请求恢复屏幕显示" } }
         button("重新连接后台服务") { engineAction("reconnect") }
-        button("电池优化设置") { open(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        button("电池优化设置") { open(PermissionChecks.batteryIntent(this)) }
         button("运行通知设置") { open(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) }
         button("实时通知权限") {
             if (android.os.Build.VERSION.SDK_INT >= 36) open(Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))

@@ -37,6 +37,14 @@ internal data class PermissionSnapshot(
 }
 
 internal object PermissionChecks {
+    fun batteryIntent(context: Context): Intent {
+        val uri = Uri.parse("package:${context.packageName}")
+        val details = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, uri)
+        if (context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)) return details
+        val request = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, uri)
+        return if (request.resolveActivity(context.packageManager) != null) request else details
+    }
+
     fun inspect(context: Context): PermissionSnapshot {
         val settings = AndroidSystemSettings(context)
         val root = settings.enabled("root_backend")
@@ -57,7 +65,7 @@ internal object PermissionChecks {
             PermissionAction.OVERLAY -> Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, uri)
             PermissionAction.NOTIFICATIONS -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
             PermissionAction.EXACT_ALARM -> if (Build.VERSION.SDK_INT >= 31) Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, uri) else null
-            PermissionAction.BATTERY -> Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            PermissionAction.BATTERY -> batteryIntent(context)
         }
     }
 }

@@ -187,7 +187,7 @@ class MowerActivity : Activity() {
     fun openSystemSettings(action: String) {
         val target = when (action) {
             "shizuku" -> packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api") ?: error("请先安装 Shizuku")
-            "battery_settings" -> Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            "battery_settings" -> PermissionChecks.batteryIntent(this)
             "app_settings" -> Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))
             else -> error("不支持的系统设置")
         }
