@@ -14,8 +14,8 @@ class WebConnectionConfig private constructor(val port: Int, val token: String) 
                 number.toIntOrNull()?.takeIf { it in 1024..65535 }
                     ?: throw IllegalArgumentException("端口须为 1024–65535，或留空自动分配")
             }
-            require(tokenText.isEmpty() || Regex("[A-Za-z0-9_-]{16,128}").matches(tokenText)) {
-                "Token 须为 16–128 位字母、数字、下划线或短横线，或留空自动生成"
+            require(tokenText.isEmpty() || Regex("[A-Za-z0-9_-]+").matches(tokenText)) {
+                "Token 支持字母、数字、下划线或短横线，或留空自动生成"
             }
             return WebConnectionConfig(port, tokenText)
         }

@@ -126,7 +126,15 @@ class MowerActivity : Activity() {
         val content = FrameLayout(this).apply {
             background = surface(MowerStyle.paper, 10); clipToOutline = true; elevation = dp(1).toFloat()
         }
-        web = WebView(this).apply {
+        web = object : WebView(this) {
+            override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+                val connection = super.onCreateInputConnection(outAttrs)
+                outAttrs.imeOptions = outAttrs.imeOptions or
+                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
+                return connection
+            }
+        }.apply {
             setBackgroundColor(MowerStyle.paper)
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
             settings.allowFileAccess = false; settings.allowContentAccess = false
@@ -259,7 +267,7 @@ class MowerActivity : Activity() {
                 steps.addView(card, LinearLayout.LayoutParams(0, -1, 1f).apply { marginEnd = dp(10) })
             }
             addView(steps, LinearLayout.LayoutParams(-1, -2))
-            addView(label("首次启动会解压运行环境，进度显示在上方。局域网连接、固定端口和访问 Token 均在软件设置中管理。", 11f, MowerStyle.muted).apply {
+            addView(label("arknights-mower-android · 首次启动会解压运行环境，进度显示在上方。项目链接可在软件设置的「关于软件」查看；局域网端口和 Token 也在软件设置中管理。", 11f, MowerStyle.muted).apply {
                 setPadding(0, dp(22), 0, 0)
             })
         }, FrameLayout.LayoutParams(-1, -1))

@@ -12,7 +12,7 @@ android {
         applicationId = "io.github.alexsun0.mower.android"
         minSdk = 27
         targetSdk = 28
-        versionCode = 17
+        versionCode = 18
         versionName = "0.2.1"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_shared" } }

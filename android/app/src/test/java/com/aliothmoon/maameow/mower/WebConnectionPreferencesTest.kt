@@ -36,6 +36,15 @@ class WebConnectionPreferencesTest {
         assertEquals(value, WebConnectionPreferences.read(store.open()))
     }
 
+    @Test fun shortCustomTokenReplacesGeneratedValuesAndSurvivesStartup() {
+        val store = Store()
+        WebConnectionPreferences.resolve(store.open()) { "Example_AutomaticToken123" }
+        val value = SavedWebConnection(true, "58000", "a")
+        WebConnectionPreferences.save(store.open(), value)
+        assertEquals(value, WebConnectionPreferences.read(store.open()))
+        assertEquals(value, WebConnectionPreferences.resolve(store.open()) { error("must reuse custom token") })
+    }
+
     @Test fun generatedConnectionIsPersistedAndReusedAfterRestart() {
         val store = Store()
         var generations = 0

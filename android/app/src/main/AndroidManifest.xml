@@ -14,7 +14,7 @@
     <application android:name=".MaaApplication" android:label="Mower Android" android:icon="@mipmap/ic_mower_light"
         android:allowBackup="false" android:usesCleartextTraffic="true" android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <activity android:name=".mower.MowerActivity" android:exported="true" android:screenOrientation="sensorLandscape" />
+        <activity android:name=".mower.MowerActivity" android:windowSoftInputMode="adjustResize" android:exported="true" android:screenOrientation="sensorLandscape" />
         <activity-alias android:name=".mower.LightLauncher" android:targetActivity=".mower.MowerActivity" android:enabled="true" android:exported="true" android:icon="@mipmap/ic_mower_light">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity-alias>

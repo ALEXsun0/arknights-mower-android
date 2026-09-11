@@ -15,6 +15,24 @@ internal fun apkHostUpdateAvailable(installedHash: String, installedCode: Int, r
     release.optString("host_sha256").matches(Regex("[a-f0-9]{64}")) &&
         release.optString("host_sha256") != installedHash && release.optInt("host_version_code") > installedCode
 
+fun Activity.showMowerAbout() {
+    val projectUrl = "https://github.com/ALEXsun0/arknights-mower-android"
+    val themed = android.view.ContextThemeWrapper(this,
+        if (MowerStyle.dark) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
+    AlertDialog.Builder(themed).setTitle("关于软件")
+        .setMessage("Mower Android\n版本 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）\n\n在 Android 上运行 Mower 与后台明日方舟。\n\nGitHub 项目\n$projectUrl")
+        .setNegativeButton("关闭", null)
+        .setNeutralButton("GitHub 项目") { _, _ ->
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(projectUrl)))
+            } catch (_: android.content.ActivityNotFoundException) {
+                android.widget.Toast.makeText(this, "未找到浏览器，请手动打开：$projectUrl", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        .setPositiveButton("检查 APK 更新") { _, _ -> showApkReleaseInfo() }
+        .show()
+}
+
 fun Activity.showApkReleaseInfo() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val dialog = AlertDialog.Builder(this).setTitle("APK ${BuildConfig.VERSION_NAME}")

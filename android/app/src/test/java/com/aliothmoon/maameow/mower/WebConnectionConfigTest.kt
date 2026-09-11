@@ -27,8 +27,14 @@ class WebConnectionConfigTest {
         }
     }
 
+    @Test fun customTokensHaveNoMinimumOrMaximumLength() {
+        for (token in listOf("a", "short", "a".repeat(129), "a".repeat(4096))) {
+            assertEquals(token, WebConnectionConfig.parse("58000", token).token)
+        }
+    }
+
     @Test fun invalidTokensNeverAppearInValidationErrors() {
-        for (token in listOf("short", "a".repeat(129), "a".repeat(16) + "&extra=x", "a".repeat(16) + "\n")) {
+        for (token in listOf("a&extra=x", "a\n", "a b")) {
             val failure = assertThrows(IllegalArgumentException::class.java) { WebConnectionConfig.parse("", token) }
             assertFalse(failure.message.orEmpty().contains(token))
         }

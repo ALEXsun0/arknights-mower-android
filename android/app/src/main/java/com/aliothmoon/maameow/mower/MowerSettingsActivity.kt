@@ -50,6 +50,8 @@ class MowerSettingsActivity : Activity() {
         val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(12)) }
         heading.addView(action("返回") { finish() })
         heading.addView(label("软件设置", 23f, bold = true).apply { setPadding(dp(20), 0, 0, 0) })
+        heading.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
+        heading.addView(action("关于软件") { showMowerAbout() })
         root.addView(heading)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(24)) }
         status = label("设置直接保存在手机，修改后自动生效。", 13f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), dp(16)) }
@@ -162,9 +164,6 @@ class MowerSettingsActivity : Activity() {
         button("重新连接后台服务") { engineAction("reconnect") }
         button("测试唤醒与锁屏状态") { engineAction("test_wake") }
         button("关闭静音并恢复声音") { engineAction("restore_audio") }
-        button("APK 版本与更新") {
-            showApkReleaseInfo()
-        }
         content.addView(actions)
         root.addView(ScrollView(this).apply { isFillViewport = true; addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.setOnApplyWindowInsetsListener { _, insets ->
@@ -279,6 +278,7 @@ class MowerSettingsActivity : Activity() {
             hint = "留空生成并保存；1024–65535"; setSingleLine()
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setText(saved.port)
+            imeOptions = imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
             contentDescription = "WebUI 固定端口"
         }
         panel.addView(port)
@@ -288,10 +288,11 @@ class MowerSettingsActivity : Activity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
             setText(saved.token)
+            imeOptions = imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
             contentDescription = "WebUI 访问 Token"
         }
         panel.addView(token)
-        panel.addView(label("Token 支持 16–128 位字母、数字、下划线和短横线。保存后停止并重新启动服务生效。", 12f, MowerStyle.muted))
+        panel.addView(label("Token 长度不限，支持字母、数字、下划线和短横线。保存后停止并重新启动服务生效。", 12f, MowerStyle.muted))
         val error = label("", 12f, MowerStyle.muted)
         panel.addView(error)
         val local = MowerService.url
