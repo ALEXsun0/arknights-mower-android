@@ -181,6 +181,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
 
     private fun status(): JSONObject {
         val s = RemoteServiceManager.getInstanceOrNull()
+        val maa = runCatching { JSONObject(s!!.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }.getOrNull()
         return JSONObject().put("protocol", 1).put("connected", s != null)
             .put("prepared", prepared && s?.asBinder() == serviceBinder)
             .put("display_id", displayId).put("resolution", JSONArray(listOf(1920, 1080)))
@@ -188,7 +189,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             .put("apk_version", com.aliothmoon.maameow.BuildConfig.VERSION_NAME).put("apk_code", com.aliothmoon.maameow.BuildConfig.VERSION_CODE)
             .put("debug", com.aliothmoon.maameow.BuildConfig.DEBUG)
             .put("android_version", android.os.Build.VERSION.RELEASE)
-            .put("maa_version", runCatching { JSONObject(s!!.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result").getString("version") }.getOrDefault("unloaded"))
+            .put("maa_version", maa?.optString("version", "unloaded") ?: "unloaded")
+            .put("maa_component_hash", maa?.optString("component_hash", "") ?: "")
     }
 
     private fun point(a: JSONArray): Pair<Int, Int> {

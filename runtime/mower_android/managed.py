@@ -6,6 +6,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
+from mower_android.backup_cleanup import component_transaction
 
 MAA_PATH = Path('/mower-data/maa')
 COMPONENT = Path('/mower-data/maa-component.zip')
@@ -74,6 +75,7 @@ def normalize(data):
     return result
 
 
+@component_transaction
 def pack_component(target, destination=COMPONENT):
     """Only official libraries/resources/metadata enter the privileged component store."""
     target = Path(target); destination = Path(destination)
@@ -98,6 +100,7 @@ def installed_version(target=MAA_PATH):
     except (OSError, ValueError, KeyError): return ''
 
 
+@component_transaction
 def install_update(target, callback=None, session=None, source='github', mirror_token='', system='android', machine=None, channel='stable'):
     from arknights_mower.utils import maa_update as updater
     import tempfile
@@ -133,6 +136,7 @@ def get_mirror_release(token, session=None, channel='stable'):
     raise MaaUpdateError('Android 暂不支持 Mirror酱，请使用 GitHub 官方源')
 
 
+@component_transaction
 def import_component(package, filename, callback=None):
     """Import an official Android tarball using the same staged installer as online updates."""
     import re

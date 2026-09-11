@@ -327,16 +327,19 @@ class MowerSettingsActivity : Activity() {
         execute { val intent = MowerDiagnostics.share(this); runOnUiThread { startActivity(Intent.createChooser(intent, "导出诊断日志")) }; "已生成诊断日志" }
     }
 
-    private fun showLogs() {
+    private fun showLogs() = scope.launch {
+        val storage = withContext(Dispatchers.IO) { StorageDiagnostics.report(filesDir, cacheDir) }
         val log = java.io.File(filesDir, "python.log")
         val checks = java.io.File(filesDir, "startup-check.txt").takeIf { it.isFile }?.readText().orEmpty()
         val mowerLog = java.io.File(filesDir, "mower-data/log/runtime.log")
         val mowerText = if (mowerLog.isFile) runCatching { MowerLogFiles.tail(mowerLog, 24000) }.getOrDefault("日志暂不可读") else "暂无 Mower 文件日志"
-        val text = "Mower 日志\n" + mowerText + "\n\n启动检查\n" + checks + "\n" + ProcessExitDiagnostics.report(this) + "\n\nPython 控制台\n" + if (log.exists()) java.io.RandomAccessFile(log, "r").use {
+        val text = storage + "\nMower 日志\n" + mowerText + "\n\n启动检查\n" + checks + "\n" + ProcessExitDiagnostics.report(this@MowerSettingsActivity) + "\n\nPython 控制台\n" + if (log.exists()) java.io.RandomAccessFile(log, "r").use {
             it.seek(maxOf(0, it.length() - 14000)); val bytes = ByteArray((it.length() - it.filePointer).toInt()); it.readFully(bytes); String(bytes)
         } else MowerService.message
         val content = label(MowerDiagnostics.redact(text), 12f).apply { setPadding(dp(20), dp(12), dp(20), dp(12)); setTextIsSelectable(true) }
-        AlertDialog.Builder(this).setTitle("运行日志").setView(ScrollView(this).apply { addView(content) })
+        val dialogContext = android.view.ContextThemeWrapper(this@MowerSettingsActivity,
+            if (MowerStyle.dark) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
+        AlertDialog.Builder(dialogContext).setTitle("运行日志").setView(ScrollView(dialogContext).apply { addView(content) })
             .setNeutralButton("导出并分享") { _, _ -> exportLogs() }
             .setPositiveButton("关闭", null).show()
     }

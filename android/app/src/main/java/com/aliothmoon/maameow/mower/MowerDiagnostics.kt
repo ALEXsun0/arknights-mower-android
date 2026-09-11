@@ -24,6 +24,7 @@ object MowerDiagnostics {
             val checks = File(context.filesDir, "startup-check.txt")
             if (checks.isFile) entry("startup-check.txt", checks.readText())
             entry("process-exits.txt", ProcessExitDiagnostics.report(context))
+            entry("storage.txt", StorageDiagnostics.report(context.filesDir, context.cacheDir))
             val log = File(context.filesDir, "python.log")
             if (log.isFile) RandomAccessFile(log, "r").use {
                 it.seek(maxOf(0, it.length() - 2 * 1024 * 1024))

@@ -53,6 +53,35 @@ class MowerPackageTests(unittest.TestCase):
         self.assertEqual(mower_package.select_source(bundled),active)
         mower_package.reset(); self.assertEqual(mower_package.select_source(bundled),bundled)
 
+    def test_backups_retire_only_after_the_new_server_is_ready(self):
+        bundled=self.root/'bundled'
+        mower_package.install(self.pack(body='__version__ = "4.2.0"\n# first'))
+        first=mower_package.select_source(bundled);mower_package.mark_ready()
+        mower_package.install(self.pack(body='__version__ = "4.2.0"\n# next'))
+        mower_package.mark_ready() # old server cannot commit the pending update
+        self.assertTrue(first.exists());self.assertTrue(mower_package.state()['pending'])
+        second=mower_package.select_source(bundled)
+        self.assertTrue(first.exists())
+        mower_package.mark_ready()
+        self.assertFalse(first.exists());self.assertTrue(second.exists())
+        self.assertNotIn('previous',mower_package.state())
+        mower_package.reset();mower_package.mark_ready()
+        self.assertTrue(second.exists()) # still serving the old process
+        mower_package.select_source(bundled);mower_package.mark_ready()
+        self.assertFalse(second.exists())
+
+    def test_failed_launch_keeps_the_previous_version_until_recovery_is_ready(self):
+        bundled=self.root/'bundled'
+        mower_package.install(self.pack(body='__version__ = "4.2.0"\n# first'))
+        first=mower_package.select_source(bundled);mower_package.mark_ready()
+        mower_package.install(self.pack(body='__version__ = "4.2.0"\n# bad'))
+        failed=mower_package.select_source(bundled)
+        self.assertTrue(first.exists())
+        self.assertEqual(mower_package.select_source(bundled),first)
+        self.assertTrue(failed.exists())
+        mower_package.mark_ready()
+        self.assertTrue(first.exists());self.assertFalse(failed.exists())
+
     def test_manual_downgrade_requires_confirmation(self):
         from werkzeug.datastructures import FileStorage
         import arknights_mower

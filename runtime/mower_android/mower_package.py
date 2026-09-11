@@ -7,10 +7,22 @@ import shutil
 import stat
 import tempfile
 import zipfile
+import functools
+import threading
+import logging
 from pathlib import Path, PurePosixPath
 
 RUNTIME_API = 1
 REQUIRED = {'mower/server.py', 'mower/arknights_mower/__init__.py', 'mower/ui/dist/index.html', 'mower/requirements.txt'}
+_lock = threading.RLock()
+
+
+def serialized(function):
+    @functools.wraps(function)
+    def locked(*args, **kwargs):
+        with _lock:
+            return function(*args, **kwargs)
+    return locked
 
 
 def folder():
@@ -69,6 +81,7 @@ def inspect(package):
         return meta
 
 
+@serialized
 def install(package):
     package = Path(package); meta = inspect(package)
     with package.open('rb') as stream: ident = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -84,6 +97,7 @@ def install(package):
     return {**meta, 'message':'Mower 更新已准备完成，停止并重新启动手机服务后生效；APK 和 MAA 保持不变。'}
 
 
+@serialized
 def select_source(bundled):
     current = state(); ident = current.get('id')
     # An earlier launch which never served the WebUI is rolled back on restart.
@@ -99,11 +113,27 @@ def select_source(bundled):
     return bundled
 
 
+@serialized
 def mark_ready():
     current = state()
-    if current.get('id') == os.environ.get('MOWER_ACTIVE_ID') and current.get('booting'):
-        current.pop('booting', None); current.pop('pending', None); save(current)
+    active = os.environ.get('MOWER_ACTIVE_ID')
+    if current.get('id') != active:
+        return # A newer update is staged while this older server is still running.
+    if current.get('booting') or (not current.get('pending') and 'previous' in current):
+        current.pop('booting', None); current.pop('pending', None)
+        current.pop('previous', None); save(current)
+    if current.get('pending'):
+        return
+    # Successful authenticated WebUI startup commits the version. Startup
+    # failures still roll back in select_source before anything is deleted.
+    for candidate in folder().iterdir():
+        if valid_id(candidate.name) and candidate.name != active and not candidate.is_symlink():
+            try:
+                if candidate.is_dir(): shutil.rmtree(candidate)
+            except OSError:
+                logging.getLogger(__name__).warning('Mower 已启动；旧程序目录暂未清理，下次启动检查时重试')
 
 
+@serialized
 def reset():
     save({})

@@ -77,6 +77,7 @@ class AndroidMaaCore {
         val p = request.optJSONObject("params") ?: JSONObject()
         if (method == "maa_status") return JSONObject().put("version", api?.AsstGetVersion() ?: "unloaded")
             .put("running", instance?.let { api?.AsstRunning(it) } ?: false)
+            .put("component_hash", loaded ?: "")
         val core = core()
         if (method == "maa_prepare") {
             if (instance == null) instance = core.AsstCreateEx(callback, null) ?: error("MAA 实例创建失败")
@@ -89,6 +90,11 @@ class AndroidMaaCore {
         }
         val ptr = instance ?: error("MAA 尚未连接")
         return when (method) {
+            "maa_confirmed" -> {
+                check(p.getString("component_hash") == loaded) { "任务使用的 MAA 版本已改变，保留回退备份" }
+                check(!core.AsstRunning(ptr)) { "MAA 任务仍在运行，保留回退备份" }
+                CoreBackupCleanup.retire(root, loaded!!)
+            }
             "maa_reset" -> { check(!core.AsstRunning(ptr)); check(core.AsstStop(ptr)); synchronized(events) { events.clear(); sequence } }
             "maa_connected" -> core.AsstConnected(ptr)
             "maa_option" -> if (p.getInt("key") == 2) true else core.AsstSetInstanceOption(ptr, p.getInt("key"), p.getString("value"))

@@ -31,6 +31,8 @@ def main():
     config.conf.webview.port = int(os.environ.get('MOWER_WEB_PORT', '58000'))
     from mower_android.bridge import Bridge
     import server
+    from mower_android.backup_cleanup import install_hooks
+    install_hooks(server)
     from flask import request, abort, make_response
     from werkzeug.datastructures import ImmutableMultiDict
 
