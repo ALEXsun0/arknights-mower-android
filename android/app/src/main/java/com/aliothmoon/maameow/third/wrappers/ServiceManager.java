@@ -19,6 +19,7 @@ public final class ServiceManager {
     private static DisplayManager displayManager;
     private static InputManager inputManager;
     private static ActivityManager activityManager;
+    private static PowerManager powerManager;
 
     static {
         try {
@@ -62,6 +63,11 @@ public final class ServiceManager {
             inputManager = InputManager.create();
         }
         return inputManager;
+    }
+
+    public static synchronized PowerManager getPowerManager() {
+        if (powerManager == null) powerManager = PowerManager.create();
+        return powerManager;
     }
 
     public static ActivityManager getActivityManager() {

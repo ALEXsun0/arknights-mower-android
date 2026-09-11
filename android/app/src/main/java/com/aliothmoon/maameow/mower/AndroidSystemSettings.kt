@@ -10,7 +10,11 @@ class AndroidSystemSettings(private val context: Context) {
     companion object {
         val defaults = linkedMapOf("mute_game" to false, "preview_sound" to true,
             "force_fullscreen" to false, "recover_game" to true, "wake_on_launch" to false,
-            "dismiss_keyguard" to false, "keep_cpu_awake" to true, "keep_screen_on" to false)
+            "dismiss_keyguard" to false, "keep_cpu_awake" to true, "keep_screen_on" to false,
+            "auto_pip" to false, "show_touch" to false, "resolution_720p" to false,
+            "external_device_alerts" to false, "fps_monitor" to true, "low_fps_alert" to true, "disconnect_stop" to true,
+            "sleep_when_idle" to false, "preserve_screen_on" to true,
+            "screen_saver" to false, "hardware_screen_off" to false, "restart_on_boot" to false, "root_backend" to false)
         @Volatile var lastAction = "尚未执行系统操作"
         @Volatile var foreground: MowerActivity? = null
     }
@@ -24,7 +28,7 @@ class AndroidSystemSettings(private val context: Context) {
         val values = request.getJSONObject("settings")
         require(values.keys().asSequence().toSet() == defaults.keys) { "设置项不完整或不受支持" }
         defaults.keys.forEach { require(values.get(it) is Boolean) { "设置项必须为布尔值" } }
-        require(!values.getBoolean("dismiss_keyguard") || values.getBoolean("wake_on_launch")) { "解除滑动锁屏需要开启自动唤醒" }
+        require(!values.getBoolean("dismiss_keyguard") || values.getBoolean("wake_on_launch")) { "自动解锁需要开启自动唤醒" }
         val edit = prefs.edit()
         defaults.keys.forEach { edit.putBoolean(it, values.getBoolean(it)) }
         check(edit.putInt("revision", prefs.getInt("revision", 0) + 1).commit()) { "设置保存失败" }

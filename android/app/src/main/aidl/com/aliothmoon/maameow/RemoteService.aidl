@@ -1,6 +1,7 @@
 package com.aliothmoon.maameow;
 import android.os.ParcelFileDescriptor;
 import android.view.Surface;
+import com.aliothmoon.maameow.ITouchEventCallback;
 interface RemoteService {
     void destroy() = 16777114;
     boolean setVirtualDisplayMode(int mode) = 1;
@@ -21,4 +22,10 @@ interface RemoteService {
     boolean installCore(in ParcelFileDescriptor zip, String hash) = 16;
     String maaRpc(String request) = 17;
     String systemRpc(String request) = 18;
+    // Native settings only. Never exposed through the WebUI bridge.
+    int unlockPhone(String kind, String credential, boolean test) = 19;
+    void startUnlockRecording() = 20;
+    String pollUnlockRecording() = 21;
+    void cancelUnlockRecording() = 22;
+    void setTouchMonitor(ITouchEventCallback callback) = 23;
 }

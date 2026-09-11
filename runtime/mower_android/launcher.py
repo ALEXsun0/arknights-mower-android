@@ -76,6 +76,17 @@ def main():
     def android_status():
         return Bridge().call('status')
 
+    @server.app.post('/android/runtime-event')
+    def android_runtime_event():
+        if request.remote_addr not in ('127.0.0.1', '::1'):
+            abort(403)
+        from mower_android.runtime_events import report, MESSAGES
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {'event'} or not isinstance(data['event'], str) or data['event'] not in MESSAGES:
+            abort(400)
+        from arknights_mower.utils.email import send_message
+        return {'sent': report(data['event'], send_message)}
+
     from mower_android import app_update
     server.app.extensions['software_update_provider'] = app_update
     server.app.config['MAX_CONTENT_LENGTH'] = 769 * 1024**2

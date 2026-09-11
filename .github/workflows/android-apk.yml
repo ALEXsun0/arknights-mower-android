@@ -125,7 +125,7 @@ jobs:
           PY
       - name: Build APK
         run: |
-          bash android/gradlew -p android :app:assembleRelease :app:lintRelease --console=plain
+          bash android/gradlew -p android :app:testDebugUnitTest :app:assembleRelease :app:lintRelease --console=plain
           mkdir -p artifacts
           python3 scripts/package_maa_python.py
           cp android/app/build/outputs/apk/release/app-release.apk artifacts/mower-android-arm64.apk

@@ -1,15 +1,15 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "2932193c14ef6706357961b95dd48e59ad971e5c",
+    "commit": "d8cbb41b834a34cc6a0aaba794d1081886a570fe",
     "branch": "alpha",
-    "source": "Alpha 32f5597 with Android compatibility PR #1029 at 2932193c",
-    "base_commit": "32f5597e062f5acce846bd7944dbfbdefbfa960b"
+    "source": "Alpha eaa05aa1 with unmerged Android compatibility PR #1029 and native idle preference protection",
+    "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724"
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",
     "commit": "042e21b6a7c826f1dcd4ecef0004e5288f7601f2",
-    "retained": "Background display, capture, preview, touch, Android wrappers, hidden API declarations, small MAA C API declarations only; full application removed"
+    "retained": "Background display/capture/preview/input, privileged process bootstrap, wake/unlock gesture recording, screen power, FPS monitoring, Android wrappers and hidden API declarations; adapted native host settings only, no Meow task scheduler or updater"
   },
   "maa": {
     "url": "https://github.com/MaaAssistantArknights/MaaAssistantArknights",

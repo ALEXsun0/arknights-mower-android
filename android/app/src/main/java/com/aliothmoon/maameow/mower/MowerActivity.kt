@@ -38,6 +38,7 @@ class MowerActivity : Activity() {
             else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             status.text = MowerService.message
             val url = MowerService.url
+            toggle.isEnabled = !MowerService.stopping
             toggle.text = if (MowerService.active) "停止服务" else "启动服务"
             dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
             if (url != null && url != loaded) { loaded = url; web.loadUrl(url) }
@@ -83,6 +84,7 @@ class MowerActivity : Activity() {
         add("游戏画面") { startActivity(Intent(this, MowerGameActivity::class.java)) }
         add("软件设置") { startActivity(Intent(this, MowerSettingsActivity::class.java)) }
         toggle = add("启动服务", true) {
+            if (MowerService.stopping) return@add
             if (MowerService.active) stopService(Intent(this, MowerService::class.java)) else startRuntime()
         }
         val barScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; isFillViewport = true }

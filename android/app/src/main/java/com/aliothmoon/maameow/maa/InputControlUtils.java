@@ -89,7 +89,8 @@ public final class InputControlUtils {
             if (!setDisplayId(event, displayId)) {
                 return false;
             }
-            notifyTouchCallback(event, reportIndex);
+            // Screen 0 may carry an unlock credential; never send it to preview observers.
+            if (displayId > 0) notifyTouchCallback(event, reportIndex);
             return getManager().injectInputEvent(event, mode);
         } finally {
             event.recycle();

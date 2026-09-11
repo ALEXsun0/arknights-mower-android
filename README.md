@@ -11,7 +11,7 @@
         ↓ Asst Python 兼容接口 / 本机认证桥接
 Shizuku 后台服务：官方 Android MaaCore + 显示器、截图、触控
         ↓
-1920×1080 后台明日方舟
+720p / 1080p 后台明日方舟（Mower 截图统一 1080p）
 ```
 
 Android `.so` 使用 Bionic，不能由 Linux 用户态 Python 直接通过 ctypes 加载。因此 Python 适配器保留 Mower 使用的 Asst 调用方式，由 Android 原生服务加载官方库并转发回调。它实现的是当前 Mower 所需接口，并非官方 Python API 的完整替代。
@@ -24,7 +24,7 @@ Android `.so` 使用 Bionic，不能由 Linux 用户态 Python 直接通过 ctyp
 
 1. 安装 ARM64 APK，建议预留至少 4 GB 空间。安装并启动 Shizuku，可通过无线调试或 Root 启动。
 2. 点击顶部「启动服务」并授予 Shizuku 权限。首次启动需要解压 Python 和 MAA 环境。
-3. 点击「游戏画面」进入后台显示器，登录明日方舟。进入手动预览会先暂停 Mower 和 MAA，返回后按需恢复调度。
+3. 点击「游戏画面」进入后台显示器，登录明日方舟。默认仅查看画面，不影响调度；点击「手动操作」才暂停 Mower 和 MAA，结束后按需恢复调度。
 4. 在原版 WebUI 中导入或编辑排班与任务。安卓自动管理 ADB、模拟器、截图方式和 MAA 路径；导入桌面配置会保留任务并覆盖设备连接参数。
 5. 使用「停止服务」或常驻通知停止运行；「软件设置 → 诊断日志」显示启动错误。
 
@@ -80,13 +80,15 @@ bash scripts/build.sh
 
 ## 限制与许可证
 
-这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.1.0 内置 Mower 4.1.6-alpha.5 与 Android 兼容补丁。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
+这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.2.0 内置最新 alpha（eaa05aa1）与 Android 兼容补丁（d8cbb41b）。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
 
 整体采用 AGPL-3.0，保留 Mower 的 MIT 许可、后台游戏代码及各组件声明。参见 [LICENSE](LICENSE)、[runtime/LICENSE](runtime/LICENSE)、[第三方代码声明](docs/licenses/Meow-THIRD-PARTY-NOTICES.md) 和 [运行时声明](docs/third-party-runtime.md)。个人配置、凭证、游戏截图和日志不会提交到 Git。
 
 ### 后台与系统设置
 
-手机顶栏「软件设置」可管理游戏静音、预览声音、后台窗口恢复、自动唤醒/无密码锁屏、前台亮屏和 CPU 保活。这些设置直接保存在手机，无需启动 Python 服务，不占用 WebUI 页面。安全锁屏需在手机上认证；游戏识别保持 1920×1080。
+手机顶栏「软件设置」管理静音、窗口恢复、720p、画中画、触点、FPS 与掉线提醒、屏保/物理熄屏、CPU 保活、唤醒、开机恢复和日志导出。「自动解锁」支持滑动、PIN 或手动录制，PIN 和录制操作加密保存在本机，不进入 WebUI 或配置导出。设置可在 Python 未启动时修改，实际操作需要后台权限。
+
+任务完成后的「无操作／返回游戏首页／退出游戏」统一在原生设置中选择，读写 Mower 原有配置，由原调度器执行；安卓版 WebUI 隐藏重复入口，其自动保存也不会覆盖手机上的新选择。其他平台保留原 WebUI。原生锁屏选项还可保留本轮开始前已亮着的屏幕。
 
 后台与系统的适配结果与未引入功能见 [后台与系统功能核对](docs/meow-system-feature-review.md)。
 

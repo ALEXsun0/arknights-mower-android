@@ -17,15 +17,22 @@ import org.tukaani.xz.XZInputStream
 class MowerService : Service() {
     companion object {
         @Volatile var active = false
+        @Volatile var stopping = false
         @Volatile var cpuAwake = false
         @Volatile var lanEnabled = false
         @Volatile var manual = false
+        @Volatile var previewing = false
+        @Volatile var unlocking = false
         @Volatile var engine: MowerBridge? = null
+        @Volatile var monitor: MowerRuntimeMonitor? = null
         @Volatile var message = "尚未启动"
         @Volatile var url: String? = null
         fun secret(): String = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var runtimeJob: Job? = null
+    private var maintenanceJob: Job? = null
+    private var ownsRuntime = false
     private var bridge: MowerBridge? = null
     private var python: Process? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -57,14 +64,18 @@ class MowerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "stop") { stopSelf(); return START_NOT_STICKY }
+        if (stopping) { stopSelf(); return START_NOT_STICKY }
         if (active) return START_NOT_STICKY
         active = true
-        scope.launch {
+        getSharedPreferences("runtime-wake", 0).edit().putBoolean("requested", true).apply()
+        ownsRuntime = true
+        runtimeJob = scope.launch {
             try {
                 (application as MaaApplication).awaitReady()
                 updateWakeLock()
-                message = "正在初始化 Python 环境，首次启动需要解压"
+                message = "正在检查 Python 运行环境"
                 installRuntime()
+                message = "正在准备 MAA 组件"
                 val maaData = File(filesDir, "mower-data").apply { mkdirs() }
                 val componentFormat = File(maaData, "maa-component-format")
                 if (!File(maaData, "maa-component.zip").exists() || !componentFormat.exists()) {
@@ -73,6 +84,7 @@ class MowerService : Service() {
                     componentFormat.writeText("ncnn-v1")
                 }
                 ensureActive()
+                message = "正在连接后台服务（最长 20 秒）"
                 RemoteServiceManager.getInstance()
                 val bridgeToken = secret()
                 val webToken = secret()
@@ -80,7 +92,13 @@ class MowerService : Service() {
                 bridge = localBridge
                 engine = localBridge
                 localBridge.start()
-                scope.launch { while (isActive) { localBridge.maintainSystem(); delay(5000) } }
+                val runtimeMonitor = MowerRuntimeMonitor(this@MowerService)
+                monitor = runtimeMonitor
+                maintenanceJob = scope.launch { while (isActive) {
+                    try { runInterruptible { localBridge.maintainSystem(); runtimeMonitor.tick() } }
+                    catch (failure: Exception) { ensureActive(); AndroidSystemSettings.lastAction = "后台监测暂不可用，请检查服务连接" }
+                    delay(5000)
+                } }
                 val webPort = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
                 val root = File(filesDir, "rootfs")
                 val data = File(filesDir, "mower-data").apply { mkdirs() }
@@ -120,7 +138,7 @@ class MowerService : Service() {
                         // Keep credentials only in app-private storage, for diagnostics on debug builds.
                         File(filesDir, "runtime-session.json").writeText(org.json.JSONObject()
                             .put("port", localBridge.port).put("token", bridgeToken).put("web_url", url).toString())
-                        val result = python!!.waitFor()
+                        val result = runInterruptible { python!!.waitFor() }
                         ensureActive()
                         if (active) error("Python 进程退出：$result")
                         return@launch
@@ -128,12 +146,12 @@ class MowerService : Service() {
                     delay(500)
                 }
                 error("Python 启动超时，请查看诊断日志")
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: Exception) {
+                ensureActive()
                 failed = true
                 message = e.message ?: "启动失败"
-                File(filesDir, "python.log").appendText("\n${e.stackTraceToString()}\n")
+                runCatching { File(filesDir, "python.log").appendText("\n${e.stackTraceToString()}\n") }
+                MowerNotifications.event(this@MowerService, message, true)
                 stopSelf()
             }
         }
@@ -145,24 +163,34 @@ class MowerService : Service() {
         val stamp = assets.open("python-runtime.sha256").bufferedReader().use { it.readText().trim() }
         val marker = File(root, ".mower-runtime")
         if (marker.exists() && marker.readText() == stamp) return
+        message = "正在解压 Python 环境，首次启动需要稍候"
         val archive = File(cacheDir, "python-runtime.zip.xz")
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         assets.open("python-runtime.zip.xz").use { input -> archive.outputStream().use { output ->
             val buffer = ByteArray(262144)
-            while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n); output.write(buffer, 0, n) }
+            while (true) { scope.ensureActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n); output.write(buffer, 0, n) }
         } }
         check(digest.digest().joinToString("") { "%02x".format(it) } == stamp) { "Python 运行包校验失败" }
         val temp = File(filesDir, "rootfs-install")
         temp.deleteRecursively(); temp.mkdirs()
         // Symlinks are restored LAST from a dedicated manifest, never traversed while extracting.
         ZipInputStream(XZInputStream(archive.inputStream().buffered(), 65536)).use { zip ->
+            val buffer = ByteArray(262144)
             while (true) {
+                scope.ensureActive()
                 val entry = zip.nextEntry ?: break
                 val dest = File(temp, entry.name)
                 check(dest.canonicalPath.startsWith(temp.canonicalPath + "/")) { "Invalid runtime path" }
                 if (entry.isDirectory) dest.mkdirs() else {
                     dest.parentFile?.mkdirs()
-                    dest.outputStream().use { zip.copyTo(it) }
+                    dest.outputStream().use { output ->
+                        while (true) {
+                            scope.ensureActive()
+                            val n = zip.read(buffer)
+                            if (n < 0) break
+                            output.write(buffer, 0, n)
+                        }
+                    }
                     Os.chmod(dest.path, 493)
                 }
             }
@@ -170,11 +198,13 @@ class MowerService : Service() {
         val linksFile = File(temp, ".symlinks.json")
         val links = org.json.JSONObject(linksFile.readText())
         for (name in links.keys()) {
+            scope.ensureActive()
             val dest = File(temp, name)
             check(dest.canonicalPath.startsWith(temp.canonicalPath + "/"))
             dest.parentFile?.mkdirs()
             Os.symlink(links.getString(name), dest.path)
         }
+        scope.ensureActive()
         linksFile.delete()
         File(temp, ".mower-runtime").writeText(stamp)
         root.deleteRecursively()
@@ -184,12 +214,18 @@ class MowerService : Service() {
 
     override fun onDestroy() {
         getSharedPreferences("android-system", 0).unregisterOnSharedPreferenceChangeListener(settingListener)
-        url = null; engine = null; lanEnabled = false; manual = false
+        if (!ownsRuntime) { scope.cancel(); super.onDestroy(); return }
+        stopping = true
+        getSharedPreferences("runtime-wake", 0).edit().putBoolean("requested", false).apply()
+        MowerWakeReceiver.cancel(this); MowerScreenSaver.hide(); monitor = null
+        url = null; engine = null; lanEnabled = false; manual = false; unlocking = false; previewing = false
         if (!failed) message = "正在停止服务…"
         scope.cancel()
         File(filesDir, "runtime-session.json").delete()
         kotlin.concurrent.thread(name = "mower-cleanup") {
             try {
+                // Finish cancelled startup before releasing its files, process or Binder.
+                runBlocking { runtimeJob?.join(); maintenanceJob?.join() }
                 val pidFile = File(filesDir, "mower-data/runtime-python.pid")
                 val pid = runCatching { pidFile.readText().trim().toInt() }.getOrNull()
                 fun ownsPython(): Boolean = pid != null && runCatching {
@@ -208,12 +244,13 @@ class MowerService : Service() {
                 }
                 pidFile.delete()
                 bridge?.close()
-                RemoteServiceManager.unbind()
+                runCatching { runBlocking(Dispatchers.Main) { RemoteServiceManager.unbind() } }
             } finally {
                 runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
                 cpuAwake = false
-                active = false
                 if (!failed) message = "已停止"
+                active = false
+                stopping = false
             }
         }
         super.onDestroy()

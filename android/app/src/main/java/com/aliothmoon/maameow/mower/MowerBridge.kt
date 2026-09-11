@@ -23,6 +23,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     private val settings = AndroidSystemSettings(context)
     private val audioLedger = context.getSharedPreferences("game-audio-recovery", 0)
     private var prepared = false
+    private var expectedGameRunning = false
     private var recoveredBinder: android.os.IBinder? = null
     private var systemError: String? = null
 
@@ -46,7 +47,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     }
 
     private fun applyAudio(s: RemoteService) {
-        if (!settings.enabled("mute_game") || (MowerService.manual && settings.enabled("preview_sound"))) {
+        if (!settings.enabled("mute_game") || ((MowerService.manual || MowerService.previewing) && settings.enabled("preview_sound"))) {
             restoreAudio(s); return
         }
         if (s.isAppAlive(packageName) != 1) { restoreAudio(s); return }
@@ -60,14 +61,16 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     }
 
     private fun wake(s: RemoteService, dismiss: Boolean): JSONObject {
+        MowerService.monitor?.beforeWake()
         val power = context.getSystemService(android.os.PowerManager::class.java)
         val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
         if (!power.isInteractive) system(s, "wake")
         for (i in 0 until 20) { if (power.isInteractive) break; Thread.sleep(100) }
         check(power.isInteractive) { "系统未唤醒屏幕" }
-        if (dismiss && keyguard.isKeyguardLocked && !keyguard.isKeyguardSecure) {
-            system(s, "dismiss_keyguard")
-            for (i in 0 until 20) { if (!keyguard.isKeyguardLocked) break; Thread.sleep(100) }
+        if (dismiss && keyguard.isKeyguardLocked) {
+            val result = UnlockSettings(context).unlock(s)
+            AndroidSystemSettings.lastAction = UnlockSettings.resultText(result)
+            check(result == com.aliothmoon.maameow.constant.WakeUnlockResult.OK) { AndroidSystemSettings.lastAction }
         }
         AndroidSystemSettings.lastAction = if (keyguard.isKeyguardLocked) {
             if (keyguard.isKeyguardSecure) "屏幕已唤醒；安全锁屏需要在手机上认证" else "屏幕已唤醒；滑动锁屏仍未解除"
@@ -154,7 +157,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         recoveredBinder = current.asBinder()
         system(current, "display_options", JSONObject().put("fullscreen", settings.enabled("force_fullscreen")))
         check(current.setVirtualDisplayMode(2))
-        current.setVirtualDisplayResolution(1920, 1080, 320)
+        if (settings.enabled("resolution_720p")) current.setVirtualDisplayResolution(1280, 720, 160)
+        else current.setVirtualDisplayResolution(1920, 1080, 320)
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
         val component = java.io.File(context.filesDir, "mower-data/maa-component.zip")
@@ -168,6 +172,12 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         prepared = true
         return status()
     }
+
+    @Synchronized fun gameState(): JSONObject {
+        val s = remote()
+        return (system(s, "game_status", JSONObject().put("package", packageName).put("monitor", settings.enabled("fps_monitor"))) as JSONObject).put("expected_running", expectedGameRunning)
+    }
+    @Synchronized fun sleepPhone(): Int = system(remote(), "sleep") as Int
 
     private fun status(): JSONObject {
         val s = RemoteServiceManager.getInstanceOrNull()
@@ -189,7 +199,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     }
 
     @Synchronized private fun dispatch(method: String, p: JSONObject): Any {
-        if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual) { "游戏画面正在手动操作，请先返回 WebUI" }
+        if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
         check(!closed) { "Mower 服务正在停止" }
         if (method == "status") return status()
         if (method == "apk_info" || method == "apk_install") {
@@ -255,6 +265,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             "launch", "exit_game" -> {
                 if (method == "launch" && settings.enabled("wake_on_launch")) wake(s, settings.enabled("dismiss_keyguard"))
                 check(s.mowerGame(packageName, method == "launch")) { "游戏启动或关闭失败" }
+                expectedGameRunning = method == "launch"
                 if (method == "launch") applyAudio(s) else restoreAudio(s)
                 true
             }

@@ -17,12 +17,12 @@ class BackgroundGameService : RemoteService.Stub() {
     companion object { @JvmStatic var current: BackgroundGameService? = null; private set }
     private val maa = AndroidMaaCore()
     init {
-        if (Process.myUid() == 0) {
+        if (Process.myUid() == 0 && android.os.Build.VERSION.SDK_INT < 34) {
             // Use the shell identity expected by Android's display attribution checks.
             android.system.Os.setgid(2000)
             android.system.Os.setuid(2000)
         }
-        Workarounds.apply(); current = this
+        Workarounds.apply(); com.aliothmoon.maameow.remote.internal.PowerController.destroy(); current = this
     }
     override fun onTransact(code: Int, data: android.os.Parcel, reply: android.os.Parcel?, flags: Int): Boolean {
         val identity = android.os.Binder.clearCallingIdentity()
@@ -35,12 +35,33 @@ class BackgroundGameService : RemoteService.Stub() {
     } catch (e: Exception) { org.json.JSONObject().put("ok", false).put("error", e.message).toString() }
 
     private var fullscreen = false
+    private var width = 1920
+    private var height = 1080
     /** Fixed operations only: never expose an arbitrary shell command to the WebUI. */
     @Synchronized override fun systemRpc(request: String): String = try {
         val p = org.json.JSONObject(request)
         val result: Any = when (p.getString("action")) {
             "display_options" -> { fullscreen = p.getBoolean("fullscreen"); true }
-            "wake" -> { check(command("/system/bin/input", "-d", "0", "keyevent", "224").first == 0); true }
+            "wake" -> { check(com.aliothmoon.maameow.remote.internal.WakeUnlockController.wakeScreen()) { "无法唤醒屏幕" }; true }
+            "sleep" -> com.aliothmoon.maameow.remote.internal.WakeUnlockController.lockAndSleep()
+            "screen_power" -> {
+                val power = com.aliothmoon.maameow.remote.internal.PowerController
+                val on = p.getBoolean("on")
+                val success = power.setDisplayPower(on)
+                if (on || !success) power.stopUserActivityKeepAlive()
+                else power.startUserActivityKeepAlive(0)
+                success
+            }
+            "game_status" -> {
+                val pkg = p.getString("package"); require(allowed(pkg))
+                val alive = isAppAlive(pkg) == 1
+                val onDisplay = VirtualDisplayManager.getDisplayId() > 0 && alive && isAppOnVirtualDisplay(pkg)
+                if (p.optBoolean("monitor") && onDisplay) com.aliothmoon.maameow.remote.internal.GameFpsMonitor.ensureStarted(pkg)
+                else com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
+                org.json.JSONObject().put("alive", alive).put("on_display", onDisplay)
+                    .put("fps", com.aliothmoon.maameow.remote.internal.GameFpsMonitor.currentFps())
+                    .put("width", width).put("height", height).put("maa_running", maa.running())
+            }
             "dismiss_keyguard" -> { check(command("/system/bin/wm", "dismiss-keyguard").first == 0); true }
             "audio_get", "audio_set" -> {
                 val pkg = p.getString("package"); require(allowed(pkg))
@@ -69,22 +90,36 @@ class BackgroundGameService : RemoteService.Stub() {
         val output = process.inputStream.bufferedReader().use { it.readText() }
         return process.waitFor() to output
     }
-    override fun destroy() { runCatching { stopVirtualDisplay() }; exitProcess(0) }
+    @Synchronized override fun unlockPhone(kind: String, credential: String, test: Boolean): Int {
+        val controller = com.aliothmoon.maameow.remote.internal.WakeUnlockController
+        return when (kind) {
+            "gesture" -> if (test) controller.testUnlockGesture(credential) else controller.unlockWithGesture(credential)
+            "pin", "swipe" -> if (test) controller.testUnlock(if (kind == "pin") credential else "") else controller.unlock(if (kind == "pin") credential else "")
+            else -> com.aliothmoon.maameow.constant.WakeUnlockResult.UNSUPPORTED
+        }
+    }
+    override fun startUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.start(90_000)
+    override fun pollUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.poll()
+    override fun cancelUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.cancel()
+
+    override fun destroy() { cancelUnlockRecording(); com.aliothmoon.maameow.remote.internal.PowerController.destroy(); runCatching { stopVirtualDisplay() }; exitProcess(0) }
     override fun setVirtualDisplayMode(mode: Int) = mode == 2
     override fun setVirtualDisplayResolution(width: Int, height: Int, dpi: Int) {
-        require(width == 1920 && height == 1080); VirtualDisplayManager.setResolution(width, height, dpi)
+        require((width == 1920 && height == 1080) || (width == 1280 && height == 720)); this.width = width; this.height = height; VirtualDisplayManager.setResolution(width, height, dpi)
     }
     override fun startVirtualDisplay() = VirtualDisplayManager.start()
-    override fun stopVirtualDisplay() { maa.stop(); InputControlUtils.cancel(VirtualDisplayManager.getDisplayId()); VirtualDisplayManager.stop() }
+    override fun stopVirtualDisplay() { com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop(); maa.stop(); InputControlUtils.cancel(VirtualDisplayManager.getDisplayId()); VirtualDisplayManager.stop() }
     override fun setMonitorSurface(surface: Surface?) {
         VirtualDisplayManager.setMonitorSurface(surface); NativeBridgeLib.setPreviewSurface(surface)
     }
-    override fun touchDown(x: Int, y: Int, contact: Int) { check(InputControlUtils.down(x, y, contact, display())) }
-    override fun touchMove(x: Int, y: Int, contact: Int) { check(InputControlUtils.move(x, y, contact, display())) }
-    override fun touchUp(x: Int, y: Int, contact: Int) { check(InputControlUtils.up(x, y, contact, display())) }
+    override fun touchDown(x: Int, y: Int, contact: Int) { check(InputControlUtils.down(x * width / 1920, y * height / 1080, contact, display())) }
+    override fun touchMove(x: Int, y: Int, contact: Int) { check(InputControlUtils.move(x * width / 1920, y * height / 1080, contact, display())) }
+    override fun touchUp(x: Int, y: Int, contact: Int) { check(InputControlUtils.up(x * width / 1920, y * height / 1080, contact, display())) }
+    override fun setTouchMonitor(callback: com.aliothmoon.maameow.ITouchEventCallback?) { InputControlUtils.setTouchCallback(callback) }
     override fun touchCancel() { InputControlUtils.cancel(display()) }
     override fun mowerFrame(): ParcelFileDescriptor? {
-        val bitmap = NativeBridgeLib.getFrameBufferBitmap() ?: return null
+        val captured = NativeBridgeLib.getFrameBufferBitmap() ?: return null
+        val bitmap = if (captured.width == 1920 && captured.height == 1080) captured else Bitmap.createScaledBitmap(captured, 1920, 1080, true).also { captured.recycle() }
         val pipe = ParcelFileDescriptor.createPipe()
         thread(name = "background-frame") {
             try { ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }

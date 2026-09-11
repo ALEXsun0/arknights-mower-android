@@ -21,3 +21,5 @@ android/app/src/main/assets/*.sha256
 android/app/src/main/jniLibs/
 
 android/app/src/main/assets/*.xz
+
+/android/app/src/main/assets/*.tmp

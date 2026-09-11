@@ -175,9 +175,12 @@ import { ref } from 'vue'
 import ChatBotSetting from '../components/ChatBotSetting.vue'
 import SoftwareUpdate from '../components/SoftwareUpdate.vue'
 import NetworkSettings from '../components/NetworkSettings.vue'
+import ConfigBackup from '../components/ConfigBackup.vue'
 import WorkshopManualSettings from '../components/WorkshopManualSettings.vue'
 
 const idleAction = ref('') // 'idle' | 'home' | 'exit' | 'close'
+const networkSettings = ref(null)
+const softwareUpdate = ref(null)
 
 const idleOptions = [
   { label: '无操作', value: 'idle' },
@@ -238,7 +241,9 @@ if (return_home_when_idle.value) {
                 </n-space>
               </n-radio-group>
             </n-form-item>
-            <n-alert v-if="runtime_platform === 'android'" :show-icon="false">设备连接由 Android 应用管理。</n-alert>
+            <n-alert v-if="runtime_platform === 'android'" :show-icon="false"
+              >设备连接由 Android 应用管理。</n-alert
+            >
             <n-form-item v-if="runtime_platform !== 'android'">
               <template #label>
                 <span>ADB路径</span>
@@ -279,7 +284,7 @@ if (return_home_when_idle.value) {
                 @update:value="onSelectionChange"
               />
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (simulator.name)">
+            <n-form-item v-if="runtime_platform !== 'android' && simulator.name">
               <template #label>
                 <span>模拟器文件夹</span>
                 <help-text>
@@ -290,7 +295,7 @@ if (return_home_when_idle.value) {
               <n-input v-model:value="simulator.simulator_folder" />
               <n-button @click="select_simulator_folder" class="dialog-btn">...</n-button>
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (simulator.name)">
+            <n-form-item v-if="runtime_platform !== 'android' && simulator.name">
               <template #label>
                 <span>多开编号</span>
                 <help-text>
@@ -299,12 +304,15 @@ if (return_home_when_idle.value) {
               </template>
               <n-input v-model:value="simulator.index" />
             </n-form-item>
-            <n-form-item label="模拟器启动时间" v-if="runtime_platform !== 'android' && (simulator.name)">
+            <n-form-item
+              label="模拟器启动时间"
+              v-if="runtime_platform !== 'android' && simulator.name"
+            >
               <n-input-number v-model:value="simulator.wait_time">
                 <template #suffix>秒</template>
               </n-input-number>
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (simulator.name)">
+            <n-form-item v-if="runtime_platform !== 'android' && simulator.name">
               <template #label>
                 <span>模拟器老板键</span>
                 <help-text>
@@ -333,13 +341,18 @@ if (return_home_when_idle.value) {
             <n-form-item label="启动游戏" v-if="runtime_platform !== 'android'">
               <n-select v-model:value="tap_to_launch_game.mode" :options="launch_options" />
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (tap_to_launch_game.mode == 'tap')" label="点击坐标">
+            <n-form-item
+              v-if="runtime_platform !== 'android' && tap_to_launch_game.mode == 'tap'"
+              label="点击坐标"
+            >
               <span class="coord-label">X:</span>
               <n-input-number v-model:value="tap_to_launch_game.x" />
               <span class="coord-label">Y:</span>
               <n-input-number v-model:value="tap_to_launch_game.y" />
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (tap_to_launch_game.mode == 'custom')">
+            <n-form-item
+              v-if="runtime_platform !== 'android' && tap_to_launch_game.mode == 'custom'"
+            >
               <template #label>
                 <span>启动命令</span>
                 <help-text>
@@ -369,7 +382,11 @@ if (return_home_when_idle.value) {
             </n-form-item>
             <n-form-item
               :show-label="false"
-              v-if="runtime_platform !== 'android' && (simulator.name == 'MuMu12' && close_simulator_when_idle)"
+              v-if="
+                runtime_platform !== 'android' &&
+                simulator.name == 'MuMu12' &&
+                close_simulator_when_idle
+              "
             >
               <n-checkbox v-model:checked="fix_mumu12_adb_disconnect">
                 关闭MuMu模拟器12时结束adb进程
@@ -400,7 +417,7 @@ if (return_home_when_idle.value) {
                 </n-flex>
               </n-radio-group>
             </n-form-item>
-            <n-form-item label="旋转截图" v-if="runtime_platform !== 'android' && (droidcast.enable)">
+            <n-form-item label="旋转截图" v-if="runtime_platform !== 'android' && droidcast.enable">
               <n-radio-group v-model:value="droidcast.rotate">
                 <n-flex>
                   <n-radio :value="false">不旋转</n-radio>
@@ -408,13 +425,19 @@ if (return_home_when_idle.value) {
                 </n-flex>
               </n-radio-group>
             </n-form-item>
-            <n-form-item label="截图命令" v-if="runtime_platform !== 'android' && (custom_screenshot.enable)">
+            <n-form-item
+              label="截图命令"
+              v-if="runtime_platform !== 'android' && custom_screenshot.enable"
+            >
               <n-input v-model:value="custom_screenshot.command" type="textarea" :autosize="true" />
               <n-button class="dialog-btn" @click="test_screenshot" :loading="loading">
                 测试
               </n-button>
             </n-form-item>
-            <n-form-item v-if="runtime_platform !== 'android' && (custom_screenshot.enable && tested)" :show-label="false">
+            <n-form-item
+              v-if="runtime_platform !== 'android' && custom_screenshot.enable && tested"
+              :show-label="false"
+            >
               <n-flex vertical>
                 <n-image :src="'data:image/jpeg;base64,' + image" width="100%" />
                 <div>（截图用时{{ elapsed }}ms）</div>
@@ -770,11 +793,17 @@ if (return_home_when_idle.value) {
       </div>
     </div>
     <div class="settings-network">
-      <NetworkSettings />
+      <NetworkSettings ref="networkSettings" />
     </div>
     <div class="settings-updates">
-      <div><SoftwareUpdate /></div>
+      <div><SoftwareUpdate ref="softwareUpdate" /></div>
       <div><ResourceUpdate /></div>
+    </div>
+    <div class="settings-network">
+      <ConfigBackup
+        :save-network="() => networkSettings.save()"
+        :save-updates="() => softwareUpdate.flushSettings()"
+      />
     </div>
     <div class="settings-network">
       <ProcessControl v-if="runtime_platform !== 'android'" />

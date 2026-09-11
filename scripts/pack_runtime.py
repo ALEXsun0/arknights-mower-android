@@ -1,4 +1,5 @@
 """Create a versioned, hashed Android runtime from the built ARM64 image."""
+import argparse
 import hashlib
 import json
 import lzma
@@ -12,11 +13,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 assets = ROOT / 'android/app/src/main/assets'
 archive = ROOT / 'artifacts/runtime-rootfs.tar'
-container = subprocess.check_output(['docker', 'create', 'mower-android-runtime:dev'], text=True).strip()
-try:
-    subprocess.run(['docker', 'export', '-o', str(archive), container], check=True)
-finally:
-    subprocess.run(['docker', 'rm', container], check=True, stdout=subprocess.DEVNULL)
+parser = argparse.ArgumentParser()
+parser.add_argument('--reuse-rootfs', action='store_true', help='Reuse the local dependency archive when the runtime Docker image has not changed')
+args = parser.parse_args()
+if args.reuse_rootfs:
+    if not archive.is_file():
+        parser.error('No cached dependency archive; run without --reuse-rootfs first')
+else:
+    container = subprocess.check_output(['docker', 'create', 'mower-android-runtime:dev'], text=True).strip()
+    try:
+        subprocess.run(['docker', 'export', '-o', str(archive), container], check=True)
+    finally:
+        subprocess.run(['docker', 'rm', container], check=True, stdout=subprocess.DEVNULL)
 
 links = {}
 output = assets / 'python-runtime.zip.xz'
@@ -52,8 +60,18 @@ with tarfile.open(archive) as tar, zipfile.ZipFile(uncompressed, 'w', compressio
                 zip.write(file, 'mower/' + file.relative_to(runtime).as_posix())
     zip.writestr('mower/arknights_mower/utils/git_revision', json.loads((ROOT / 'UPSTREAM.json').read_text())['mower']['commit'])
     zip.writestr('.symlinks.json', json.dumps(links))
-with uncompressed.open('rb') as source, lzma.open(output, 'wb', preset=6) as destination:
-    shutil.copyfileobj(source, destination, 1024*1024)
+# Publish atomically: an interrupted compressor must not replace a usable asset.
+compressed = output.with_suffix(output.suffix + '.tmp')
+try:
+    if shutil.which('xz'):
+        with compressed.open('wb') as destination:
+            subprocess.run(['xz', '-T2', '-6', '--stdout', str(uncompressed)], stdout=destination, check=True)
+    else:
+        with uncompressed.open('rb') as source, lzma.open(compressed, 'wb', preset=6) as destination:
+            shutil.copyfileobj(source, destination, 1024*1024)
+    compressed.replace(output)
+finally:
+    compressed.unlink(missing_ok=True)
 uncompressed.unlink()
 with output.open('rb') as source:
     digest = hashlib.file_digest(source, 'sha256').hexdigest()

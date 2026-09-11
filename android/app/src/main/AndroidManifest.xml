@@ -2,6 +2,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <queries><package android:name="moe.shizuku.privileged.api" /></queries>
@@ -15,12 +19,18 @@
         <activity-alias android:name=".mower.DarkLauncher" android:targetActivity=".mower.MowerActivity" android:enabled="false" android:exported="true" android:icon="@mipmap/ic_mower_dark">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity-alias>
-        <activity android:name=".mower.MowerGameActivity" android:exported="false" android:screenOrientation="sensorLandscape" />
+        <activity android:name=".mower.MowerGameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <activity android:name=".mower.MowerSettingsActivity" android:exported="false" android:screenOrientation="sensorLandscape" />
+        <activity android:name=".mower.UnlockSettingsActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize" />
+        <receiver android:name=".mower.MowerWakeReceiver" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+        </receiver>
         <service android:name=".mower.MowerService" android:exported="false" />
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
         </provider>
+        <provider android:name=".root.RootServiceBootstrapProvider" android:authorities="${applicationId}.root.bootstrap"
+            android:exported="true" android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="${applicationId}.shizuku"
             android:enabled="true" android:exported="true" android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
