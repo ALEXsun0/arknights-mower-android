@@ -1,0 +1,11 @@
+{
+  "mower": {
+    "tag": "v4.1.6-alpha.5",
+    "revision": "d8cbb41b834a34cc6a0aaba794d1081886a570fe",
+    "source": "bundled",
+    "note": "alpha.5 + merged Android compatibility and native screenshot ownership patch"
+  },
+  "maa": {
+    "tag": "v6.17.5"
+  }
+}

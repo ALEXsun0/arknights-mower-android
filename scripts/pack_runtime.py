@@ -11,6 +11,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if not (ROOT/'runtime/CHANGELOG.md').is_file() or not (ROOT/'runtime/CHANGELOG.md').stat().st_size:
+    raise ValueError('CHANGELOG.md must be present before packaging')
 assets = ROOT / 'android/app/src/main/assets'
 archive = ROOT / 'artifacts/runtime-rootfs.tar'
 parser = argparse.ArgumentParser()

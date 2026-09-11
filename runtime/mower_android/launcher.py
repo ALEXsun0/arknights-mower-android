@@ -89,6 +89,20 @@ def main():
 
     from mower_android import app_update
     server.app.extensions['software_update_provider'] = app_update
+    from mower_android import python_updates
+    python_updates.register_routes(server.app)
+    python_updates.start_auto_check()
+
+    @server.app.route('/android/mower-recovery', methods=['GET','POST'])
+    def mower_recovery():
+        if request.method == 'POST':
+            if request.headers.get('X-Mower-Update') != '1': abort(403)
+            if request.get_json(silent=True) != {'action':'reset'}: abort(400)
+            mower_package.reset()
+            return {'ok':True,'message':'已恢复内置 Mower，停止并重新启动服务后生效。'}
+        from arknights_mower import __version__
+        return {'ok':True,'installed':{'version':__version__}}
+
     server.app.config['MAX_CONTENT_LENGTH'] = 769 * 1024**2
 
     def shutdown(*args):

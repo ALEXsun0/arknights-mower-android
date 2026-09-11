@@ -53,6 +53,18 @@ class MowerPackageTests(unittest.TestCase):
         self.assertEqual(mower_package.select_source(bundled),active)
         mower_package.reset(); self.assertEqual(mower_package.select_source(bundled),bundled)
 
+    def test_manual_downgrade_requires_confirmation(self):
+        from werkzeug.datastructures import FileStorage
+        import arknights_mower
+        with patch.object(arknights_mower, '__version__', '4.3.0'):
+            result=app_update.inspect_upload(FileStorage(stream=io.BytesIO(self.pack().read_bytes()),filename='mower.zip'))
+        self.assertTrue(result['downgrade'])
+        with self.assertRaises(ValueError): app_update.submit(result['check_id'])
+        app_update.submit(result['check_id'],confirm_downgrade=True)
+        self.assertTrue(app_update._lock.acquire(timeout=5)); app_update._lock.release()
+        self.assertEqual(app_update.status()['status'],'succeeded')
+        self.assertEqual(mower_package.state()['version'],'4.2.0')
+
     def test_shared_update_selects_upstream_mower_zip_not_apk(self):
         asset={'name':'arknights-mower_4.2.0_android_arm64.zip','digest':'sha256:'+'a'*64,'size':10}
         reply=Mock(); reply.json.return_value={'tag_name':'v4.2.0','draft':False,'prerelease':False,'published_at':'2026-09-11T00:00:00Z','assets':[{'name':'mower-android-arm64.apk'},asset],'html_url':'https://github.com/ArkMowers/arknights-mower/releases/tag/v4.2.0'}

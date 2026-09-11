@@ -252,6 +252,12 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             check(response.getBoolean("ok")) { response.optString("error") }
             return response.get("result")
         }
+        if (method == "python_update_available") {
+            val version = p.getString("version")
+            require(version.matches(Regex("[0-9]+\\.[0-9]+\\.[0-9]+")))
+            MowerNotifications.event(context, "MAA Python 兼容接口 $version 可更新，请打开 WebUI 软件更新中的兼容接口更新。", false)
+            return true
+        }
         if (method == "prepare") return prepare(p)
         val s = ensurePrepared()
         return when (method) {

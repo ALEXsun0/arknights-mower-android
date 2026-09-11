@@ -7,20 +7,29 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 
 API_METHODS = {'load','get_version','connect','set_instance_option','append_task','set_task_params','start','running','stop','get_tasks_list'}
 ROOT = Path(os.environ.get('MOWER_DATA_DIR', '/mower-data')) / 'maa-python'
-BUNDLED_VERSION = '1.0.0'
+BUNDLED_META = Path(__file__).with_name('maa-python.json')
+BUNDLED_VERSION = json.loads(BUNDLED_META.read_text())['version']
 
 
 def info():
     try: return {**json.loads((ROOT/'active.json').read_text()), 'bundled': False}
-    except (OSError,ValueError): return {'version':BUNDLED_VERSION,'bundled':True,'bridge_protocol':1}
+    except (OSError,ValueError):
+        return {**json.loads(BUNDLED_META.read_text()), 'bundled':True}
 
+
+_install_lock = threading.RLock()
 
 def install(path, root=None):
+    with _install_lock:
+        return _install(path, root)
+
+def _install(path, root=None):
     root = Path(root or ROOT); root.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(path) as z:
         entries=z.infolist()
@@ -51,7 +60,8 @@ def install(path, root=None):
 
 
 def reset():
-    (ROOT/'active.json').unlink(missing_ok=True)
+    with _install_lock:
+        (ROOT/'active.json').unlink(missing_ok=True)
     return {'message':'已恢复 APK 内置的 MAA Python 接口，下一次创建实例时生效'}
 
 

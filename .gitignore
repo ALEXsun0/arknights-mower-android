@@ -23,3 +23,7 @@ android/app/src/main/jniLibs/
 android/app/src/main/assets/*.xz
 
 /android/app/src/main/assets/*.tmp
+
+/android/app/src/main/assets/host-build.json
+
+/config/

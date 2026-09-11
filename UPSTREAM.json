@@ -7,7 +7,8 @@
     "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724",
     "merged_commit": "22a73d44ff8930f1619931fcc8bd3c8f4127eda2",
     "local_patches": [
-      "Native Android screenshot setting ownership in the shared WebUI; default/persistence provided by Android host"
+      "Native Android screenshot setting ownership in the shared WebUI; default/persistence provided by Android host",
+      "Optional host-provided component update controls in shared SoftwareUpdate; Python adapter online updates and recovery are provided by Android host"
     ],
     "compatibility_pr": "https://github.com/ArkMowers/arknights-mower/pull/1032"
   },

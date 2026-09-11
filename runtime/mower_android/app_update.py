@@ -58,7 +58,11 @@ def info():
             'releases_url': f'https://github.com/{REPO}/releases', 'last_check': _last_check,
             'manual_label': '点击或拖入 Mower、MAA 核心或兼容 Python 更新包',
             'manual_hint': 'Mower 使用主仓库 Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
-            'install_label': '导入并安装', 'python': python_package.info()}
+            'install_label': '导入并安装', 'python': python_package.info(),
+            'component_updates': [{'label':'MAA Python 兼容接口','endpoint':'/android/python-update','check':True,
+                                  'hint':'仅接口内容变化时提示更新；现有任务保持原接口，新实例使用新接口。可在下方拖入兼容 ZIP。'},
+                                 {'label':'内置 Mower 恢复','endpoint':'/android/mower-recovery','check':False,
+                                  'hint':'恢复 APK 内置 Mower，停止并重新启动服务后生效。配置和 MAA 不受影响。'}]}
 
 
 def status():
@@ -104,6 +108,7 @@ def inspect_upload(upload):
     if upload is None: raise ValueError('请选择更新包')
     ident = uuid.uuid4().hex; target = folder()/(ident+'.package')
     try:
+        downgrade = False
         size = 0
         with target.open('wb') as out:
             while chunk := upload.stream.read(256*1024):
@@ -128,12 +133,12 @@ def inspect_upload(upload):
                 meta = mower_package.inspect(target)
                 from arknights_mower import __version__
                 from arknights_mower.utils.software_update import version_key
-                if version_key(meta['version']) < version_key(__version__): raise ValueError('不支持降级 Mower，请选择当前或更新版本')
+                downgrade = version_key(meta['version']) < version_key(__version__)
                 kind, version = 'mower', meta['version']
                 message = '更新内置 Mower；停止并重新启动手机服务后生效，APK 和 MAA 保持不变。'
             else: raise ValueError('请选择 Android Mower 更新包、官方 MAA 核心或兼容 Python 包')
-        _plans[ident] = {'path': target, 'sha256': digest, 'filename': upload.filename, 'kind': kind, 'version': version}
-        return {'ok': True, 'manual': True, 'check_id': ident, 'version': version, 'downgrade': False,
+        _plans[ident] = {'path': target, 'sha256': digest, 'filename': upload.filename, 'kind': kind, 'version': version, 'downgrade': downgrade}
+        return {'ok': True, 'manual': True, 'check_id': ident, 'version': version, 'downgrade': downgrade,
                 'confirm_title': '确认导入更新包？', 'confirm_message': message}
     except Exception:
         target.unlink(missing_ok=True)
@@ -148,10 +153,12 @@ def discard_upload(check_id):
 
 def submit(check_id, background=False, force=False, confirm_downgrade=False):
     global _job
-    if background or force or confirm_downgrade: raise ValueError('此 Release 安装器不支持所选操作')
-    plan = _plans.pop(check_id, None)
+    if background or force: raise ValueError('此 Release 安装器不支持所选操作')
+    plan = _plans.get(check_id)
     if plan is None: raise ValueError('请重新检查或导入更新包')
+    if plan.get('downgrade') and not confirm_downgrade: raise ValueError('请确认回退 Mower 版本')
     if not _lock.acquire(blocking=False): raise ValueError('已有更新正在进行')
+    _plans.pop(check_id, None)
     ident = uuid.uuid4().hex
     _job = {'ok': True, 'id': ident, 'status': 'running', 'phase': 'installing', 'progress': 0,
             'message': '正在准备更新包', 'cancellable': False}

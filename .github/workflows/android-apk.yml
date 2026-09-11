@@ -2,9 +2,17 @@ name: Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Build and publish a complete release using the latest beta-channel components'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17,47 * * * *'
+  repository_dispatch:
+    types: [mower-release, maa-release]
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - '.github/workflows/android-apk.yml'
       - 'android/**'
@@ -18,26 +26,61 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-apk-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-distribution
+  cancel-in-progress: false
 
 jobs:
+  snapshot:
+    name: Resolve upstream beta releases
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      changed: ${{ steps.plan.outputs.changed }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin release assets and Python content version
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PUBLISH: ${{ inputs.publish || false }}
+        run: |
+          args=()
+          if [[ "$EVENT" == schedule || "$EVENT" == repository_dispatch || "$PUBLISH" == true ]]; then args+=(--publish); fi
+          if [[ "$PUBLISH" == true ]]; then args+=(--force); fi
+          python3 scripts/prepare_distribution.py plan "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-${{ github.run_id }}
+          path: artifacts/distribution.json
+          retention-days: 7
+
   runtime:
     name: ARM64 Python, WebUI and MAA
+    needs: snapshot
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.snapshot.outputs.publish == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-${{ github.run_id }}
+          path: artifacts
+      - name: Apply pinned upstream components
+        run: python3 scripts/prepare_distribution.py apply
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: runtime/ui/package-lock.json
-      - name: Build WebUI
+      - name: Build bundled WebUI (official update ZIPs already contain the built UI)
+        if: ${{ hashFiles('artifacts/upstream-mower.zip') == '' }}
         working-directory: runtime/ui
         run: |
           npm ci --no-audit --no-fund
-          npm run test -- src/routes.test.js src/theme/mower.test.js src/utils/manualUpdate.test.js src/components/GlobalUpdateDrop.test.js
+          npm run test -- src/routes.test.js src/theme/mower.test.js src/utils/manualUpdate.test.js src/components/GlobalUpdateDrop.test.js src/components/SoftwareComponentUpdates.test.js src/components/SoftwareUpdate.test.js
           npm run build
       - name: Verify production WebUI API URLs
         run: python3 scripts/check_webui_build.py
@@ -57,6 +100,8 @@ jobs:
       - name: Prepare official MAA and package runtime
         run: |
           python3 scripts/prepare_android_maa.py
+          python3 scripts/verify_maa_adapter.py
+          python3 scripts/package_maa_python.py
           python3 scripts/pack_runtime.py
       - uses: actions/upload-artifact@v4
         with:
@@ -72,12 +117,18 @@ jobs:
 
   apk:
     name: Assemble signed ARM64 APK
-    needs: runtime
+    needs: [snapshot, runtime]
     # Android's Linux SDK / NDK host tools require x86_64.
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-${{ github.run_id }}
+          path: artifacts
+      - name: Apply the same APK and Python versions
+        run: python3 scripts/prepare_distribution.py apply --metadata-only
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -156,6 +207,7 @@ jobs:
             artifacts/mower-android-arm64.apk
             artifacts/mower-android-arm64.apk.sha256
             artifacts/android-release.json
+            artifacts/distribution.json
             artifacts/mower-maa-python-*.zip
             artifacts/mower-maa-python-*.zip.sha256
           if-no-files-found: error
@@ -164,8 +216,8 @@ jobs:
 
   release:
     name: Publish Android distribution
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [runtime, apk]
+    if: needs.snapshot.outputs.publish == 'true'
+    needs: [snapshot, runtime, apk]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -178,7 +230,7 @@ jobs:
       - name: Verify compatible packages and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.snapshot.outputs.tag }}
         run: |
           cd release-assets
           sha256sum --check ./*.sha256
@@ -186,7 +238,4 @@ jobs:
           test "$(find . -maxdepth 1 -name 'mower-maa-python-*.zip' | wc -l)" -eq 1
           test -f android-release.json
           cd ..
-          flags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-          # Sidecars are used only between CI jobs; GitHub supplies asset digests.
-          gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/mower-maa-python-*.zip release-assets/android-release.json --verify-tag --title "Mower Android $RELEASE_TAG" --notes-file docs/android-release-notes.md "${flags[@]}"
+          python3 scripts/publish_distribution.py --directory release-assets --tag "$RELEASE_TAG"

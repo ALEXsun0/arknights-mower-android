@@ -1,0 +1,15 @@
+{
+  "kind": "mower-maa-python",
+  "format": 1,
+  "version": "1.0.0",
+  "channel": "stable",
+  "bridge_protocol": 1,
+  "min_apk": 5,
+  "sha256": "546d2979242067838b08053b24baff2e0acffc7631193c574bbdc8293a71240e",
+  "compatibility": {
+    "since_android": "v0.2.0",
+    "mower_from": "v4.1.6-alpha.5",
+    "maa_from": "v6.17.5",
+    "until_android": null
+  }
+}
