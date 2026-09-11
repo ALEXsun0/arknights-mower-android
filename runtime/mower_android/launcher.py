@@ -2,11 +2,14 @@
 import hmac
 import os
 import signal
+import sys
 from pathlib import Path
 
 
 def main():
-    source = Path(__file__).resolve().parents[1]
+    from mower_android import mower_package
+    source = mower_package.select_source(Path(__file__).resolve().parents[1])
+    sys.path.insert(0, str(source))
     os.chdir(source)
     os.environ['MOWER_ANDROID'] = '1'
     os.environ.setdefault('MOWER_DATA_DIR', '/mower-data')
@@ -64,6 +67,8 @@ def main():
         supplied = request.args.get('token', '')
         if supplied and hmac.compare_digest(supplied, token):
             response.set_cookie('mower_access', token, httponly=True, samesite='Strict')
+        if response.status_code == 200 and request.path == '/' and request.environ.get('HTTP_TOKEN') == token:
+            mower_package.mark_ready()
         response.headers['Referrer-Policy'] = 'no-referrer'
         return response
 

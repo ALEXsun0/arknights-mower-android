@@ -45,12 +45,12 @@ class AndroidUpdateTests(unittest.TestCase):
                 self.assertTrue(client.get.call_args_list[1].args[0].endswith("/releases/tags/v6.17.5"))
 
 class AndroidMirrorTests(unittest.TestCase):
-    @patch('arknights_mower.utils.maa_update._request_mirrorchyan', return_value=(8001, {}))
-    def test_missing_android_mirror_component_is_explicit(self, request):
+    @patch('arknights_mower.utils.maa_update._request_mirrorchyan')
+    def test_android_mirror_is_disabled_before_network(self, request):
         from mower_android.managed import get_mirror_release
-        with self.assertRaisesRegex(MaaUpdateError, 'Android ARM64'):
+        with self.assertRaisesRegex(MaaUpdateError, 'Android 暂不支持 Mirror酱'):
             get_mirror_release('test-cdk')
-        self.assertEqual(request.call_args.args[1:3], ('android', 'arm64'))
+        request.assert_not_called()
 
     def test_manual_core_rejects_wrong_checksum_before_extracting(self):
         from mower_android.managed import import_component

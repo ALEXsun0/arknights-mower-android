@@ -126,10 +126,10 @@ class MowerActivity : Activity() {
         content.addView(landing, FrameLayout.LayoutParams(-1, -1))
         layout.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
         layout.setOnApplyWindowInsetsListener { _, insets ->
-            val cutout = if (android.os.Build.VERSION.SDK_INT >= 28) insets.displayCutout else null
-            val left = maxOf(insets.systemWindowInsetLeft, cutout?.safeInsetLeft ?: 0)
-            val right = maxOf(insets.systemWindowInsetRight, cutout?.safeInsetRight ?: 0)
-            layout.setPadding(0, maxOf(insets.systemWindowInsetTop, cutout?.safeInsetTop ?: 0) + dp(8), 0, insets.systemWindowInsetBottom)
+            val safe = MowerStyle.safeInsets(insets)
+            val left = safe.left
+            val right = safe.right
+            layout.setPadding(0, safe.top + dp(8), 0, insets.systemWindowInsetBottom)
             barScroll.setPadding(left + dp(16), 0, right + dp(16), 0)
             barScroll.clipToPadding = false
             statusRow.setPadding(left + dp(18), dp(8), right + dp(16), dp(8))

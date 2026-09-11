@@ -19,3 +19,5 @@ runtime/temp/
 android/app/src/main/assets/*.zip
 android/app/src/main/assets/*.sha256
 android/app/src/main/jniLibs/
+
+android/app/src/main/assets/*.xz

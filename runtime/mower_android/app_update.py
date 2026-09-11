@@ -12,9 +12,9 @@ from pathlib import Path
 
 import requests
 from mower_android.bridge import Bridge
-from mower_android import python_package
+from mower_android import python_package, mower_package
 
-REPO = 'ALEXsun0/arknights-mower-android'
+REPO = 'ArkMowers/arknights-mower'
 MAX_UPLOAD = 768 * 1024**2
 _lock = threading.Lock()
 _plans = {}
@@ -41,23 +41,23 @@ def save_settings(data):
     if any(type(data.get(k, False)) is not bool for k in ('auto_check', 'auto_update', 'background')):
         raise ValueError('设置格式错误')
     if data.get('auto_update') or data.get('background'):
-        raise ValueError('APK 安装需要在手机系统安装器中确认')
+        raise ValueError('更新后需在手机停止并重新启动 Mower 服务')
     current = {**prefs(), **data}
     temporary = folder()/'settings.new'; temporary.write_text(json.dumps(current)); temporary.replace(folder()/'settings.json')
     return {'ok': True}
 
 
 def info():
-    engine = Bridge().call('status')
-    return {'ok': True, 'deployment': 'release', 'platform': 'android', 'version': engine['apk_version'],
+    from arknights_mower import __version__
+    return {'ok': True, 'deployment': 'release', 'platform': 'android', 'version': __version__,
             'settings': prefs(), 'blockers': [], 'instances': [{'name': '本机', 'running': True}],
             'force_supported': False, 'manual_supported': True, 'source_remotes': [],
             'capabilities': {'auto_update': False, 'silent_restart': False},
             'channels': [{'label': '正式版', 'value': 'stable', 'description': '最新正式 Release'},
                          {'label': '公测版', 'value': 'beta', 'description': '最新公测 Release'}],
             'releases_url': f'https://github.com/{REPO}/releases', 'last_check': _last_check,
-            'manual_label': '点击或拖入 APK、MAA 核心或兼容 Python 包',
-            'manual_hint': 'APK 交给手机系统安装器；MAA 使用官方 Android ARM64 包，Python 使用本发行配套兼容包。',
+            'manual_label': '点击或拖入 Mower、MAA 核心或兼容 Python 更新包',
+            'manual_hint': 'Mower 使用主仓库 Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
             'install_label': '导入并安装', 'python': python_package.info()}
 
 
@@ -79,17 +79,19 @@ def check(channel):
             batch = response.json(); releases.extend(batch)
             if len(batch) < 100: break
     releases = [r for r in releases if not re.search(r'dev|nightly|snapshot', r.get('tag_name', ''), re.I)]
+    releases = [r for r in releases if any(a['name'] == f"arknights-mower_{r['tag_name'].removeprefix('v')}_android_arm64.zip" for a in r.get('assets', []))]
+    if not releases: raise ValueError('主仓库尚未发布此渠道的 Android Mower 更新包，当前版本可继续使用')
     release = choose_release(releases, channel)
-    asset = next((a for a in release['assets'] if a['name'].endswith('.apk')), None)
+    asset = next((a for a in release['assets'] if a['name'] == f"arknights-mower_{release['tag_name'].removeprefix('v')}_android_arm64.zip"), None)
     if not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or ''):
-        raise ValueError('此发行版缺少可校验的 APK')
+        raise ValueError('此发行版缺少可校验的 Android Mower 更新包')
     ident = uuid.uuid4().hex
     _plans[ident] = {'asset': asset, 'version': release['tag_name']}
-    current = Bridge().call('status')['apk_version']
+    from arknights_mower import __version__ as current
     _last_check = {'ok': True, 'check_id': ident, 'channel': channel, 'checked_at': time.time(),
         'version': release['tag_name'], 'available': version_key(release['tag_name']) > version_key(current),
         'downgrade': False, 'url': release['html_url'], 'notes': release.get('body', ''),
-        'confirm_title': '确认下载安装？', 'confirm_message': '下载并校验 APK 后，在手机系统安装器确认安装。应用数据保留。'}
+        'confirm_title': '确认下载安装？', 'confirm_message': '下载并校验 Mower 更新包，停止并重启手机服务后生效。APK 和 MAA 保持不变。'}
     return _last_check
 
 
@@ -122,12 +124,14 @@ def inspect_upload(upload):
                     meta = python_package.install(target, root=temp)
                 kind, version = 'python', 'MAA Python '+meta['version']
                 message = '导入兼容 Python 接口；现有任务保持原接口，下一次创建 MAA 实例时生效。'
-            elif {'AndroidManifest.xml', 'classes.dex'}.issubset(names):
-                apk = folder()/(digest+'.apk'); target.replace(apk); target = apk
-                meta = Bridge().call('apk_info', id=digest)
-                kind, version = 'apk', meta['version']
-                message = 'APK 已通过包名、签名和版本检查，接下来在手机系统安装器确认安装。应用数据保留。'
-            else: raise ValueError('请选择本发行的 APK、官方 Android MAA 核心或兼容 Python 包')
+            elif 'mower-android.json' in names:
+                meta = mower_package.inspect(target)
+                from arknights_mower import __version__
+                from arknights_mower.utils.software_update import version_key
+                if version_key(meta['version']) < version_key(__version__): raise ValueError('不支持降级 Mower，请选择当前或更新版本')
+                kind, version = 'mower', meta['version']
+                message = '更新内置 Mower；停止并重新启动手机服务后生效，APK 和 MAA 保持不变。'
+            else: raise ValueError('请选择 Android Mower 更新包、官方 MAA 核心或兼容 Python 包')
         _plans[ident] = {'path': target, 'sha256': digest, 'filename': upload.filename, 'kind': kind, 'version': version}
         return {'ok': True, 'manual': True, 'check_id': ident, 'version': version, 'downgrade': False,
                 'confirm_title': '确认导入更新包？', 'confirm_message': message}
@@ -155,7 +159,7 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
         path = plan.get('path')
         try:
             if 'asset' in plan:
-                asset = plan['asset']; digest = asset['digest'][7:]; path = folder()/(digest+'.apk')
+                asset = plan['asset']; digest = asset['digest'][7:]; path = folder()/(digest+'.zip')
                 size = 0; sha = hashlib.sha256()
                 with requests.get(asset['browser_download_url'], stream=True, timeout=(15, 60)) as response:
                     response.raise_for_status()
@@ -164,13 +168,13 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                             size += len(chunk)
                             if size > MAX_UPLOAD: raise ValueError('安装包超过大小限制')
                             out.write(chunk); sha.update(chunk)
-                            _job.update(progress=min(99, size*100//max(1, asset['size'])), current=size, total=asset['size'], message='正在下载 APK')
-                if size != asset['size'] or sha.hexdigest() != digest: raise ValueError('APK SHA256 或大小不一致')
-                plan.update(kind='apk', sha256=digest)
+                            _job.update(progress=min(99, size*100//max(1, asset['size'])), current=size, total=asset['size'], message='正在下载 Mower')
+                if size != asset['size'] or sha.hexdigest() != digest: raise ValueError('Mower 更新包 SHA256 或大小不一致')
+                plan.update(kind='mower', sha256=digest)
             with path.open('rb') as stream: actual = hashlib.file_digest(stream, 'sha256').hexdigest()
             if actual != plan['sha256']: raise ValueError('更新包内容已改变，请重新导入')
-            if plan['kind'] == 'apk':
-                result = Bridge().call('apk_install', id=plan['sha256'])
+            if plan['kind'] == 'mower':
+                result = mower_package.install(path)
             elif plan['kind'] == 'python': result = python_package.install(path)
             else:
                 import server

@@ -1,10 +1,9 @@
-Android 独立发行版，包含配套的 APK、兼容 MAA Python 接口包和官方 Android ARM64 MAA 核心包。附件校验值使用 GitHub 提供的 SHA256 digest，不另附校验文件。
+Arknights Mower Android 0.1.0 正式 APK，ARM64，沿用已有签名，可覆盖安装并保留数据。内置 Mower 4.1.6-alpha.5（含 Android 兼容补丁）与官方 Android MAA v6.17.5。
 
-- 安装 APK 即可使用本次构建内置的 Mower、后台游戏和 MAA，无需另装 Git 或进行源码部署。
-- 兼容 Python ZIP 用于单独更新 Android MAA 桥接接口，可在 WebUI 选择或拖拽导入；不是官方 ctypes Python 包。
-- 官方 MAAComponent tar.gz 可在 WebUI 选择或拖拽导入，校验后重启服务生效。MAA 资源仍可使用 Mirror酱更新。
-- 普通发行包只提供正式、公测更新渠道，隐藏源码仓库和开发版设置。
+- APK 内置 Python、Mower、MAA，使用整包 XZ 压缩并移除重复 OCR 模型、Git 和开发文件，首次启动无需额外下载环境。
+- Mower 热更新使用主仓库的 Android ZIP，停止并重启服务后生效；兼容接口可单独拖拽导入。主仓库尚未发布 Android 包时，保持当前版本。
+- MAA 核心和资源从官方更新；Android 暂时禁用 Mirror酱。MAA 更新完成后需重启服务。
+- 原生设置集中提供屏幕唤醒、亮屏、静音、后台恢复、局域网、日志、APK 更新与恢复内置 Mower。
+- 发布附件为 APK、MAA Python 兼容 ZIP、`android-release.json`。MAA 原包请从官方获取；校验值使用 GitHub asset digest。
 
-完整说明见仓库 README 和 docs/android-update-packages.md。
-
-屏幕唤醒、亮屏、静音、后台恢复和电池入口统一放在原生「软件设置」中；WebUI 沿用四端共用的软件更新页面，Android 隐藏进程操作。
+需要 Android 8.1+、ARM64 和已启动的 Shizuku，建议预留至少 4 GB 空间。首次解压比后续启动耗时。当前主要验证三星 SM-G9880 / Android 13；长期排班及其他设备仍需继续验证。APK 正式版标签不改变内置 Mower 的 alpha 版本属性。

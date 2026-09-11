@@ -1,9 +1,10 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "32f5597e062f5acce846bd7944dbfbdefbfa960b",
+    "commit": "2932193c14ef6706357961b95dd48e59ad971e5c",
     "branch": "alpha",
-    "source": "Pinned alpha branch snapshot with Android runtime compatibility patches"
+    "source": "Alpha 32f5597 with Android compatibility PR #1029 at 2932193c",
+    "base_commit": "32f5597e062f5acce846bd7944dbfbdefbfa960b"
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",

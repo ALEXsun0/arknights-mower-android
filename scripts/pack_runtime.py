@@ -1,6 +1,8 @@
 """Create a versioned, hashed Android runtime from the built ARM64 image."""
 import hashlib
 import json
+import lzma
+import shutil
 import posixpath
 import subprocess
 import tarfile
@@ -17,11 +19,16 @@ finally:
     subprocess.run(['docker', 'rm', container], check=True, stdout=subprocess.DEVNULL)
 
 links = {}
-output = assets / 'python-runtime.zip'
-with tarfile.open(archive) as tar, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zip:
+output = assets / 'python-runtime.zip.xz'
+uncompressed = ROOT / 'artifacts/python-runtime-stored.zip'
+with tarfile.open(archive) as tar, zipfile.ZipFile(uncompressed, 'w', compression=zipfile.ZIP_STORED) as zip:
     for member in tar:
         name = member.name.lstrip('./')
         if not name or name in ('etc/hosts', 'etc/resolv.conf') or name.startswith(('dev/', 'proc/', 'sys/', 'usr/share/man/')):
+            continue
+        if any(part in ('__pycache__', 'tests', 'test', '.pytest_cache') for part in Path(name).parts) or name.endswith(('.pyc', '.pyo')):
+            continue
+        if name.startswith('usr/local/include/') or name.endswith('/ddddocr/common.onnx'):
             continue
         if name.startswith('usr/share/doc/') and not name.endswith('/copyright'):
             continue
@@ -45,6 +52,11 @@ with tarfile.open(archive) as tar, zipfile.ZipFile(output, 'w', compression=zipf
                 zip.write(file, 'mower/' + file.relative_to(runtime).as_posix())
     zip.writestr('mower/arknights_mower/utils/git_revision', json.loads((ROOT / 'UPSTREAM.json').read_text())['mower']['commit'])
     zip.writestr('.symlinks.json', json.dumps(links))
-digest = hashlib.sha256(output.read_bytes()).hexdigest()
+with uncompressed.open('rb') as source, lzma.open(output, 'wb', preset=6) as destination:
+    shutil.copyfileobj(source, destination, 1024*1024)
+uncompressed.unlink()
+with output.open('rb') as source:
+    digest = hashlib.file_digest(source, 'sha256').hexdigest()
 (assets / 'python-runtime.sha256').write_text(digest + '\n')
+(assets / 'python-runtime.zip').unlink(missing_ok=True)
 print(f'{output}: {output.stat().st_size // 1024 // 1024} MiB, SHA256 {digest}')

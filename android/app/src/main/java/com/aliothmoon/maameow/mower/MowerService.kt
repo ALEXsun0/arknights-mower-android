@@ -11,6 +11,7 @@ import kotlinx.coroutines.*
 import java.io.File
 import java.security.SecureRandom
 import java.util.zip.ZipInputStream
+import org.tukaani.xz.XZInputStream
 
 /** Foreground owner of Python, bridge, wake lock and their cleanup. */
 class MowerService : Service() {
@@ -144,9 +145,9 @@ class MowerService : Service() {
         val stamp = assets.open("python-runtime.sha256").bufferedReader().use { it.readText().trim() }
         val marker = File(root, ".mower-runtime")
         if (marker.exists() && marker.readText() == stamp) return
-        val archive = File(cacheDir, "python-runtime.zip")
+        val archive = File(cacheDir, "python-runtime.zip.xz")
         val digest = java.security.MessageDigest.getInstance("SHA-256")
-        assets.open("python-runtime.zip").use { input -> archive.outputStream().use { output ->
+        assets.open("python-runtime.zip.xz").use { input -> archive.outputStream().use { output ->
             val buffer = ByteArray(262144)
             while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n); output.write(buffer, 0, n) }
         } }
@@ -154,7 +155,7 @@ class MowerService : Service() {
         val temp = File(filesDir, "rootfs-install")
         temp.deleteRecursively(); temp.mkdirs()
         // Symlinks are restored LAST from a dedicated manifest, never traversed while extracting.
-        ZipInputStream(archive.inputStream().buffered()).use { zip ->
+        ZipInputStream(XZInputStream(archive.inputStream().buffered(), 65536)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 val dest = File(temp, entry.name)

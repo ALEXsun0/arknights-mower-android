@@ -58,9 +58,11 @@ def pack_component(target, destination=COMPONENT):
     prepare_models(target / 'resource')
     if (target / 'cache/resource').is_dir(): prepare_models(target / 'cache/resource')
     temporary = destination.with_suffix('.zip.new')
-    with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=4) as archive:
+    with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for file in target.rglob('*'):
             relative = file.relative_to(target)
+            if file.name == 'inference.onnx' and file.parent.name in ('det', 'rec') and all((file.parent/f'{file.parent.name}.ncnn.{ext}').is_file() for ext in ('param','bin')):
+                continue
             if file.is_file() and (relative.parts[0] in ('resource', 'cache') or (len(relative.parts) == 1 and (file.name.endswith('.so') or file.name == '.mower-android.json'))):
                 archive.write(file, str(relative))
     digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
@@ -104,22 +106,8 @@ def get_release(session=None, channel='stable'):
 
 
 def get_mirror_release(token, session=None, channel='stable'):
-    from arknights_mower.utils import maa_update as updater
-    import requests
-    if not token.strip(): raise updater.MaaUpdateError('请填写 Mirror酱 CDK')
-    channel=updater.normalize_update_channel(channel)
-    client=session or requests.Session()
-    code,data=updater._request_mirrorchyan(token.strip(),'android','arm64',channel,client,updater.mirrorchyan_sp_id())
-    if code in (8001,8002,8003):
-        raise updater.MaaUpdateError('Mirror酱尚未提供独立的 Android ARM64 MAA 核心包。核心可随 Mower Android APK 更新，或选择官方 GitHub；MAA 资源仍可使用 Mirror酱。')
-    if code!=0: raise updater.MaaUpdateError(updater._MIRRORCHYAN_ERRORS.get(code,'Mirror酱服务返回业务错误'))
-    from urllib.parse import urlsplit
-    version=data.get('version_name');url=data.get('url');digest=data.get('sha256')
-    if (not isinstance(version,str) or not isinstance(url,str) or urlsplit(url).scheme!='https'
-            or data.get('update_type')!='full' or not isinstance(digest,str) or len(digest)!=64):
-        raise updater.MaaUpdateError('Mirror酱未返回可校验的 Android 完整核心包')
-    asset=updater.ReleaseAsset(name=f'MAAComponent-{version}-android-arm64.tar.gz',url=url,size=int(data.get('filesize') or 0),sha256=digest)
-    return updater.MaaRelease(tag=version,runtime=asset,source='mirrorchyan',channel=channel)
+    from arknights_mower.utils.maa_update import MaaUpdateError
+    raise MaaUpdateError('Android 暂不支持 Mirror酱，请使用 GitHub 官方源')
 
 
 def import_component(package, filename, callback=None):

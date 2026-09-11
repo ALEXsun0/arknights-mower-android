@@ -16,3 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && r
 RUN pip install --no-cache-dir --no-deps pnnx==20260526
 RUN mkdir -p /mower /mower-data /bridge /host-dev /host-proc && chmod 1777 /tmp
 WORKDIR /mower
+
+# Release hosts use program ZIP updates; Git and build-time caches are unnecessary.
+RUN apt-get purge --auto-remove -y git && rm -rf /var/lib/apt/lists/* /root/.cache /usr/share/man

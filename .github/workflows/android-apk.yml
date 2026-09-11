@@ -58,31 +58,11 @@ jobs:
         run: |
           python3 scripts/prepare_android_maa.py
           python3 scripts/pack_runtime.py
-      - name: Collect pinned official MAA component
-        run: |
-          python3 - <<'PYCODE'
-          import hashlib, json, shutil
-          from pathlib import Path
-          lock = json.loads(Path('scripts/maa-android.lock.json').read_text())
-          source = Path('artifacts') / lock['url'].rsplit('/', 1)[1]
-          if hashlib.sha256(source.read_bytes()).hexdigest() != lock['sha256']:
-              raise SystemExit('Official MAA checksum mismatch')
-          target = Path('artifacts/official-maa')
-          target.mkdir(parents=True, exist_ok=True)
-          shutil.copy2(source, target / source.name)
-          (target / (source.name + '.sha256')).write_text(lock['sha256'] + '  ' + source.name + '\n')
-          PYCODE
-      - uses: actions/upload-artifact@v4
-        with:
-          name: official-maa-${{ github.run_id }}
-          path: artifacts/official-maa/*
-          compression-level: 0
-          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: android-runtime-${{ github.run_id }}
           path: |
-            android/app/src/main/assets/python-runtime.zip
+            android/app/src/main/assets/python-runtime.zip.xz
             android/app/src/main/assets/python-runtime.sha256
             android/app/src/main/assets/maa-component.zip
             android/app/src/main/assets/maa-component.sha256
@@ -117,7 +97,8 @@ jobs:
           from pathlib import Path
           assets = Path('android/app/src/main/assets')
           for name in ('python-runtime', 'maa-component'):
-              actual = hashlib.sha256((assets / f'{name}.zip').read_bytes()).hexdigest()
+              filename = 'python-runtime.zip.xz' if name == 'python-runtime' else 'maa-component.zip'
+              actual = hashlib.sha256((assets / filename).read_bytes()).hexdigest()
               expected = (assets / f'{name}.sha256').read_text().strip()
               if actual != expected:
                   raise SystemExit(f'{name}: checksum mismatch')
@@ -144,7 +125,7 @@ jobs:
           PY
       - name: Build APK
         run: |
-          bash android/gradlew -p android :app:assembleRelease --console=plain
+          bash android/gradlew -p android :app:assembleRelease :app:lintRelease --console=plain
           mkdir -p artifacts
           python3 scripts/package_maa_python.py
           cp android/app/build/outputs/apk/release/app-release.apk artifacts/mower-android-arm64.apk
@@ -162,6 +143,7 @@ jobs:
               raise SystemExit('APK signing certificate differs from the existing development release.')
           print('Verified APK signature matches the existing development release.')
           PY
+          python3 scripts/package_android_release.py
           cd artifacts
           sha256sum mower-android-arm64.apk > mower-android-arm64.apk.sha256
       - name: Remove signing key
@@ -173,6 +155,7 @@ jobs:
           path: |
             artifacts/mower-android-arm64.apk
             artifacts/mower-android-arm64.apk.sha256
+            artifacts/android-release.json
             artifacts/mower-maa-python-*.zip
             artifacts/mower-maa-python-*.zip.sha256
           if-no-files-found: error
@@ -192,11 +175,7 @@ jobs:
         with:
           name: mower-android-arm64-${{ github.sha }}
           path: release-assets
-      - uses: actions/download-artifact@v4
-        with:
-          name: official-maa-${{ github.run_id }}
-          path: release-assets
-      - name: Verify all three packages and publish
+      - name: Verify compatible packages and publish
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -205,9 +184,9 @@ jobs:
           sha256sum --check ./*.sha256
           test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
           test "$(find . -maxdepth 1 -name 'mower-maa-python-*.zip' | wc -l)" -eq 1
-          test "$(find . -maxdepth 1 -name 'MAAComponent-*-android-arm64.tar.gz' | wc -l)" -eq 1
+          test -f android-release.json
           cd ..
           flags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
           # Sidecars are used only between CI jobs; GitHub supplies asset digests.
-          gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/mower-maa-python-*.zip release-assets/MAAComponent-*-android-arm64.tar.gz --verify-tag --title "Mower Android $RELEASE_TAG" --notes-file docs/android-release-notes.md "${flags[@]}"
+          gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/mower-maa-python-*.zip release-assets/android-release.json --verify-tag --title "Mower Android $RELEASE_TAG" --notes-file docs/android-release-notes.md "${flags[@]}"

@@ -94,6 +94,13 @@ class MowerSettingsActivity : Activity() {
         }
         button("测试唤醒与锁屏状态") { engineAction("test_wake") }
         button("关闭静音并恢复声音") { engineAction("restore_audio") }
+        button("APK 版本与更新") {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ALEXsun0/arknights-mower-android/releases/latest")))
+        }
+        button("恢复内置 Mower") {
+            val file = java.io.File(filesDir, "mower-data/mower-programs/active.json")
+            status.text = if (!file.exists() || file.delete()) "已恢复内置 Mower，停止并重新启动服务后生效。" else "恢复失败，请重试。"
+        }
         button("恢复内置 MAA Python 接口") {
             val file = java.io.File(filesDir, "mower-data/maa-python/active.json")
             status.text = if (!file.exists() || file.delete()) "已恢复内置接口，下一次创建 MAA 实例时生效。" else "恢复失败，请重试。"
@@ -101,10 +108,10 @@ class MowerSettingsActivity : Activity() {
         content.addView(actions)
         root.addView(ScrollView(this).apply { isFillViewport = true; addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.setOnApplyWindowInsetsListener { _, insets ->
-            val cutout = if (android.os.Build.VERSION.SDK_INT >= 28) insets.displayCutout else null
-            root.setPadding(maxOf(insets.systemWindowInsetLeft, cutout?.safeInsetLeft ?: 0) + dp(20),
-                maxOf(insets.systemWindowInsetTop, cutout?.safeInsetTop ?: 0) + dp(8),
-                maxOf(insets.systemWindowInsetRight, cutout?.safeInsetRight ?: 0) + dp(20), insets.systemWindowInsetBottom)
+            val safe = MowerStyle.safeInsets(insets)
+            root.setPadding(safe.left + dp(20),
+                safe.top + dp(8),
+                safe.right + dp(20), insets.systemWindowInsetBottom)
             insets
         }
         setContentView(root); root.requestApplyInsets(); refresh()

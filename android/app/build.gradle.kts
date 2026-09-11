@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.alexsun0.mower.android"
         minSdk = 27
         targetSdk = 28
-        versionCode = 7
-        versionName = "0.1.0-alpha.1"
+        versionCode = 8
+        versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_shared" } }
     }
@@ -22,12 +22,13 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     externalNativeBuild { cmake { path = file("src/main/native/CMakeLists.txt"); version = "3.22.1" } }
     packaging { jniLibs { useLegacyPackaging = true } }
-    androidResources { noCompress += "zip" }
+    androidResources { noCompress += listOf("zip", "xz") }
     // PRoot currently needs targetSdk 28. This APK is distributed through GitHub,
     // not Google Play; retain all other release lint checks.
     lint { disable += "ExpiredTargetSdkVersion" }
 }
 dependencies {
+    implementation("org.tukaani:xz:1.10")
     implementation("androidx.core:core:1.17.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")

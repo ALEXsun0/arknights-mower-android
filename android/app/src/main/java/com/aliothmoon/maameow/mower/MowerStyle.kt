@@ -16,6 +16,18 @@ import android.widget.TextView
 
 /** Native chrome uses the same tokens as runtime/ui/src/theme/mower.js. */
 internal object MowerStyle {
+    fun safeInsets(insets: android.view.WindowInsets): android.graphics.Rect {
+        val result = android.graphics.Rect(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+            insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+        if (android.os.Build.VERSION.SDK_INT >= 28) insets.displayCutout?.let {
+            result.left = maxOf(result.left, it.safeInsetLeft)
+            result.top = maxOf(result.top, it.safeInsetTop)
+            result.right = maxOf(result.right, it.safeInsetRight)
+            result.bottom = maxOf(result.bottom, it.safeInsetBottom)
+        }
+        return result
+    }
+
     var dark = false
     val paper get() = if (dark) Color.rgb(24, 24, 28) else Color.WHITE
     val control get() = if (dark) Color.rgb(38, 38, 42) else Color.rgb(250, 250, 252)

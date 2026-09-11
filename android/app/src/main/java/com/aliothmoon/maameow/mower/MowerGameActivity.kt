@@ -51,9 +51,9 @@ class MowerGameActivity : Activity(), SurfaceHolder.Callback {
         }
         layout.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f))
         layout.setOnApplyWindowInsetsListener { _, insets ->
-            val cutout = if (android.os.Build.VERSION.SDK_INT >= 28) insets.displayCutout else null
-            bar.setPadding(maxOf(insets.systemWindowInsetLeft, cutout?.safeInsetLeft ?: 0) + dp(16), insets.systemWindowInsetTop + dp(6),
-                maxOf(insets.systemWindowInsetRight, cutout?.safeInsetRight ?: 0) + dp(16), dp(6))
+            val safe = MowerStyle.safeInsets(insets)
+            bar.setPadding(safe.left + dp(16), insets.systemWindowInsetTop + dp(6),
+                safe.right + dp(16), dp(6))
             layout.setPadding(0, 0, 0, insets.systemWindowInsetBottom)
             insets
         }

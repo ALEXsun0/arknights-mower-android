@@ -40,7 +40,7 @@ Android `.so` 使用 Bionic，不能由 Linux 用户态 Python 直接通过 ctyp
 
 WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓版仅选择 `MAAComponent-…-android-arm64.tar.gz`，校验官方 SHA-256、解压并准备 NCNN 模型，再生成 Android 服务所用的组件包。Python 兼容接口位于应用运行时，不会被 MAA 包覆盖。
 
-更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新也会重新准备 OCR 模型并提示重启。更新转换可能持续数分钟；请保证空间和网络。应用自身更新通过新版 APK。
+更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新也会重新准备 OCR 模型并提示重启。更新转换可能持续数分钟；请保证空间和网络。Mower 本体使用主仓库的 Android 更新包，停止并重启服务后生效，无需更新 APK。Android 暂时禁用 Mirror酱，核心与资源均从官方获取。
 
 ## 构建
 
@@ -54,13 +54,13 @@ WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓�
 | --- | --- |
 | `mower-android-arm64.apk` | 完整 Android 应用，已内置当期运行时和 MAA |
 | `mower-maa-python-版本.zip` | 本次 APK 对应的 Android MAA Python 兼容接口 |
-| `MAAComponent-v版本-android-arm64.tar.gz` | 本次 APK 使用的官方 MAA 核心与资源原包 |
+| `android-release.json` | 供 Mower 主仓库自动附带兼容 APK/接口的版本与宿主协议清单 |
 
 附件校验值使用 GitHub 自带的 SHA256 digest，不额外发布 `.sha256` 文件。CI 内部继续验证运行时、官方核心和 APK 签名。
 
 CI 先在 ARM64 runner 构建 Python、WebUI 和官方 MAA 组件，再由 x86_64 runner 使用 Android SDK/NDK 打包签名 APK。临时安装包产物保留 7 天，运行时中间产物保留 1 天。
 
-仓库 Secret `MOWER_DEBUG_KEYSTORE_BASE64` 保存固定的开发签名，当前与已安装的实验版相同，因此 CI APK 可以覆盖安装。CI 显式指定签名文件，并在上传前核对 APK 签名证书指纹。密钥只在签名步骤写入临时 runner，不进入源码、日志或产物；不要删除或更换，否则旧版不能直接覆盖升级。这仍是开发签名，正式发行需另行规划发布密钥。首次在其他仓库使用时，应先将自己的 Android debug keystore 以 Base64 写入该 Secret，并更新工作流中的公开证书指纹。
+仓库 Secret `MOWER_DEBUG_KEYSTORE_BASE64` 保存固定的开发签名，当前与已安装的实验版相同，因此 CI APK 可以覆盖安装。CI 显式指定签名文件，并在上传前核对 APK 签名证书指纹。密钥只在签名步骤写入临时 runner，不进入源码、日志或产物；不要删除或更换，否则旧版不能直接覆盖升级。正式 APK 沿用此固定证书用于 GitHub 分发，不更换现有签名。首次在其他仓库使用时，应先将自己的 Android debug keystore 以 Base64 写入该 Secret，并更新工作流中的公开证书指纹。
 
 ### 本地构建
 
@@ -80,7 +80,7 @@ bash scripts/build.sh
 
 ## 限制与许可证
 
-这是 Android 独立公测版，仅支持 ARM64。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
+这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.1.0 内置 Mower 4.1.6-alpha.5 与 Android 兼容补丁。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
 
 整体采用 AGPL-3.0，保留 Mower 的 MIT 许可、后台游戏代码及各组件声明。参见 [LICENSE](LICENSE)、[runtime/LICENSE](runtime/LICENSE)、[第三方代码声明](docs/licenses/Meow-THIRD-PARTY-NOTICES.md) 和 [运行时声明](docs/third-party-runtime.md)。个人配置、凭证、游戏截图和日志不会提交到 Git。
 
@@ -96,8 +96,12 @@ Android APK 由本仓库 CI 构建，WebUI 只提供正式版、公测版；普�
 
 「Mower 设置 → 软件更新」支持选择文件或全局拖拽：
 
-- 本应用 APK：校验包名、签名、版本，再在手机打开系统安装器。
+- 主仓库 `arknights-mower_版本_android_arm64.zip`：校验兼容协议，独立保存版本并在重启服务后切换；启动失败可回退，原生设置可恢复内置 Mower。APK 更新请使用「软件设置 → APK 版本与更新」。
 - 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，完成资源模型转换后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
 - 本仓库生成的 `mower-maa-python-版本.zip`：更新 Android 兼容 MAA Python 接口，校验协议、最低 APK 版本、完整性与接口结构；当前实例不变，新实例使用新接口，失败时回退内置接口。官方 ctypes Python 包不能直接用于 Android 桥接。
 
-MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Mirror酱的 `MAA` / `MAAComponent` Android ARM64 查询目前返回资源不存在（2026-09-11）；UI 会明确提示，绝不回退下载 Linux 核心。MAA 资源继续支持 `MaaResource` Mirror酱更新接口。
+MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Android 暂时禁用 Mirror酱；MAA 核心与资源均使用官方来源。主仓库每次发布可从本仓库 Release 自动附带兼容的 APK 与接口 ZIP，不要求 APK 跟随 Mower 发版。
+
+### APK 体积
+
+运行环境使用整包 XZ 压缩；移除运行期不需要的 Git、头文件、测试、字节码缓存和当前 Mower 未使用的 OCR beta 模型。MAA 保留所有地区资源，将 OCR 转为 Android 所用的 NCNN 后不再重复打包对应 ONNX；其他 ONNX 推理模型与原生库保留。APK 仍内置 Python、Mower、MAA，首次启动无需额外下载运行环境。

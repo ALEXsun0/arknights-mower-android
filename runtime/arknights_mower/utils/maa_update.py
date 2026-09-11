@@ -131,8 +131,14 @@ def _asset_from_payload(payload: dict[str, Any]) -> ReleaseAsset:
     if not isinstance(name, str) or not isinstance(url, str):
         raise MaaUpdateError("MAA Release 资源信息不完整")
     digest = payload.get("digest", "")
-    checksum = digest[7:].lower() if isinstance(digest, str) and digest.startswith("sha256:") else ""
-    if checksum and (len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum)):
+    checksum = (
+        digest[7:].lower()
+        if isinstance(digest, str) and digest.startswith("sha256:")
+        else ""
+    )
+    if checksum and (
+        len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum)
+    ):
         raise MaaUpdateError("MAA Release SHA-256 信息无效")
     return ReleaseAsset(name=name, url=url, size=int(size or 0), sha256=checksum)
 
@@ -401,6 +407,8 @@ def get_mirrorchyan_cdk_status(
     now: float | None = None,
 ) -> MirrorChyanCdkStatus:
     """查询 Mirror酱 CDK 状态及有效期，不在错误中回显 CDK。"""
+    if os.environ.get("MOWER_ANDROID") == "1" or system == "android":
+        raise MaaUpdateError("Android 暂不支持 Mirror酱，请使用 GitHub 官方源")
     token = token.strip()
     if not token:
         return MirrorChyanCdkStatus(
@@ -514,8 +522,7 @@ def get_mirrorchyan_release(
 ) -> MaaRelease:
     """通过 Mirror酱取得当前系统所需的 MAA 完整包。"""
     if os.environ.get("MOWER_ANDROID") == "1" or system == "android":
-        from mower_android.managed import get_mirror_release
-        return get_mirror_release(token, session, channel)
+        raise MaaUpdateError("Android 暂不支持 Mirror酱，请使用 GitHub 官方源")
     token = token.strip()
     if not token:
         raise MaaUpdateError("请填写 Mirror酱 CDK")
@@ -934,7 +941,11 @@ def extract_linux_package(
         raise MaaUpdateError(f"MAA Linux 完整包解压失败：{e}") from e
 
     if android:
-        if not (destination / "libMaaCore.so").is_file() or not (destination / "libMaaAndroidNativeControlUnit.so").is_file() or not (destination / "resource").is_dir():
+        if (
+            not (destination / "libMaaCore.so").is_file()
+            or not (destination / "libMaaAndroidNativeControlUnit.so").is_file()
+            or not (destination / "resource").is_dir()
+        ):
             raise MaaUpdateError("Android 组件缺少核心、原生控制器或资源")
         return
     required = (
@@ -1350,6 +1361,7 @@ def read_installed_version(target: Path | str, *, fresh: bool = False) -> str:
     """
     if os.environ.get("MOWER_ANDROID") == "1":
         from mower_android.managed import installed_version
+
         return installed_version(target)
     library_path = _find_maa_core_library(target)
     if library_path is None:
@@ -1441,7 +1453,10 @@ def install_latest_maa(
     """下载或更新 MAA，切换成功后把原目录保留为同级 ``.old``。"""
     if os.environ.get("MOWER_ANDROID") == "1":
         from mower_android.managed import install_update
-        return install_update(target, callback, session, source, mirror_token, system, machine, channel)
+
+        return install_update(
+            target, callback, session, source, mirror_token, system, machine, channel
+        )
     target_path = Path(target).expanduser()
     if not target_path.name or target_path == target_path.parent:
         raise MaaUpdateError("MAA 目录无效")

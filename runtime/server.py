@@ -345,7 +345,9 @@ def _run_maa_update(
     operation = "更新" if result["operation"] == "update" else "下载"
     channel_label = "公测版" if result["channel"] == "beta" else "正式版"
     if result["platform"] == "android":
-        success_message = result.get("message", "Android MAA 组件已更新，重启服务后生效")
+        success_message = result.get(
+            "message", "Android MAA 组件已更新，重启服务后生效"
+        )
     elif result["platform"] == "linux":
         source_label = "Mirror酱" if result["source"] == "mirrorchyan" else "GitHub"
         success_message = (
@@ -411,6 +413,7 @@ def _run_maa_resource_update(
         if result["updated"]:
             if os.environ.get("MOWER_ANDROID") == "1":
                 from mower_android.managed import pack_component
+
                 pack_component(result["target"])
                 result["restart_required"] = True
             clear_loaded_maa_cache(result["target"])
@@ -433,7 +436,8 @@ def _run_maa_resource_update(
     source_label = "Mirror酱" if result["source"] == "mirrorchyan" else "GitHub"
     if result["updated"]:
         message = f"MAA 资源 {result['version']} 已通过 {source_label}更新完成"
-        if result.get("restart_required"): message += "，重启安卓服务后生效"
+        if result.get("restart_required"):
+            message += "，重启安卓服务后生效"
     else:
         message = f"MAA 资源 {result['version']} 已是最新版本"
     with maa_resource_update_lock:
@@ -1236,7 +1240,8 @@ def get_maa_update_info():
         "channel": channel,
         "default_source": (
             "mirrorchyan"
-            if str(config.conf.maa_mirrorchyan_token or "").strip()
+            if os.environ.get("MOWER_ANDROID") != "1"
+            and str(config.conf.maa_mirrorchyan_token or "").strip()
             else "github"
         ),
         "target": target_text,
@@ -1292,6 +1297,11 @@ def check_maa_update():
     ).strip()
     if source not in {"github", "mirrorchyan"}:
         return {"ok": False, "message": "未知的 MAA 更新源"}
+    if os.environ.get("MOWER_ANDROID") == "1" and source == "mirrorchyan":
+        return {
+            "ok": False,
+            "message": "Android 暂不支持 Mirror酱，请使用 GitHub 官方源",
+        }
     if source == "mirrorchyan" and not mirror_token:
         return {"ok": False, "message": "请填写 Mirror酱 CDK"}
     try:
@@ -1381,6 +1391,11 @@ def start_maa_update():
         }
     if source not in {"github", "mirrorchyan"}:
         return {"ok": False, "message": f"未知的 MAA {operation}源"}
+    if os.environ.get("MOWER_ANDROID") == "1" and source == "mirrorchyan":
+        return {
+            "ok": False,
+            "message": "Android 暂不支持 Mirror酱，请使用 GitHub 官方源",
+        }
     if source == "mirrorchyan" and not mirror_token:
         return {"ok": False, "message": "请填写 Mirror酱 CDK"}
     config_changed = False
@@ -1593,6 +1608,11 @@ def check_maa_resource_update():
     ).strip()
     if source not in {"github", "mirrorchyan"}:
         return {"ok": False, "message": "未知的 MAA 资源更新源"}
+    if os.environ.get("MOWER_ANDROID") == "1" and source == "mirrorchyan":
+        return {
+            "ok": False,
+            "message": "Android 暂不支持 Mirror酱，请使用 GitHub 官方源",
+        }
     if source == "mirrorchyan" and not mirror_token:
         return {"ok": False, "message": "请填写 Mirror酱 CDK"}
 
@@ -1655,6 +1675,11 @@ def start_maa_resource_update():
         return {"ok": False, "message": "请先下载并设置有效的 MAA 目录"}
     if source not in {"github", "mirrorchyan"}:
         return {"ok": False, "message": "未知的 MAA 资源更新源"}
+    if os.environ.get("MOWER_ANDROID") == "1" and source == "mirrorchyan":
+        return {
+            "ok": False,
+            "message": "Android 暂不支持 Mirror酱，请使用 GitHub 官方源",
+        }
     if source == "mirrorchyan" and not mirror_token:
         return {"ok": False, "message": "请填写 Mirror酱 CDK"}
     if source == "mirrorchyan" and mirror_token != config.conf.maa_mirrorchyan_token:
