@@ -1,0 +1,213 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'android/**'
+      - 'runtime/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'UPSTREAM.json'
+      - '.dockerignore'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: ARM64 Python, WebUI and MAA
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: runtime/ui/package-lock.json
+      - name: Build WebUI
+        working-directory: runtime/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test -- src/routes.test.js src/theme/mower.test.js src/utils/manualUpdate.test.js src/components/GlobalUpdateDrop.test.js
+          npm run build
+      - name: Verify production WebUI API URLs
+        run: python3 scripts/check_webui_build.py
+      - uses: docker/setup-buildx-action@v3
+      - name: Build native ARM64 Python image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/runtime.Dockerfile
+          platforms: linux/arm64
+          tags: mower-android-runtime:dev
+          load: true
+          cache-from: type=gha,scope=android-python
+          cache-to: type=gha,mode=max,scope=android-python
+      - name: Test Python integration
+        run: docker run --rm --platform linux/arm64 -v "$PWD:/project" -w /project mower-android-runtime:dev python -m unittest discover -s tests -v
+      - name: Prepare official MAA and package runtime
+        run: |
+          python3 scripts/prepare_android_maa.py
+          python3 scripts/pack_runtime.py
+      - name: Collect pinned official MAA component
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, shutil
+          from pathlib import Path
+          lock = json.loads(Path('scripts/maa-android.lock.json').read_text())
+          source = Path('artifacts') / lock['url'].rsplit('/', 1)[1]
+          if hashlib.sha256(source.read_bytes()).hexdigest() != lock['sha256']:
+              raise SystemExit('Official MAA checksum mismatch')
+          target = Path('artifacts/official-maa')
+          target.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(source, target / source.name)
+          (target / (source.name + '.sha256')).write_text(lock['sha256'] + '  ' + source.name + '\n')
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-maa-${{ github.run_id }}
+          path: artifacts/official-maa/*
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-runtime-${{ github.run_id }}
+          path: |
+            android/app/src/main/assets/python-runtime.zip
+            android/app/src/main/assets/python-runtime.sha256
+            android/app/src/main/assets/maa-component.zip
+            android/app/src/main/assets/maa-component.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  apk:
+    name: Assemble signed ARM64 APK
+    needs: runtime
+    # Android's Linux SDK / NDK host tools require x86_64.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.13113456' 'cmake;3.22.1'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-runtime-${{ github.run_id }}
+          path: android/app/src/main/assets
+      - name: Verify runtime packages
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          assets = Path('android/app/src/main/assets')
+          for name in ('python-runtime', 'maa-component'):
+              actual = hashlib.sha256((assets / f'{name}.zip').read_bytes()).hexdigest()
+              expected = (assets / f'{name}.sha256').read_text().strip()
+              if actual != expected:
+                  raise SystemExit(f'{name}: checksum mismatch')
+          PY
+      - name: Prepare PRoot binaries
+        run: python3 scripts/prepare_engine_assets.py
+      - name: Restore stable development signing key
+        env:
+          MOWER_DEBUG_KEYSTORE_BASE64: ${{ secrets.MOWER_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          value = os.environ.get('MOWER_DEBUG_KEYSTORE_BASE64', '')
+          if not value:
+              raise SystemExit('Configure the MOWER_DEBUG_KEYSTORE_BASE64 repository secret first.')
+          key = Path(os.environ['RUNNER_TEMP']) / 'mower-debug.keystore'
+          key.parent.mkdir(parents=True, exist_ok=True)
+          key.write_bytes(base64.b64decode(value, validate=True))
+          key.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'MOWER_DEBUG_KEYSTORE_PATH={key}\n')
+          PY
+      - name: Build APK
+        run: |
+          bash android/gradlew -p android :app:assembleRelease --console=plain
+          mkdir -p artifacts
+          python3 scripts/package_maa_python.py
+          cp android/app/build/outputs/apk/release/app-release.apk artifacts/mower-android-arm64.apk
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          signer = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0/apksigner'
+          result = subprocess.check_output([str(signer), 'verify', '--print-certs',
+              'artifacts/mower-android-arm64.apk'], text=True)
+          actual = next(line.split(': ', 1)[1] for line in result.splitlines()
+              if line.startswith('Signer #1 certificate SHA-256 digest:'))
+          expected = 'ef5cdb073be86dc57c7e0a40aff7aef3d6cbdde2b69d63365b83d7f486205cd7'
+          if actual != expected:
+              raise SystemExit('APK signing certificate differs from the existing development release.')
+          print('Verified APK signature matches the existing development release.')
+          PY
+          cd artifacts
+          sha256sum mower-android-arm64.apk > mower-android-arm64.apk.sha256
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/mower-debug.keystore"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mower-android-arm64-${{ github.sha }}
+          path: |
+            artifacts/mower-android-arm64.apk
+            artifacts/mower-android-arm64.apk.sha256
+            artifacts/mower-maa-python-*.zip
+            artifacts/mower-maa-python-*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish Android distribution
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [runtime, apk]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mower-android-arm64-${{ github.sha }}
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-maa-${{ github.run_id }}
+          path: release-assets
+      - name: Verify all three packages and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release-assets
+          sha256sum --check ./*.sha256
+          test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name 'mower-maa-python-*.zip' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name 'MAAComponent-*-android-arm64.tar.gz' | wc -l)" -eq 1
+          cd ..
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          # Sidecars are used only between CI jobs; GitHub supplies asset digests.
+          gh release create "$RELEASE_TAG" release-assets/*.apk release-assets/mower-maa-python-*.zip release-assets/MAAComponent-*-android-arm64.tar.gz --verify-tag --title "Mower Android $RELEASE_TAG" --notes-file docs/android-release-notes.md "${flags[@]}"

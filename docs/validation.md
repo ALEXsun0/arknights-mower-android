@@ -1,0 +1,77 @@
+# 开发验证记录
+
+日期：2026-09-11。用户提供的 MuMu ARM64 模拟器，Android 12 / API 32，1920×1080。
+
+以下结果来自独立 `android/` 工程、官方 Android ARM64 MaaCore v6.17.5 与 NCNN 转换资源；不是早期嵌入完整 Meow 原型的结果。
+
+## 已通过
+
+- Gradle 编译与 APK 覆盖安装；WebUI 生产构建通过。
+- 10 项 Python 回归测试：桥接帧与回调处理、导入桌面设置后的 Android 参数接管、固定 WebUI 会话参数、官方 Android 资产选择、拒绝错误平台资源。
+- Shizuku 标准用户服务绑定；Root 启动时降为 shell 身份，创建 1920×1080 后台显示器。
+- 官方 Android 库加载、NCNN OCR 资源加载、原生控制器连接；游戏处于后台显示器。
+- MAA StartUp 从游戏启动页进入已登录首页，最终回调含 10002 和 3；没有运行刷关、充值或抽卡任务。
+- Android 本机 CPython 3.12.14 / aarch64，以应用 UID 运行，AndroidDevice 获取真实截图；Mower `detect_index_scene()` 返回 true。一次最终检查识别出 47 个 OCR 区域，约 10.52 秒。PRoot 显示的 UID 0 是访客映射，不是 Python 获得 Root。
+- 停止服务后 Python、PRoot 和 Shizuku 后台子服务均退出；重启后重新加载官方核心并再次完成任务。
+- 原版 WebUI 的 Android 设置面板正常显示，设备连接参数由安卓接管。安卓不展示桌面托盘选项。
+- 正常／深夜主题与安卓顶部栏同步；桌面启动入口切换到相应图标。两种图标共用 Mower 原 PNG，仅背景不同：正常白色、深夜 #18181c。
+- HTTP 未认证配置请求返回 401；带令牌访问建立 HttpOnly cookie 后，静态 JS 可加载；不匹配来源的写请求返回 403。
+- WebSocket 未认证握手返回 401，携带有效 cookie 返回 101。
+- WebUI 官方更新检查实际访问 GitHub，选中 `MAAComponent-v6.17.5-android-arm64.tar.gz`；版本、平台 android、架构 arm64 显示正确。
+- 使用提供的完整官方压缩包进行 Docker 内离线安装集成测试：真实流式 SHA-256 校验、解压、pnnx 模型转换、组件打包与替换；旧版备份、用户 config 和 Python 适配器得到保留。错误 SHA-256 被拒绝且不改变已安装版本。这项测试替换了远程版本发现和下载传输，保留实际安装逻辑。
+- 开启局域网开关并重启后，服务监听所有网卡。认证 HTTP 和 WebSocket 已通过 ADB 转发验证。
+
+## GitHub Actions 构建
+
+2026-09-11，提交 `a438bedeff7f5c1639f90386b8341b34a533ba62` 的[云端构建](https://github.com/ALEXsun0/arknights-mower-android/actions/runs/34543837481)完成以下检查：
+
+- 私有仓库原生 `ubuntu-24.04-arm` runner 完成 WebUI 生产构建、Python 环境构建、10 项测试、官方 MAA v6.17.5 校验与 NCNN 模型准备、运行时打包。
+- `ubuntu-24.04` x86_64 runner 校验两份运行时 ZIP，下载并校验 PRoot 依赖，使用 JDK 21、Android SDK 36、NDK 29 和固定开发签名编译成功。
+- `apksigner verify` 通过，APK 证书 SHA-256 为 `ef5cdb073be86dc57c7e0a40aff7aef3d6cbdde2b69d63365b83d7f486205cd7`，与现有本地实验版相同。工作流在上传前强制核对该指纹。
+- 最终 Artifact 包含 APK 与 SHA-256 文件，约 580 MiB，保留 7 天。此次验证覆盖云端构建链；前述模拟器运行结果来自本地构建的同一应用源码。
+
+首次 CI 编译成功后，下载核对发现默认签名路径未使用预期密钥；该次不兼容的 APK Artifact 已删除。现已通过 `MOWER_DEBUG_KEYSTORE_PATH` 显式指定签名文件，并增加上传前的证书校验。
+
+## 测试中修复
+
+### 实机 CI WebUI 白屏
+
+2026-09-11，在用户的 Android 13 实机上确认：后台服务与官方 MAA 正常，局域网 HTTP 和 WebSocket 可达，但浏览器仅显示侧栏，主页面未渲染。
+
+原因是本地未跟踪的 `runtime/ui/.env` 未进入 CI；打包结果将 API 地址编译成 `undefined/conf`、`undefined/shop` 等，初始化请求返回 404。之前的接口检查与签名验证没有覆盖浏览器实际渲染，这两项通过不能说明 WebUI 可用。
+
+`0.1.0-dev.3` 将生产构建 API 基地址固定为空字符串，使用当前页面所在的手机地址；开发服务器配置保持原样。新增 `scripts/check_webui_build.py` 检查入口资源与主页面初始化接口地址，并接入本地构建和 CI。该检查已针对旧 CI APK 验证可复现失败，修复构建通过。
+
+使用本地修正版前端、只转发读取请求到同一实机的验证代理，浏览器已显示日志区、任务表、“开始执行”和“新增任务”；原白屏页面的 404 不再出现。验证代理拒绝写请求，因此不用于确认设置保存和任务执行。此结果不代表实机已安装新版 APK。
+
+随后，[修复 CI](https://github.com/ALEXsun0/arknights-mower-android/actions/runs/34545330848)通过，下载其 APK 并再次校验 SHA-256、签名和包内 WebUI 后，通过无线 ADB 覆盖安装到三星 SM-G9880（Android 13）。已确认 versionCode 3 / versionName `0.1.0-dev.3`，手机安装的运行时摘要与 CI 包一致。直接访问手机局域网地址的浏览器已显示日志、任务表和执行按钮；手机屏幕也已显示自动专精页面。HTTP Cookie、WebSocket 认证和 Android 设置接管检查通过。原有四个配置文件均保留，排班、周计划和状态文件摘要不变；`conf.yml` 随正常页面初始化和会话更新重新保存。此次没有启动排班或游戏任务。
+
+### 其他已修复问题
+
+- Root Shizuku 的显示器包名／UID 校验问题。
+- 官方组件缺少 Android 核心所需 NCNN 模型：从该组件附带的 ONNX 转换，并在更新时重新准备。
+- 动态更新目录中的原生控制器库需要预加载。
+- GitHub asset.digest 中 SHA-256 的读取。
+- Android 更新标题错误回退为 macOS；核心与资源更新文案均改为 Android。
+- Android 12 捕获释放时 ImageReader 回调与销毁之间的死锁。
+
+## 复现命令
+
+```sh
+docker run --rm --platform linux/arm64 -v "$PWD:/project" -w /project mower-android-runtime:dev python -m unittest discover -s tests -v
+python3 scripts/smoke_android.py --serial DEVICE --launch --startup
+python3 scripts/check_android_python.py --serial DEVICE
+python3 scripts/check_android_web.py --serial DEVICE --update-check
+```
+
+离线更新安装测试：将官方包以只读方式挂载为 `/archive.tar.gz`，将项目挂载为 `/project`，设置 `PYTHONPATH=/project/runtime`，在一次性 Docker 容器中运行 `scripts/check_component_update.py`。该脚本固定验证 v6.17.5 官方包的 SHA-256。
+
+## 尚未验证与限制
+
+MuMu Wi-Fi 地址为 NAT 内部地址，电脑不能直接路由到该地址；模拟器的 ADB 转发测试与实机直连测试分别记录。三星 SM-G9880 / Android 13 已验证无线 ADB 安装、手机 WebView 和局域网浏览器基本显示；不同 ROM 的后台限制及实机长期调度仍需验证。
+
+未进行多日基建排班、全部 MAA 任务、B 服、中文输入法、WebUI 文件导入导出、系统回收后的自动恢复或跨版本的在线整包升级长测。资源合并后的打包路径已实现，但未完成一次真实在线资源更新端到端测试。
+
+服务内核和资源更新后必须手动停止并重新启动服务。当前 APK 为 debug 签名、targetSdk 28 的实验版本，尚非商店发行版。
+
+测试凭证仅在内存或应用私有目录使用；日志和游戏截图存于 Git 忽略的 artifacts，不提交账号数据。

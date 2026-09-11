@@ -1,0 +1,18 @@
+{
+  "mower": {
+    "url": "https://github.com/ArkMowers/arknights-mower",
+    "commit": "32f5597e062f5acce846bd7944dbfbdefbfa960b",
+    "branch": "alpha",
+    "source": "Pinned alpha branch snapshot with Android runtime compatibility patches"
+  },
+  "meow": {
+    "url": "https://github.com/Aliothmoon/MAA-Meow",
+    "commit": "042e21b6a7c826f1dcd4ecef0004e5288f7601f2",
+    "retained": "Background display, capture, preview, touch, Android wrappers, hidden API declarations, small MAA C API declarations only; full application removed"
+  },
+  "maa": {
+    "url": "https://github.com/MaaAssistantArknights/MaaAssistantArknights",
+    "asset": "MAAComponent-v6.17.5-android-arm64.tar.gz",
+    "sha256": "93c1bb22c877f5022fcc83ac337114d1a63c25613cce84edc69d826bc5423638"
+  }
+}

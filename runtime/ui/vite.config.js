@@ -1,0 +1,47 @@
+import { fileURLToPath, URL } from 'node:url'
+import { resolve } from 'path'
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import Inspect from 'vite-plugin-inspect'
+import vueJsx from '@vitejs/plugin-vue-jsx'
+
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
+
+// https://vitejs.dev/config/
+export default defineConfig(({ command }) => ({
+  // The packaged WebUI is served by the phone itself. Never depend on an
+  // untracked .env file or bake a development backend into a production APK.
+  define: command === 'build' ? { 'import.meta.env.VITE_HTTP_URL': JSON.stringify('') } : {},
+  plugins: [
+    Inspect(),
+    vue(),
+    vueJsx(),
+    AutoImport({
+      imports: [
+        'vue',
+        {
+          'naive-ui': ['useDialog', 'useMessage', 'useNotification', 'useLoadingBar']
+        }
+      ]
+    }),
+    Components({
+      dts: command === 'serve' ? 'components.d.ts' : false,
+      resolvers: [NaiveUiResolver()]
+    })
+  ],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url))
+    }
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(import.meta.dirname, 'index.html'),
+        manager: resolve(import.meta.dirname, 'manager/index.html')
+      }
+    }
+  }
+}))
