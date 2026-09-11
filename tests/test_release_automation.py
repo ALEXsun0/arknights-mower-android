@@ -82,5 +82,8 @@ class SnapshotTests(unittest.TestCase):
                 self.assertEqual(changed['host_version_code'],15)
                 self.assertEqual(changed['version_code'],16)
                 self.assertEqual(changed['adapter']['sha256'],adapter['sha256'])
+                self.assertFalse((root/'android/app/src/main/assets').exists())
+                prepare.apply(metadata_only=True)
+                self.assertTrue((root/'android/app/src/main/assets/host-build.json').is_file())
 
 if __name__=='__main__': unittest.main()

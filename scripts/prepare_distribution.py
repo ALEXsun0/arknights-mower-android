@@ -87,7 +87,9 @@ def apply(metadata_only=False):
     for target in ('scripts/maa-android.lock.json','runtime/mower_android/maa-component-lock.json'):
         (ROOT/target).write_text(json.dumps(lock,indent=2)+'\n')
     build_info = {'host_sha256':data['host_sha256'], 'host_version_code':data['host_version_code']}
-    (ROOT/'android/app/src/main/assets/host-build.json').write_text(json.dumps(build_info)+'\n')
+    host_file = ROOT/'android/app/src/main/assets/host-build.json'
+    host_file.parent.mkdir(parents=True, exist_ok=True)
+    host_file.write_text(json.dumps(build_info)+'\n')
     if metadata_only: return
     mower = data['bundled']['mower']
     upstream = json.loads((ROOT/'UPSTREAM.json').read_text())
