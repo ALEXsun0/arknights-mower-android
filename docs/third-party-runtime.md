@@ -8,6 +8,7 @@
 | 官方 Android MaaCore | https://github.com/MaaAssistantArknights/MaaAssistantArknights | AGPL-3.0，含各依赖原许可证 |
 | Meow 背景显示与输入 | https://github.com/Aliothmoon/MAA-Meow | AGPL-3.0，部分 scrcpy 代码 Apache-2.0 |
 | Shizuku API/provider | https://github.com/RikkaApps/Shizuku-API | Apache-2.0 / MIT，按各模块声明 |
+| XZ for Java 1.10 | https://github.com/tukaani-project/xz-java | 0BSD，见 docs/licenses/XZ-Java-COPYING |
 | JNA | https://github.com/java-native-access/jna | LGPL-2.1-or-later / Apache-2.0 |
 | CPython 与 Debian 用户态 | Docker Official Image python:3.12-slim-bookworm | PSF、各 Debian 包原许可证 |
 | PRoot | https://github.com/termux/proot | GPL-2.0-or-later |

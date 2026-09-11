@@ -75,3 +75,16 @@ MuMu Wi-Fi 地址为 NAT 内部地址，电脑不能直接路由到该地址；�
 服务内核和资源更新后必须手动停止并重新启动服务。当前 APK 为 debug 签名、targetSdk 28 的实验版本，尚非商店发行版。
 
 测试凭证仅在内存或应用私有目录使用；日志和游戏截图存于 Git 忽略的 artifacts，不提交账号数据。
+
+## 0.1.0 正式 APK（2026-09-11）
+
+- APK `versionCode=8`，Release 构建、完整 `lintRelease` 通过；保留原签名，可覆盖安装。
+- 本地 APK 373,099,133 字节（约 355.8 MiB），旧 APK 608,553,366 字节（约 580.4 MiB），减少 38.7%。CI 同版约 355.7 MiB。
+- Python 环境从约 344 MiB 降至 176 MiB，采用整包 XZ；MAA 从约 234 MiB 降至 177 MiB，保留所有地区资源和原生库，去除已经转换的重复 OCR ONNX。
+- 校验运行包 13,371 个文件及 MAA ZIP 的全部 CRC。默认 OCR 模型、WebUI、宿主和 Mower 仍在包内。
+- 23 项宿主测试、43 项前端测试通过；生产 WebUI 构建与同源 API 检查通过。
+- CI 34555626123 全部通过，实际生成并核对 CI APK 的 digest 与固定签名。
+- 三星 SM-G9880 / Android 13 实机覆盖安装，完成 XZ 首次解压。真实局域网浏览器显示原版 WebUI、Mower 版本和 Release 更新入口。
+- 用仅添加不可见验证标记的私有 Mower 测试包检查：预览不激活、确认后暂存、服务重启后从新程序目录加载。原生「恢复内置 Mower」后重启，验证标记消失；测试包不作为 Release 资产发布。
+- 实机拒绝开发渠道与 Android Mirror 请求。重新导入官方 MAA v6.17.5，生成精简 NCNN 组件后重启，通过真实 `AsstLoadResource` 和 Android 控制器连接。
+- 未以本次检查代替多日排班、所有 MAA 任务或其他品牌设备验证。
