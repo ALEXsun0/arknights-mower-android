@@ -30,6 +30,7 @@ class MowerSettingsActivity : Activity() {
     private val switches = linkedMapOf<String, Switch>()
     private var updating = false
     private var busy = false
+    private lateinit var appearanceButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,19 +50,24 @@ class MowerSettingsActivity : Activity() {
         utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         content.addView(utilities, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         content.addView(status)
-        content.addView(action("显示模式：正常／深夜") {
+        appearanceButton = action("显示模式：${if (MowerStyle.dark) "暗色" else "亮色"}") {
             AlertDialog.Builder(this).setTitle("显示模式")
-                .setSingleChoiceItems(arrayOf("正常模式（白色背景）", "深夜模式"), if (MowerStyle.dark) 1 else 0) { dialog, index ->
+                .setSingleChoiceItems(arrayOf("亮色", "暗色"), if (MowerStyle.dark) 1 else 0) { dialog, index ->
                     dialog.dismiss()
                     execute {
                         check(getSharedPreferences("appearance", 0).edit().putBoolean("dark", index == 1).commit()) { "外观保存失败" }
                         AppearancePreferences.sync(this)
+                        runOnUiThread {
+                            MowerStyle.dark = index == 1
+                            appearanceButton.text = "显示模式：${if (MowerStyle.dark) "暗色" else "亮色"}"
+                            MowerStyle.applyTheme(window.decorView); chrome()
+                        }
                         if (MowerService.url != null) NativeRuntimeClient.saveTheme(if (index == 1) "dark" else "light")
-                        runOnUiThread { MowerStyle.dark = index == 1; MowerStyle.applyTheme(window.decorView); chrome() }
                         "外观已保存；返回主页后同步 WebUI。"
                     }
                 }.setNegativeButton("取消", null).show()
-        }, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(12) })
+        }
+        content.addView(appearanceButton, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(12) })
         idleButton = action("任务结束后（启动服务后修改）") {
             AlertDialog.Builder(this).setTitle("任务结束后")
                 .setSingleChoiceItems(idleLabels, idleValues.indexOf(idleAction)) { dialog, index ->
