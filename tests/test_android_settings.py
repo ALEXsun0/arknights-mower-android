@@ -44,8 +44,18 @@ class ManagedSettingsTests(unittest.TestCase):
         self.assertEqual(result['simulator']['name'], '')
         self.assertFalse(result['droidcast']['enable'])
         self.assertEqual(result['maa_weekly_plan'], source['maa_weekly_plan'])
-        self.assertEqual(result['theme'], 'dark')
+        self.assertEqual(result['theme'], 'light')
         self.assertEqual(source['simulator']['name'], 'MuMu12')
+
+    def test_native_theme_wins_over_imported_or_stale_webui_theme(self):
+        path = Path(self.folder.name) / 'native-appearance.json'
+        path.write_text(json.dumps({'theme': 'dark'}))
+        self.assertEqual(normalize({'theme': 'light'})['theme'], 'dark')
+        path.write_text(json.dumps({'theme': 'light'}))
+        self.assertEqual(normalize({'theme': 'dark'})['theme'], 'light')
+        for value in ('auto', None, []):
+            path.write_text(json.dumps({'theme': value}))
+            self.assertEqual(normalize({'theme': 'dark'})['theme'], 'light')
 
     @patch.dict('os.environ', {'MOWER_WEB_TOKEN':'session-secret','MOWER_WEB_PORT':'12345'})
     def test_import_cannot_change_live_web_endpoint(self):

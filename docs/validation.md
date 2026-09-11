@@ -1,5 +1,17 @@
 # 开发验证记录
 
+## 0.2.1 本地候选：启动检查、网络与诊断（2026-09-11）
+
+- 三星实机 WebUI 日志确认 GitHub 更新检查失败为 `NameResolutionError / Temporary failure in name resolution`，涉及 `api.github.com` 和 `raw.githubusercontent.com`。同一手机 Android 系统解析 GitHub 成功；Linux 运行环境原先固定公共 DNS，现改为跟随 Android 当前网络并监听变化。修复后的实机 Python 更新请求尚待验证，不能仅以系统 ping 成功判定恢复。
+- 系统记录两次主进程退出为 `USER REQUESTED / FORCE STOP`，description 包含 `MARs #2`，另有 `Recent_Kill` 记录；其他多次为覆盖安装。未找到对应 Java FATAL EXCEPTION。这些记录不足以认定所有退出均由省电策略触发，也不能把 warning 当作崩溃根因。
+- 原生接管正常／深夜主题，移除 WebUI 主题轮询和反向修改桌面入口；服务运行或停止过程中不切换 launcher alias。首次解压显示真实读取字节进度，缺失关键文件时修复运行环境，主页自动提示必要权限。
+- 121 项原生测试及 Release lint 通过；44 项 Python 宿主测试、21 项前端测试通过。前端原生主题归属断言补充后，对应 5 项配置测试重跑通过。APK 构建、全包 CRC、宿主指纹与固定签名校验通过，最终 APK 374,154,683 字节，versionCode 16 / versionName 0.2.1。
+- MuMu 实际显示解压 25% 及进度条；Root 后台连接失败后有明确阶段提示，启动按钮恢复，无界面崩溃。该环境的应用 Root 启动未成功，不能视为设备控制验证通过。临时 Root 配置已移除，模拟器测试后停止。
+- MuMu 原生诊断窗口显示 Mower 文件日志、启动检查和 Python 控制台。导出 ZIP CRC 通过，实际包含当前及轮转 Mower 日志、启动检查、退出记录和应用日志；系统 ChooserActivity 已打开。模拟器无匹配的分享应用，未验证 QQ 接收，也未向任何联系人发送文件。
+- 最终本地候选已通过无线 ADB 覆盖安装三星 SM-G9880，保留用户数据，确认版本 0.2.1 / 16。安装时 Mower 服务未运行。手机先处于锁屏、后由用户操作其他应用，未接管界面；新包启动、Python 更新请求、主题同步及原生设备连接仍待实机验证。
+- 已读取的实机 WebUI 日志主要为 DNS 错误，尚未取得用户所述 Android / ADB 设备错误的完整堆栈。此前诊断仅包含 Python 控制台末尾，现增加 Mower 最近四份轮转日志，每份至多 512 KiB，避免历史设备报错被普通轮询挤出。尚不声称已修复未知设备错误。
+- 本轮只构建并安装本地候选，未发布 0.2.1，也未替换已发布的 0.2.0 附件。
+
 日期：2026-09-11。用户提供的 MuMu ARM64 模拟器，Android 12 / API 32，1920×1080。
 
 以下结果来自独立 `android/` 工程、官方 Android ARM64 MaaCore v6.17.5 与 NCNN 转换资源；不是早期嵌入完整 Meow 原型的结果。

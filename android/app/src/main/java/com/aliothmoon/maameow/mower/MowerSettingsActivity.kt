@@ -49,6 +49,19 @@ class MowerSettingsActivity : Activity() {
         utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         content.addView(utilities, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         content.addView(status)
+        content.addView(action("显示模式：正常／深夜") {
+            AlertDialog.Builder(this).setTitle("显示模式")
+                .setSingleChoiceItems(arrayOf("正常模式（白色背景）", "深夜模式"), if (MowerStyle.dark) 1 else 0) { dialog, index ->
+                    dialog.dismiss()
+                    execute {
+                        check(getSharedPreferences("appearance", 0).edit().putBoolean("dark", index == 1).commit()) { "外观保存失败" }
+                        AppearancePreferences.sync(this)
+                        if (MowerService.url != null) NativeRuntimeClient.saveTheme(if (index == 1) "dark" else "light")
+                        runOnUiThread { MowerStyle.dark = index == 1; MowerStyle.applyTheme(window.decorView); chrome() }
+                        "外观已保存；返回主页后同步 WebUI。"
+                    }
+                }.setNegativeButton("取消", null).show()
+        }, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(12) })
         idleButton = action("任务结束后（启动服务后修改）") {
             AlertDialog.Builder(this).setTitle("任务结束后")
                 .setSingleChoiceItems(idleLabels, idleValues.indexOf(idleAction)) { dialog, index ->
@@ -310,11 +323,16 @@ class MowerSettingsActivity : Activity() {
 
     private fun showLogs() {
         val log = java.io.File(filesDir, "python.log")
-        val text = if (log.exists()) java.io.RandomAccessFile(log, "r").use {
+        val checks = java.io.File(filesDir, "startup-check.txt").takeIf { it.isFile }?.readText().orEmpty()
+        val mowerLog = java.io.File(filesDir, "mower-data/log/runtime.log")
+        val mowerText = if (mowerLog.isFile) runCatching { MowerLogFiles.tail(mowerLog, 24000) }.getOrDefault("日志暂不可读") else "暂无 Mower 文件日志"
+        val text = "Mower 日志\n" + mowerText + "\n\n启动检查\n" + checks + "\n" + ProcessExitDiagnostics.report(this) + "\n\nPython 控制台\n" + if (log.exists()) java.io.RandomAccessFile(log, "r").use {
             it.seek(maxOf(0, it.length() - 14000)); val bytes = ByteArray((it.length() - it.filePointer).toInt()); it.readFully(bytes); String(bytes)
         } else MowerService.message
-        val content = label(text, 12f).apply { setPadding(dp(20), dp(12), dp(20), dp(12)); setTextIsSelectable(true) }
-        AlertDialog.Builder(this).setTitle("运行日志").setView(ScrollView(this).apply { addView(content) }).setPositiveButton("关闭", null).show()
+        val content = label(MowerDiagnostics.redact(text), 12f).apply { setPadding(dp(20), dp(12), dp(20), dp(12)); setTextIsSelectable(true) }
+        AlertDialog.Builder(this).setTitle("运行日志").setView(ScrollView(this).apply { addView(content) })
+            .setNeutralButton("导出并分享") { _, _ -> exportLogs() }
+            .setPositiveButton("关闭", null).show()
     }
 
     private fun refreshIdleAction() {

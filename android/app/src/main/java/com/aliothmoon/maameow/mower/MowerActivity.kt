@@ -26,6 +26,12 @@ class MowerActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var layout: LinearLayout
     private lateinit var status: TextView
+    private lateinit var installBar: ProgressBar
+    private lateinit var permissionSummary: TextView
+    private lateinit var permissionAction: Button
+    private var permissionsCheckedAt = 0L
+    private var requestingStart = false
+    private var appliedTheme = false
     private lateinit var dot: TextView
     private lateinit var toggle: Button
     private lateinit var web: WebView
@@ -37,21 +43,23 @@ class MowerActivity : Activity() {
             if (AndroidSystemSettings(this@MowerActivity).enabled("keep_screen_on")) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             status.text = MowerService.message
+            if (android.os.SystemClock.elapsedRealtime() - permissionsCheckedAt >= 5000) refreshPermissions()
+            val installation = MowerService.installProgress
+            installBar.visibility = if (installation == null) View.GONE else View.VISIBLE
+            if (installation != null) {
+                installBar.progress = installation.percent
+                installBar.contentDescription = "${installation.stage} ${installation.percent}%"
+                installBar.progressTintList = android.content.res.ColorStateList.valueOf(MowerStyle.green)
+                installBar.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(MowerStyle.border)
+            }
             val url = MowerService.url
-            toggle.isEnabled = !MowerService.stopping
+            toggle.isEnabled = !MowerService.stopping && !requestingStart
             toggle.text = if (MowerService.active) "停止服务" else "启动服务"
             dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
             if (url != null && url != loaded) { loaded = url; web.loadUrl(url) }
             if (url == null && loaded != null) { loaded = null; web.loadUrl("about:blank") }
             landing.visibility = if (url == null) View.VISIBLE else View.GONE
             web.visibility = if (url == null) View.GONE else View.VISIBLE
-            if (url != null) web.evaluateJavascript("document.documentElement.dataset.mowerTheme || 'light'") { value ->
-                val dark = value == "\"dark\""
-                if (MowerStyle.dark != dark) {
-                    MowerStyle.dark = dark; MowerStyle.applyTheme(layout); chrome(); updateLauncher()
-                    getSharedPreferences("appearance", 0).edit().putBoolean("dark", dark).apply()
-                }
-            }
             handler.postDelayed(this, 1000)
         }
     }
@@ -59,6 +67,7 @@ class MowerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MowerStyle.dark = getSharedPreferences("appearance", 0).getBoolean("dark", false)
+        appliedTheme = MowerStyle.dark
         chrome(); updateLauncher()
         layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; background = surface(MowerStyle.paper, 0)
@@ -95,15 +104,25 @@ class MowerActivity : Activity() {
         }
         dot = label("●", 10f, MowerStyle.muted)
         statusRow.addView(dot)
-        status = label("尚未启动", 12f, MowerStyle.muted).apply { setPadding(dp(8), 0, 0, 0); maxLines = 1 }
+        status = label("尚未启动", 12f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), 0); maxLines = 3 }
         statusRow.addView(status, LinearLayout.LayoutParams(0, -2, 1f))
         statusRow.addView(label("本机运行  ·  无需电脑常驻", 11f, MowerStyle.muted))
         layout.addView(statusRow)
+        installBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; isIndeterminate = false; visibility = View.GONE
+        }
+        layout.addView(installBar, LinearLayout.LayoutParams(-1, dp(6)).apply { bottomMargin = dp(8) })
+        val permissionRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        permissionSummary = label("正在自动检查权限…", 11f, MowerStyle.muted).apply { maxLines = 3 }
+        permissionRow.addView(permissionSummary, LinearLayout.LayoutParams(0, -2, 1f))
+        permissionAction = action("处理权限") { showPermissionIssues() }
+        permissionRow.addView(permissionAction, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(12) })
+        layout.addView(permissionRow)
         val content = FrameLayout(this).apply {
             background = surface(MowerStyle.paper, 10); clipToOutline = true; elevation = dp(1).toFloat()
         }
         web = WebView(this).apply {
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(MowerStyle.paper)
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
             settings.allowFileAccess = false; settings.allowContentAccess = false
             webChromeClient = object : android.webkit.WebChromeClient() {
@@ -135,12 +154,23 @@ class MowerActivity : Activity() {
             barScroll.setPadding(left + dp(16), 0, right + dp(16), 0)
             barScroll.clipToPadding = false
             statusRow.setPadding(left + dp(18), dp(8), right + dp(16), dp(8))
+            permissionRow.setPadding(left + dp(18), 0, right + dp(16), dp(6))
+            (installBar.layoutParams as LinearLayout.LayoutParams).apply {
+                marginStart = left + dp(18); marginEnd = right + dp(16)
+                installBar.layoutParams = this
+            }
             insets
         }
         setContentView(layout); layout.requestApplyInsets(); handler.post(update)
     }
 
-    override fun onResume() { super.onResume(); AndroidSystemSettings.foreground = this }
+    override fun onResume() {
+        super.onResume(); AndroidSystemSettings.foreground = this; refreshPermissions()
+        val dark = getSharedPreferences("appearance", 0).getBoolean("dark", false)
+        MowerStyle.dark = dark; MowerStyle.applyTheme(layout); chrome(); web.setBackgroundColor(MowerStyle.paper)
+        if (dark != appliedTheme && loaded != null) web.reload()
+        appliedTheme = dark
+    }
     override fun onPause() { if (AndroidSystemSettings.foreground === this) AndroidSystemSettings.foreground = null; super.onPause() }
 
     fun installUpdate(file: java.io.File): String {
@@ -175,6 +205,9 @@ class MowerActivity : Activity() {
     }
 
     private fun updateLauncher() {
+        // Disabling a launcher alias can dismiss its task on vendor ROMs even
+        // with DONT_KILL_APP. Never change it during startup or a running service.
+        if (MowerService.active || MowerService.stopping) return
         val manager = packageManager
         for ((name, enabled) in listOf("LightLauncher" to !MowerStyle.dark, "DarkLauncher" to MowerStyle.dark).sortedByDescending { it.second }) {
             val component = android.content.ComponentName(this, "com.aliothmoon.maameow.mower.$name")
@@ -214,16 +247,60 @@ class MowerActivity : Activity() {
     }
 
     private fun startRuntime() {
+        if (requestingStart) return
+        requestingStart = true
         scope.launch {
-            if (com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission()) {
-                startForegroundService(Intent(this@MowerActivity, MowerService::class.java))
-            } else AlertDialog.Builder(this@MowerActivity).setTitle("后台授权尚未就绪")
-                .setMessage("未 Root 手机请启动 Shizuku，并允许 Mower 使用。已配置 Sui 时请检查其授权；Root 手机也可在软件设置中启用 Root 后端。")
-                .setPositiveButton("打开 Shizuku") { _, _ ->
-                    packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let { startActivity(it) }
-                }.setNeutralButton("软件设置") { _, _ -> startActivity(Intent(this@MowerActivity, MowerSettingsActivity::class.java)) }
-                .setNegativeButton("关闭", null).show()
+            try {
+                if (com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission()) {
+                    startForegroundService(Intent(this@MowerActivity, MowerService::class.java))
+                } else showPermissionIssues()
+            } catch (failure: Exception) {
+                ensureActive()
+                MowerService.message = "后台授权检查失败，请确认 Shizuku / Sui 的运行状态后重试"
+                showPermissionIssues()
+            } finally { requestingStart = false; refreshPermissions() }
         }
+    }
+
+    private fun refreshPermissions() {
+        if (!::permissionSummary.isInitialized) return
+        permissionsCheckedAt = android.os.SystemClock.elapsedRealtime()
+        runCatching { PermissionChecks.inspect(this) }.onSuccess { snapshot ->
+            permissionSummary.text = snapshot.summary
+            permissionAction.visibility = if (snapshot.issues.isEmpty()) View.GONE else View.VISIBLE
+        }.onFailure {
+            permissionSummary.text = "权限状态读取失败，点击重试"
+            permissionAction.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showPermissionIssues() {
+        val snapshot = runCatching { PermissionChecks.inspect(this) }.getOrElse {
+            refreshPermissions(); return
+        }
+        val issues = snapshot.issues
+        if (issues.isEmpty()) { refreshPermissions(); return }
+        AlertDialog.Builder(this).setTitle("自动权限检查 · 点击可直接处理")
+            .setItems(issues.map { (if (it.required) "启动必需：" else "功能提醒：") + it.description }.toTypedArray()) { _, index ->
+                val issue = issues[index]
+                if (issue.action == PermissionAction.AUTHORIZE_BACKEND) {
+                    scope.launch {
+                        try { com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission() }
+                        catch (failure: Exception) { ensureActive() }
+                        finally { refreshPermissions() }
+                    }
+                } else {
+                    val intent = PermissionChecks.intent(this, issue.action)
+                    if (intent == null) AlertDialog.Builder(this).setTitle("后台服务未就绪")
+                        .setMessage("未找到 Shizuku 应用。请先安装并启动 Shizuku；使用 Sui 的设备请从其管理入口启动服务。")
+                        .setPositiveButton("关闭", null).show()
+                    else runCatching { startActivity(intent) }.onFailure {
+                        AlertDialog.Builder(this).setMessage("系统未提供此权限的快捷页面，请从应用系统设置处理。")
+                            .setPositiveButton("打开应用系统设置") { _, _ -> startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) }
+                            .setNegativeButton("关闭", null).show()
+                    }
+                }
+            }.setNegativeButton("关闭", null).show()
     }
 
     override fun onDestroy() {

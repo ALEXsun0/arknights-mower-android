@@ -23,6 +23,10 @@ object NativeRuntimeClient {
         require(hours.isFinite() && hours >= 0)
         request("/conf", org.json.JSONObject().put("screenshot", hours))
     }
+    fun saveTheme(theme: String) {
+        require(theme in setOf("light", "dark"))
+        request("/conf", org.json.JSONObject().put("theme", theme))
+    }
     private fun request(path: String, payload: org.json.JSONObject? = null): String {
         require(path in setOf("/status", "/stop", "/log", "/android/runtime-event", "/conf"))
         val uri = Uri.parse(MowerService.url ?: error("请先启动 Mower 服务"))

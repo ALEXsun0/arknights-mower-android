@@ -11,6 +11,14 @@ MAA_PATH = Path('/mower-data/maa')
 COMPONENT = Path('/mower-data/maa-component.zip')
 
 
+def native_theme():
+    try:
+        value = json.loads((Path(os.environ.get('MOWER_DATA_DIR', '/mower-data')) / 'native-appearance.json').read_text())['theme']
+        return value if value in ('light', 'dark') else 'light'
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'light'
+
+
 def screenshot_hours():
     """Default to memory-only previews; Android owns screenshot persistence."""
     try:
@@ -50,6 +58,7 @@ def normalize(data):
     """Return a copy so callers never mutate a saved desktop configuration in place."""
     result = dict(data)
     result['screenshot'] = screenshot_hours()
+    result['theme'] = native_theme()
     result.update(adb='Android', maa_adb_path='Android', maa_path=str(MAA_PATH),
                   maa_conn_preset='Android', maa_touch_option='Android', touch_method='scrcpy',
                   close_simulator_when_idle=False, fix_mumu12_adb_disconnect=False)

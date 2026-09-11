@@ -22,6 +22,10 @@ def main():
     from arknights_mower.utils import config
     from arknights_mower.utils.log import init_file_logging
     init_file_logging()
+    # Keep warnings/errors; successful polling otherwise buries startup diagnostics
+    # and writes a log line to flash every second.
+    import logging
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
     token = os.environ['MOWER_WEB_TOKEN']
     config.conf.webview.token = token
     config.conf.webview.port = int(os.environ.get('MOWER_WEB_PORT', '58000'))
@@ -61,7 +65,8 @@ def main():
     @server.app.after_request
     def android_response(response):
         if request.path == '/conf' and request.method == 'GET' and response.is_json:
-            data = response.get_json(); data['runtime_platform'] = 'android'; response.set_data(server.app.json.dumps(data))
+            from mower_android.managed import native_theme
+            data = response.get_json(); data['runtime_platform'] = 'android'; data['theme'] = native_theme(); response.set_data(server.app.json.dumps(data))
         if request.path == '/maa-update/info' and response.is_json:
             data = response.get_json(); data.update(platform='android', arch='arm64'); response.set_data(server.app.json.dumps(data))
         supplied = request.args.get('token', '')
