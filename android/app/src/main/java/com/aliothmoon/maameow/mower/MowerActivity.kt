@@ -188,13 +188,13 @@ class MowerActivity : Activity() {
         addView(LinearLayout(this@MowerActivity).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(36), dp(24), dp(36), dp(24))
-            addView(label("你的罗德岛，随时就绪。", 26f, bold = true))
-            addView(label("熟悉的 Mower，在安卓后台继续运转。", 14f, MowerStyle.muted).apply {
+            addView(label("在手机上运行 Mower", 26f, bold = true))
+            addView(label("后台运行明日方舟，使用原版 WebUI 管理基建和 MAA。", 14f, MowerStyle.muted).apply {
                 setPadding(0, dp(8), 0, dp(24))
             })
             val steps = LinearLayout(this@MowerActivity)
-            listOf("01" to ("启动服务" to "启动 Shizuku，完成后台游戏授权。"),
-                "02" to ("连接游戏" to "打开游戏画面，登录你的明日方舟账号。"),
+            listOf("01" to ("后台授权" to "未 Root 手机需启动并授权 Shizuku。Root 手机可在软件设置选择 Root 后端，也可使用已配置的 Sui。"),
+                "02" to ("启动服务与游戏" to "点击上方启动服务，再打开游戏画面，登录明日方舟。"),
                 "03" to ("安排基建" to "在 WebUI 编辑排班，再启动调度。")
             ).forEach { (number, copy) ->
                 val card = LinearLayout(this@MowerActivity).apply {
@@ -207,7 +207,7 @@ class MowerActivity : Activity() {
                 steps.addView(card, LinearLayout.LayoutParams(0, -1, 1f).apply { marginEnd = dp(10) })
             }
             addView(steps, LinearLayout.LayoutParams(-1, -2))
-            addView(label("首次启动需要解压运行环境，请稍候。进度会显示在上方。", 11f, MowerStyle.muted).apply {
+            addView(label("首次启动会解压运行环境，进度显示在上方。局域网连接、固定端口和访问 Token 均在软件设置中管理。", 11f, MowerStyle.muted).apply {
                 setPadding(0, dp(22), 0, 0)
             })
         }, FrameLayout.LayoutParams(-1, -1))
@@ -217,11 +217,12 @@ class MowerActivity : Activity() {
         scope.launch {
             if (com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission()) {
                 startForegroundService(Intent(this@MowerActivity, MowerService::class.java))
-            } else AlertDialog.Builder(this@MowerActivity).setTitle("请先启动 Shizuku")
-                .setMessage("后台游戏需要 Shizuku 授权。可通过无线调试启动；Root 设备也可以在 Shizuku 中直接启动服务。")
+            } else AlertDialog.Builder(this@MowerActivity).setTitle("后台授权尚未就绪")
+                .setMessage("未 Root 手机请启动 Shizuku，并允许 Mower 使用。已配置 Sui 时请检查其授权；Root 手机也可在软件设置中启用 Root 后端。")
                 .setPositiveButton("打开 Shizuku") { _, _ ->
                     packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let { startActivity(it) }
-                }.setNegativeButton("关闭", null).show()
+                }.setNeutralButton("软件设置") { _, _ -> startActivity(Intent(this@MowerActivity, MowerSettingsActivity::class.java)) }
+                .setNegativeButton("关闭", null).show()
         }
     }
 

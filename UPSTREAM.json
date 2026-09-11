@@ -5,7 +5,11 @@
     "branch": "alpha",
     "source": "Alpha eaa05aa1 with Android compatibility PR #1029; packaged revision d8cbb41b has the same tree as merged alpha 22a73d44",
     "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724",
-    "merged_commit": "22a73d44ff8930f1619931fcc8bd3c8f4127eda2"
+    "merged_commit": "22a73d44ff8930f1619931fcc8bd3c8f4127eda2",
+    "local_patches": [
+      "Native Android screenshot setting ownership in the shared WebUI; default/persistence provided by Android host"
+    ],
+    "compatibility_pr": "https://github.com/ArkMowers/arknights-mower/pull/1032"
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",

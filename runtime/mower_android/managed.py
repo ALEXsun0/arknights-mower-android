@@ -1,6 +1,7 @@
 """Android owns connection settings, including values imported from desktop backups."""
 import hashlib
 import json
+import math
 import os
 import shutil
 import zipfile
@@ -8,6 +9,18 @@ from pathlib import Path
 
 MAA_PATH = Path('/mower-data/maa')
 COMPONENT = Path('/mower-data/maa-component.zip')
+
+
+def screenshot_hours():
+    """Default to memory-only previews; Android owns screenshot persistence."""
+    try:
+        path = Path(os.environ.get('MOWER_DATA_DIR', '/mower-data')) / 'native-screenshot.json'
+        value = json.loads(path.read_text())['hours']
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return 0.0
+        return float(value)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return 0.0
 
 
 def prepare_files():
@@ -36,6 +49,7 @@ def prepare_files():
 def normalize(data):
     """Return a copy so callers never mutate a saved desktop configuration in place."""
     result = dict(data)
+    result['screenshot'] = screenshot_hours()
     result.update(adb='Android', maa_adb_path='Android', maa_path=str(MAA_PATH),
                   maa_conn_preset='Android', maa_touch_option='Android', touch_method='scrcpy',
                   close_simulator_when_idle=False, fix_mumu12_adb_disconnect=False)

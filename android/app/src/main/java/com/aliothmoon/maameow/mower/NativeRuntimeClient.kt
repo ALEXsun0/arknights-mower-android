@@ -19,6 +19,10 @@ object NativeRuntimeClient {
         request("/conf", org.json.JSONObject().put("return_home_when_idle", action == "home")
             .put("exit_game_when_idle", action == "exit").put("close_simulator_when_idle", false))
     }
+    fun saveScreenshotHours(hours: Double) {
+        require(hours.isFinite() && hours >= 0)
+        request("/conf", org.json.JSONObject().put("screenshot", hours))
+    }
     private fun request(path: String, payload: org.json.JSONObject? = null): String {
         require(path in setOf("/status", "/stop", "/log", "/android/runtime-event", "/conf"))
         val uri = Uri.parse(MowerService.url ?: error("请先启动 Mower 服务"))

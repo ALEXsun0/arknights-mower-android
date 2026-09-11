@@ -45,7 +45,8 @@ class MowerSettingsActivity : Activity() {
         status = label("设置直接保存在手机，修改后自动生效。", 13f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), dp(16)) }
         val utilities = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         utilities.addView(action("局域网连接") { showNetwork() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(12) })
-        utilities.addView(action("诊断日志") { showLogs() }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        utilities.addView(action("诊断日志") { showLogs() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(12) })
+        utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         content.addView(utilities, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         content.addView(status)
         idleButton = action("任务结束后（启动服务后修改）") {
@@ -211,14 +212,74 @@ class MowerSettingsActivity : Activity() {
     }
 
     private fun open(intent: Intent) { runCatching { startActivity(intent) }.onFailure { status.text = "此设备未提供对应的系统入口。" } }
+    private fun showScreenshotRetention() {
+        val preferences = ScreenshotPreferences(this)
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(12)) }
+        panel.addView(label("默认 0 小时，不保存 Mower 截图；支持小数。", 14f))
+        val value = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setSingleLine(); contentDescription = "截图保存小时数"
+            setText(java.math.BigDecimal.valueOf(preferences.hours()).stripTrailingZeros().toPlainString())
+        }
+        panel.addView(value)
+        val hint = label("", 13f, MowerStyle.muted).apply { setPadding(0, dp(12), 0, 0) }
+        panel.addView(hint)
+        fun updateHint() {
+            val hours = value.text.toString().toDoubleOrNull()
+            hint.text = when {
+                hours == null || !hours.isFinite() || hours < 0 -> "请输入大于或等于 0 的小时数，可填小数。"
+                hours == 0.0 -> "已关闭截图保存，实时预览仍可用。后续调试、跑单等截图不会保存，排查问题时可能缺少截图记录。设为正数可恢复保存。"
+                else -> "启用截图保存会持续写入手机存储，频繁写入可能加速闪存磨损；保留时间越长，占用空间越多。建议仅在排查问题时临时启用，用完恢复为 0。"
+            }
+        }
+        value.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { updateHint() }
+            override fun afterTextChanged(s: android.text.Editable?) = Unit
+        })
+        updateHint()
+        val dialog = AlertDialog.Builder(this).setTitle("截图保存时间（小时）")
+            .setView(panel).setPositiveButton("保存", null).setNegativeButton("取消", null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val hours = value.text.toString().toDoubleOrNull()
+            if (hours == null || !hours.isFinite() || hours < 0) { updateHint(); return@setOnClickListener }
+            dialog.dismiss()
+            execute {
+                preferences.save(hours)
+                if (MowerService.url == null) "截图设置已保存，下次启动服务时生效。"
+                else runCatching { NativeRuntimeClient.saveScreenshotHours(hours); "截图设置已保存并应用。" }
+                    .getOrDefault("截图设置已保存，当前服务未响应，重启服务后生效。")
+            }
+        } }
+        dialog.show()
+    }
     private fun showNetwork() {
         val prefs = getSharedPreferences("network", 0)
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(12), dp(24), dp(12)) }
-        panel.addView(Switch(this).apply {
+        val enabled = Switch(this).apply {
             text = "允许局域网访问"; isChecked = prefs.getBoolean("lan", false)
-            setOnCheckedChangeListener { _, value -> prefs.edit().putBoolean("lan", value).apply() }
-        })
-        panel.addView(label("更改开关后，停止并重新启动服务生效。", 12f, MowerStyle.muted))
+        }
+        panel.addView(enabled)
+        panel.addView(label("固定端口", 14f).apply { setPadding(0, dp(14), 0, 0) })
+        val port = EditText(this).apply {
+            hint = "留空自动分配；1024–65535"; setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getString("port", ""))
+            contentDescription = "WebUI 固定端口"
+        }
+        panel.addView(port)
+        panel.addView(label("访问 Token", 14f).apply { setPadding(0, dp(12), 0, 0) })
+        val token = EditText(this).apply {
+            hint = "留空则每次启动自动生成"; setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+            setText(prefs.getString("token", ""))
+            contentDescription = "WebUI 访问 Token"
+        }
+        panel.addView(token)
+        panel.addView(label("Token 支持 16–128 位字母、数字、下划线和短横线。保存后停止并重新启动服务生效。", 12f, MowerStyle.muted))
+        val error = label("", 12f, MowerStyle.muted)
+        panel.addView(error)
         val local = MowerService.url
         val addresses = if (local != null && MowerService.lanEnabled) {
             java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).flatMap { java.util.Collections.list(it.inetAddresses) }
@@ -226,11 +287,27 @@ class MowerSettingsActivity : Activity() {
                 .map { local.replace("127.0.0.1", it.hostAddress!!) }
         } else emptyList()
         val content = if (addresses.isEmpty()) "服务启用局域网访问后，这里会显示连接地址。" else addresses.joinToString("\n\n")
+        panel.addView(label("当前连接地址", 14f).apply { setPadding(0, dp(12), 0, 0) })
         panel.addView(label(content, 12f).apply { setPadding(0, dp(16), 0, dp(12)); setTextIsSelectable(true) })
-        panel.addView(label("在同一网络的浏览器打开完整地址。地址含访问令牌，仅分享给可信设备；重启后令牌会更换。", 12f, MowerStyle.muted))
-        val dialog = AlertDialog.Builder(this).setTitle("连接手机 WebUI").setView(panel).setPositiveButton("完成", null)
-        if (addresses.isNotEmpty()) dialog.setNeutralButton("复制地址") { _, _ ->
+        panel.addView(label("在同一网络的浏览器打开完整地址。地址含访问令牌，仅分享给可信设备；自动生成的令牌会在重启后更换。", 12f, MowerStyle.muted))
+        val builder = AlertDialog.Builder(this).setTitle("连接手机 WebUI")
+            .setView(ScrollView(this).apply { addView(panel) }).setPositiveButton("保存", null).setNegativeButton("取消", null)
+        if (addresses.isNotEmpty()) builder.setNeutralButton("复制当前地址") { _, _ ->
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Mower WebUI", addresses.first()))
+        }
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                try {
+                    val connection = WebConnectionConfig.parse(port.text.toString(), token.text.toString())
+                    prefs.edit().putBoolean("lan", enabled.isChecked)
+                        .putString("port", if (connection.port == 0) "" else connection.port.toString())
+                        .putString("token", connection.token).apply()
+                    status.text = "局域网设置已保存，停止并重新启动服务后生效。"
+                    dialog.dismiss()
+                } catch (failure: IllegalArgumentException) { error.text = failure.message }
+            }
         }
         dialog.show()
     }

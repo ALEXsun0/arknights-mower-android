@@ -58,10 +58,8 @@ class UnlockSettingsActivity : Activity() {
             AlertDialog.Builder(this).setTitle("锁屏并测试一次")
                 .setMessage("将暂停 Mower 任务，锁屏后按当前方式尝试一次解锁。失败后停止自动尝试，请手动解锁。")
                 .setPositiveButton("开始测试") { _, _ -> execute {
-                    NativeRuntimeClient.stopTasks()
-                    val service = RemoteServiceManager.getInstanceOrNull() ?: error("请先连接 Shizuku")
                     MowerService.unlocking = true
-                    try { UnlockSettings.resultText(store.unlock(service, test = true)) }
+                    try { UnlockSettings.resultText(store.unlock(prepareService(), test = true)) }
                     finally { MowerService.unlocking = false }
                 } }.setNegativeButton("取消", null).show()
         }
@@ -106,12 +104,20 @@ class UnlockSettingsActivity : Activity() {
     }
 
     private fun startRecording() = execute {
-        NativeRuntimeClient.stopTasks()
-        val service = RemoteServiceManager.getInstanceOrNull() ?: error("请先连接 Shizuku")
         MowerService.unlocking = true
-        try { service.startUnlockRecording(); recording = true; "正在准备锁屏录制…" }
+        try { prepareService().startUnlockRecording(); recording = true; "正在准备锁屏录制…" }
         catch (e: Exception) { MowerService.unlocking = false; throw e }
     }
+    private suspend fun prepareService() = prepareUnlockBackend(
+        active = MowerService.active,
+        ready = MowerService.url != null,
+        stopping = MowerService.stopping,
+        stopTasks = { NativeRuntimeClient.stopTasks() },
+        connect = {
+            check(RemoteServiceManager.requestPermission()) { "请先启动并授权 Shizuku，或在软件设置中配置 Root / Sui 后端" }
+            RemoteServiceManager.getInstance()
+        },
+    )
     private fun refresh() {
         actions.forEach { it.isEnabled = !busy && !recording }
         scope.launch {
@@ -140,7 +146,7 @@ class UnlockSettingsActivity : Activity() {
         } }
         dialog.show()
     }
-    private fun execute(work: () -> String) {
+    private fun execute(work: suspend () -> String) {
         if (busy) return
         busy = true; refresh()
         scope.launch {

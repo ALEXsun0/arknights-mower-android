@@ -84,10 +84,14 @@ class MowerService : Service() {
                     componentFormat.writeText("ncnn-v1")
                 }
                 ensureActive()
+                val network = getSharedPreferences("network", 0)
+                val webConnection = WebConnectionConfig.parse(network.getString("port", "") ?: "", network.getString("token", "") ?: "")
+                lanEnabled = network.getBoolean("lan", false)
+                val webPort = webConnection.availablePort(lanEnabled)
                 message = "正在连接后台服务（最长 20 秒）"
                 RemoteServiceManager.getInstance()
                 val bridgeToken = secret()
-                val webToken = secret()
+                val webToken = webConnection.token.ifEmpty { secret() }
                 val localBridge = MowerBridge(this@MowerService, bridgeToken)
                 bridge = localBridge
                 engine = localBridge
@@ -99,7 +103,6 @@ class MowerService : Service() {
                     catch (failure: Exception) { ensureActive(); AndroidSystemSettings.lastAction = "后台监测暂不可用，请检查服务连接" }
                     delay(5000)
                 } }
-                val webPort = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
                 val root = File(filesDir, "rootfs")
                 val data = File(filesDir, "mower-data").apply { mkdirs() }
                 File(data, "runtime-python.pid").delete()
@@ -108,7 +111,6 @@ class MowerService : Service() {
                 val talloc = File(exec, "libtalloc.so.2")
                 talloc.delete()
                 Os.symlink(File(native, "libtalloc.so").path, talloc.path)
-                lanEnabled = getSharedPreferences("network", 0).getBoolean("lan", false)
                 val args = listOf(File(native, "libproot.so").path, "--kill-on-exit", "-0", "-r", root.path,
                     "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${data.path}:/mower-data", "-w", "/mower",
                     "/usr/bin/env", "-i", "HOME=/mower-data", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TZ=${java.util.TimeZone.getDefault().id}",
@@ -127,9 +129,11 @@ class MowerService : Service() {
                 repeat(120) {
                     if (python?.isAlive != true) error("Python 已退出，请查看诊断日志")
                     val ready = runCatching {
-                        (java.net.URL("http://127.0.0.1:$webPort/").openConnection() as java.net.HttpURLConnection).run {
+                        (java.net.URL("http://127.0.0.1:$webPort/software-update/info").openConnection() as java.net.HttpURLConnection).run {
+                            setRequestProperty("token", webToken)
                             connectTimeout = 400; readTimeout = 400
-                            try { responseCode == 200 } finally { disconnect() }
+                            try { responseCode == 200 && org.json.JSONObject(inputStream.bufferedReader().use { it.readText() }).optString("platform") == "android" }
+                            finally { disconnect() }
                         }
                     }.getOrDefault(false)
                     if (ready) {
