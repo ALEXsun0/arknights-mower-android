@@ -28,7 +28,10 @@ def notes(meta):
     if m.get('note'): text+=f"Mower 打包说明：{m['note']}。\n"
     text+=('\n本期包含宿主功能或运行环境更新，可更新 APK。\n' if meta['apk']['host_update'] else '\n本期仅刷新内置组件，已安装相同宿主的用户无需更新 APK，可在 WebUI 分别更新组件。\n')
     text+='\n'+compatibility(meta)+'\n\n'
-    text+=(ROOT/'docs/android-release-notes.md').read_text()
+    if meta['apk']['host_update']:
+        text+=(ROOT/'docs/android-release-notes.md').read_text()
+    else:
+        text+='沿用现有宿主功能；本期更新内容为上述内置组件版本。' 
     text+='\n\n附件包含 APK、Python 兼容 ZIP、android-release.json 和 distribution.json。后两者记录版本、兼容范围与构建来源。GitHub 提供文件摘要，不另附 SHA256 文件。\n'
     text+='\nAPK 更新需系统安装确认；Mower、MAA 和 Python 接口可分别更新。内置资源随发行更新；需要较低组件版本时请自行使用对应更新包回退。\n'
     return text
