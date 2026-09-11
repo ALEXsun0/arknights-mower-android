@@ -102,7 +102,8 @@ internal object GestureRecorder {
         }
 
         val deadline = SystemClock.elapsedRealtime() + budgetMs
-        val parser = TouchStreamParser()
+        val geometry = RecordingScreenGeometry()
+        val parser = TouchStreamParser { geometry.onStrokeStart(ScreenGeometry.current()) }
         val collecting = AtomicBoolean(false)
         val startedAt = AtomicLong(0)
 
@@ -134,10 +135,12 @@ internal object GestureRecorder {
             readerThread.join(READER_JOIN_MS)
         }
 
-        val screen = outcome.screen
-        if (outcome.failure != null || screen == null) {
-            return GestureRecordResult.failed(outcome.failure ?: WakeUnlockResult.UNSUPPORTED)
-        }
+        if (outcome.failure != null) return GestureRecordResult.failed(outcome.failure)
+        val screen = synchronized(parser) {
+            if (geometry.changed) null else geometry.screen
+        } ?: return GestureRecordResult.failed(
+            if (geometry.changed) WakeUnlockResult.GESTURE_SCREEN_MISMATCH else WakeUnlockResult.RECORD_NO_TOUCH
+        )
 
         val elapsed = (SystemClock.uptimeMillis() - startedAt.get()).toInt()
         val strokes = synchronized(parser) {
@@ -160,8 +163,8 @@ internal object GestureRecorder {
         return GestureRecordResult.done(gesture)
     }
 
-    /** [failure] 为 null 表示走完了，此时 [screen] 必定已采样 */
-    private class Outcome(val failure: Int?, val screen: ScreenGeometry? = null)
+    /** [failure] 为 null 表示用户已解锁；屏幕方向由触摸线程采样。 */
+    private class Outcome(val failure: Int?)
 
     private fun lockThenAwaitUnlock(
         deadline: Long,
@@ -194,12 +197,11 @@ internal object GestureRecorder {
             return Outcome(WakeUnlockResult.WAKE_FAILED)
         }
 
-        // 必须在录制当时采样：解锁后可能已经转到别的方向，拿桌面的方向映射会整体偏掉
-        val screen = ScreenGeometry.current()
-        // 紧接着开采，中间不留缓冲，免得漏掉用户的第一下
+        // 立即采集以保留第一下触摸，但亮屏时方向可能仍属于横屏 App。
+        // 实际方向在 parser 识别到每笔触摸开始时采样，解锁后不再重新映射。
         startedAt.set(SystemClock.uptimeMillis())
         collecting.set(true)
-        Ln.i("$TAG: screen on $screen, collecting from $devicePath")
+        Ln.i("$TAG: screen on, collecting from $devicePath")
 
         // 唤醒瞬间 keyguard 状态会抖，先让它稳下来再等它消失，
         // 否则会把这一瞬的 false 当成「用户已解锁」当场收工
@@ -219,7 +221,7 @@ internal object GestureRecorder {
 
         // keyguard 判定可能早于最后一个抬起，多收一会儿；此处已到手，取消也不再回退
         Thread.sleep(TAIL_AFTER_UNLOCK_MS)
-        return Outcome(failure = null, screen = screen)
+        return Outcome(failure = null)
     }
 
     /** 等条件成立；返回 OK / RECORD_CANCELLED / RECORD_TIMEOUT */

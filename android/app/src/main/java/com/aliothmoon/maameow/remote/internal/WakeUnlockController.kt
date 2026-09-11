@@ -31,9 +31,6 @@ object WakeUnlockController {
     private const val BOUNCER_SETTLE_MAX_MS = 5_000L
     private const val DIGIT_GAP_MS = 50L
 
-    /** 手势回放前等锁屏首屏稳定；不弹 bouncer，比 PIN 那条路要短 */
-    private const val GESTURE_SETTLE_MS = 800L
-
     /** 测试：上锁/息屏后等待系统稳定再解锁 */
     private const val LOCK_SETTLE_MS = 500L
     private const val SCREEN_OFF_TIMEOUT_MS = 3_000L
@@ -205,21 +202,19 @@ object WakeUnlockController {
 
         wakeAndRequireKeyguard(pm, wm)?.let { return it }
 
-        // 与录制一致，在 keyguard 还在时采样
-        val screen = ScreenGeometry.current()
+        // 先等锁屏旋转动画稳定，再校验；不 dismissKeyguard 改变录制起始页面。
+        val screen = awaitStableScreenGeometry(
+            read = { ScreenGeometry.current() },
+            now = { SystemClock.uptimeMillis() },
+            sleep = { Thread.sleep(it) },
+        ) ?: return WakeUnlockResult.GESTURE_SCREEN_MISMATCH
+        if (wm.isKeyguardLocked == false) return WakeUnlockResult.OK
+        if (wm.isKeyguardLocked != true) return WakeUnlockResult.UNSUPPORTED
         if (screen.rotation != gesture.rotation || screen.width != gesture.screenWidth || screen.height != gesture.screenHeight) {
-            Ln.w("$TAG: rotation ${screen.rotation} != recorded ${gesture.rotation}")
+            Ln.w("$TAG: lock screen geometry differs from recording; record again")
             return WakeUnlockResult.GESTURE_SCREEN_MISMATCH
         }
-        if (screen.width != gesture.screenWidth || screen.height != gesture.screenHeight) {
-            Ln.w(
-                "$TAG: screen ${screen.width}x${screen.height} != recorded" +
-                        " ${gesture.screenWidth}x${gesture.screenHeight}, scaling"
-            )
-        }
 
-        // 录制起点就是亮屏后的锁屏首屏，这里不能再 dismissKeyguard 打乱状态
-        Thread.sleep(GESTURE_SETTLE_MS)
         val actions = UnlockGestureReplay.timeline(gesture, screen.width, screen.height)
         Ln.i("$TAG: replaying ${gesture.steps.size} steps / ${actions.size} actions")
         UnlockGestureReplay.execute(actions)

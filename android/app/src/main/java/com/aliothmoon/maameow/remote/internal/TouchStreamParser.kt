@@ -11,7 +11,7 @@ internal data class TouchStroke(val points: List<TouchPoint>, val endTMs: Int)
  * 只跟主触点：PIN、图案、上滑都是单指，多指对解锁没有意义
  * 兼容 MT 协议 B（ABS_MT_TRACKING_ID）、协议 A（SYN_MT_REPORT）与老式单点（BTN_TOUCH + ABS_X/Y）
  */
-internal class TouchStreamParser {
+internal class TouchStreamParser(private val onStrokeStart: () -> Unit = {}) {
 
     private val _strokes = mutableListOf<TouchStroke>()
     val strokes: List<TouchStroke> get() = _strokes
@@ -117,7 +117,10 @@ internal class TouchStreamParser {
     }
 
     private fun appendPoint(tMs: Int) {
-        val points = current ?: mutableListOf<TouchPoint>().also { current = it }
+        val points = current ?: mutableListOf<TouchPoint>().also {
+            onStrokeStart()
+            current = it
+        }
         if (points.size >= MAX_POINTS_PER_STROKE) return
         val last = points.lastOrNull()
         // 静止不重复记点，时长由 endTMs 兜住
