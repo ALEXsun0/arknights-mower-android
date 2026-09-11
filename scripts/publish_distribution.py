@@ -31,7 +31,7 @@ def notes(meta):
     if meta['apk']['host_update']:
         text+=(ROOT/'docs/android-release-notes.md').read_text()
     else:
-        text+='沿用现有宿主功能；本期更新内容为上述内置组件版本。' 
+        text+='沿用现有宿主功能；本期更新内容为上述内置组件版本。'
     text+='\n\n附件包含 APK、Python 兼容 ZIP、android-release.json 和 distribution.json。后两者记录版本、兼容范围与构建来源。GitHub 提供文件摘要，不另附 SHA256 文件。\n'
     text+='\nAPK 更新需系统安装确认；Mower、MAA 和 Python 接口可分别更新。内置资源随发行更新；需要较低组件版本时请自行使用对应更新包回退。\n'
     return text

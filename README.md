@@ -50,15 +50,18 @@ WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓�
 
 ### GitHub Actions
 
-推送到 `main` 会自动构建，也可以在 [Actions → Android APK](https://github.com/ALEXsun0/arknights-mower-android/actions/workflows/android-apk.yml) 手动构建。推送 `v*` 标签会在所有构建通过后自动发布 Release；带预发行标记的标签会发布为公测版。
+推送到 `main` 会自动验证构建，也可以在 [Actions → Android APK](https://github.com/ALEXsun0/arknights-mower-android/actions/workflows/android-apk.yml) 手动构建，设置 `publish=true` 后发布。CI 每 30 分钟检查 Mower 和 MAA 官方 Release；检测到新版本后自动构建并发布，也支持上游 Release 事件触发。内置组件选择公测渠道最新公开版本（包括更新的正式版，排除开发版），Release 正文列出实际内置版本。没有组件变化时不会重复发布。
 
-每期 [Release](https://github.com/ALEXsun0/arknights-mower-android/releases) 同时提供三个配套附件：
+每期 [Release](https://github.com/ALEXsun0/arknights-mower-android/releases) 同时提供四个配套附件：
 
 | 附件 | 用途 |
 | --- | --- |
 | `mower-android-arm64.apk` | 完整 Android 应用，已内置当期运行时和 MAA |
 | `mower-maa-python-版本.zip` | 本次 APK 对应的 Android MAA Python 兼容接口 |
 | `android-release.json` | 供 Mower 主仓库自动附带兼容 APK/接口的版本与宿主协议清单 |
+| `distribution.json` | 当期构建共用的上游版本快照及组件变更信息 |
+
+仅刷新内置 Mower、MAA 或 Python 接口的 Release 不提示升级 APK；原生更新检查按宿主内容和版本判断，仍会提醒使用旧宿主的用户安装必要更新。每期都会构建 Python 兼容包，但接口内容不变时保持版本，不重复通知更新。Release 正文记录兼容范围，从当前支持版本起持续到下次接口变更。
 
 附件校验值使用 GitHub 自带的 SHA256 digest，不额外发布 `.sha256` 文件。CI 内部继续验证运行时、官方核心和 APK 签名。
 
@@ -84,7 +87,7 @@ bash scripts/build.sh
 
 ## 限制与许可证
 
-这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.2.0 内置最新 alpha（eaa05aa1）与已合并的 Android 兼容改动（打包提交 d8cbb41b，与 alpha 合并提交 22a73d44 文件树一致）。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
+这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.2.0 内置 Mower v4.1.6-alpha.5，以已验证的 d8cbb41b 快照为基础，包含本仓库的 Android 适配与组件更新补丁。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
 
 整体采用 AGPL-3.0，保留 Mower 的 MIT 许可、后台游戏代码及各组件声明。参见 [LICENSE](LICENSE)、[runtime/LICENSE](runtime/LICENSE)、[第三方代码声明](docs/licenses/Meow-THIRD-PARTY-NOTICES.md) 和 [运行时声明](docs/third-party-runtime.md)。个人配置、凭证、游戏截图和日志不会提交到 Git。
 
@@ -102,9 +105,11 @@ Android APK 由本仓库 CI 构建，WebUI 只提供正式版、公测版；普�
 
 「Mower 设置 → 软件更新」支持选择文件或全局拖拽：
 
-- 主仓库 `arknights-mower_版本_android_arm64.zip`：校验兼容协议，独立保存版本并在重启服务后切换；启动失败可回退，原生设置可恢复内置 Mower。APK 更新请使用「软件设置 → APK 版本与更新」。
+- 主仓库 `arknights-mower_版本_android_arm64.zip`：校验兼容协议，独立保存版本并在重启服务后切换；启动失败可回退，WebUI 软件更新页可恢复内置 Mower。APK 更新请使用原生「软件设置 → APK 版本与更新」。
 - 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，完成资源模型转换后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
 - 本仓库生成的 `mower-maa-python-版本.zip`：更新 Android 兼容 MAA Python 接口，校验协议、最低 APK 版本、完整性与接口结构；当前实例不变，新实例使用新接口，失败时回退内置接口。官方 ctypes Python 包不能直接用于 Android 桥接。
+
+WebUI 软件更新页支持检查、下载和恢复内置 Python 接口，默认每 6 小时自动检查；按接口内容判断是否有更新，兼容包随 APK 重新发布不会重复提示。除 APK 外，组件更新设置均放在 WebUI，也可通过已认证的局域网页面使用。
 
 MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Android 暂时禁用 Mirror酱；MAA 核心与资源均使用官方来源。主仓库每次发布可从本仓库 Release 自动附带兼容的 APK 与接口 ZIP，不要求 APK 跟随 Mower 发版。
 

@@ -151,3 +151,13 @@ MuMu Wi-Fi 地址为 NAT 内部地址，电脑不能直接路由到该地址；�
 - 官方 MAA v6.17.5 的 13 个桥接符号及当前 Mower 的 9 个接口调用通过实际静态兼容检查；未运行消耗资源的游戏任务。
 - 本地浏览器实际展示 WebUI 组件更新区与 Python 导入区。验证服务最初绕过 Android 启动器，误读仓库根目录的 CHANGELOG；已修正验证路径。实际运行包内 CHANGELOG 为 44,618 字节，与源码一致，ZIP 全部 CRC 通过。打包及上游快照应用增加 CHANGELOG 非空检查。
 - 更新后的 #1032（21a88967）全部适用 CI 通过。Android 自动发行工作流 actionlint 通过；尚待执行整条云端构建/发布与最终实机检查。
+
+### 0.2.0 正式自动发行（versionCode 15）
+
+- [v0.2.0](https://github.com/ALEXsun0/arknights-mower-android/releases/tag/v0.2.0) 已公开发布；[CI 34593685860](https://github.com/ALEXsun0/arknights-mower-android/actions/runs/34593685860) 全流程通过，源码提交 007c9d5。附件为 APK、Python 1.0.0 ZIP、android-release.json 和 distribution.json；没有额外 SHA256 文件。
+- 内置 Mower v4.1.6-alpha.5（d8cbb41b 基础及本仓库适配补丁）、官方 MAA v6.17.5。APK 为 374,116,015 字节，使用原固定证书签名。
+- 101 项原生测试、43 项 Python 宿主测试、7 项构建快照回归通过。首次云端干净检出因 assets 目录不存在而失败，已补 mkdir 并完成整条云端重跑。生成的 jniLibs 已排除出宿主指纹，当前本地与 CI 宿主标识一致。
+- 公开 Python ZIP 与本地可重复构建结果逐字节一致；实际公开更新检查返回 available=false、compatible=true，接口内容未变仍为 1.0.0。发布后再次解析上游快照，publish=false、changed=false、host_update=false，不会重复发布或误报 APK 更新。
+- CHANGELOG 警告来自临时验证服务绕过 launcher 后使用错误根路径，并非正式包漏文件。验证脚本已在导入 server/config 前设置正式启动器使用的内部路径；完整读取可得到 29,912 字符，重启后不再报缺失。没有虚构上游尚未提供的 alpha.5 日志条目。
+- 下载公开 CI APK 后，GitHub digest、固定签名及 APK/内部运行 ZIP 的全部 CRC 通过；直接从正式 APK 解压出的 CHANGELOG 为 44,618 字节，与源码逐字节一致。无线 ADB 已将此正式包覆盖安装到三星手机，保留应用数据。
+- WebUI 新组件入口已在隔离验证服务检查；手机尚处锁屏，本次正式版的新入口与启动状态不记为实机验证通过。此前由用户亲自完成的解锁录制/回放成功记录继续有效。
