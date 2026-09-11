@@ -15,6 +15,7 @@ import com.aliothmoon.maameow.ITouchEventCallback
 import com.aliothmoon.maameow.manager.RemoteServiceManager
 import com.aliothmoon.maameow.mower.MowerStyle.action
 import com.aliothmoon.maameow.mower.MowerStyle.chrome
+import com.aliothmoon.maameow.mower.MowerStyle.keepScreenOn
 import com.aliothmoon.maameow.mower.MowerStyle.dp
 import com.aliothmoon.maameow.mower.MowerStyle.label
 import com.aliothmoon.maameow.mower.MowerStyle.surface
@@ -23,6 +24,17 @@ import kotlinx.coroutines.*
 /** Observation never interrupts scheduling. Manual input requires an explicit pause. */
 class MowerGameActivity : Activity(), SurfaceHolder.Callback {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val refreshLoop = VisibleUiRefresh(
+        schedule = { callback, delay -> uiHandler.postDelayed(callback, delay) },
+        cancel = { uiHandler.removeCallbacks(it) },
+        refresh = {
+            val settings = AndroidSystemSettings(this)
+            keepScreenOn(settings.enabled("keep_screen_on"))
+            touches.visibility = if (settings.enabled("show_touch") && !isInPictureInPictureMode) View.VISIBLE else View.GONE
+            if (ready) updateStatus()
+        },
+    )
     private lateinit var preview: SurfaceView
     private lateinit var touches: TouchLayer
     private lateinit var status: TextView
@@ -113,13 +125,6 @@ class MowerGameActivity : Activity(), SurfaceHolder.Callback {
                 }
                 ready = true; MowerService.previewing = true; attachSurface(); updateStatus(); updatePip()
             } catch (e: Exception) { status.text = e.message }
-            while (isActive) {
-                val settings = AndroidSystemSettings(this@MowerGameActivity)
-                if (settings.enabled("keep_screen_on")) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                touches.visibility = if (settings.enabled("show_touch") && !isInPictureInPictureMode) View.VISIBLE else View.GONE
-                if (ready) updateStatus()
-                delay(1000)
-            }
         }
     }
     private fun updateStatus() {
@@ -145,9 +150,10 @@ class MowerGameActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceCreated(holder: SurfaceHolder) = attachSurface()
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = attachSurface()
     override fun surfaceDestroyed(holder: SurfaceHolder) { runCatching { RemoteServiceManager.getInstanceOrNull()?.let { it.touchCancel(); it.setMonitorSurface(null); it.setTouchMonitor(null) } } }
+    override fun onStart() { super.onStart(); refreshLoop.start() }
     override fun onResume() { super.onResume(); if (ready) { MowerService.previewing = true; attachSurface(); updatePip() } }
-    override fun onStop() { if (!isInPictureInPictureMode) MowerService.previewing = false; super.onStop() }
-    override fun onDestroy() { if (manual) MowerService.manual = false; MowerService.previewing = false; scope.cancel(); super.onDestroy() }
+    override fun onStop() { refreshLoop.stop(); if (!isInPictureInPictureMode) MowerService.previewing = false; super.onStop() }
+    override fun onDestroy() { refreshLoop.stop(); if (manual) MowerService.manual = false; MowerService.previewing = false; scope.cancel(); super.onDestroy() }
     private inner class TouchLayer : View(this@MowerGameActivity) {
         val points = linkedMapOf<Int, Pair<Float, Float>>()
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99ffca28.toInt() }

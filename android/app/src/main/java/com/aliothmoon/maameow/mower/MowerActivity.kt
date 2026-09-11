@@ -15,6 +15,7 @@ import android.widget.*
 import com.aliothmoon.maameow.MaaApplication
 import com.aliothmoon.maameow.mower.MowerStyle.action
 import com.aliothmoon.maameow.mower.MowerStyle.chrome
+import com.aliothmoon.maameow.mower.MowerStyle.keepScreenOn
 import com.aliothmoon.maameow.mower.MowerStyle.dp
 import com.aliothmoon.maameow.mower.MowerStyle.label
 import com.aliothmoon.maameow.mower.MowerStyle.surface
@@ -30,6 +31,8 @@ class MowerActivity : Activity() {
     private lateinit var permissionSummary: TextView
     private lateinit var permissionAction: Button
     private var permissionsCheckedAt = 0L
+    private var permissionJob: Job? = null
+    private var uiResumed = false
     private var requestingStart = false
     private var appliedTheme = false
     private lateinit var dot: TextView
@@ -38,30 +41,32 @@ class MowerActivity : Activity() {
     private lateinit var landing: View
     private var loaded: String? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
-    private val update = object : Runnable {
-        override fun run() {
-            if (AndroidSystemSettings(this@MowerActivity).enabled("keep_screen_on")) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            status.text = MowerService.message
-            if (android.os.SystemClock.elapsedRealtime() - permissionsCheckedAt >= 5000) refreshPermissions()
-            val installation = MowerService.installProgress
-            installBar.visibility = if (installation == null) View.GONE else View.VISIBLE
-            if (installation != null) {
-                installBar.progress = installation.percent
-                installBar.contentDescription = "${installation.stage} ${installation.percent}%"
-                installBar.progressTintList = android.content.res.ColorStateList.valueOf(MowerStyle.green)
-                installBar.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(MowerStyle.border)
-            }
-            val url = MowerService.url
-            toggle.isEnabled = !MowerService.stopping && !requestingStart
-            toggle.text = if (MowerService.active) "停止服务" else "启动服务"
-            dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
-            if (url != null && url != loaded) { loaded = url; web.loadUrl(url) }
-            if (url == null && loaded != null) { loaded = null; web.loadUrl("about:blank") }
-            landing.visibility = if (url == null) View.VISIBLE else View.GONE
-            web.visibility = if (url == null) View.GONE else View.VISIBLE
-            handler.postDelayed(this, 1000)
+    private val refreshLoop = VisibleUiRefresh(
+        schedule = { callback, delay -> handler.postDelayed(callback, delay) },
+        cancel = { handler.removeCallbacks(it) },
+        refresh = ::refreshUi,
+    )
+    private fun refreshUi() {
+        keepScreenOn(AndroidSystemSettings(this).enabled("keep_screen_on"))
+        if (status.text.toString() != MowerService.message) status.text = MowerService.message
+        if (android.os.SystemClock.elapsedRealtime() - permissionsCheckedAt >= 5000) refreshPermissions()
+        val installation = MowerService.installProgress
+        installBar.visibility = if (installation == null) View.GONE else View.VISIBLE
+        if (installation != null) {
+            installBar.progress = installation.percent
+            installBar.contentDescription = "${installation.stage} ${installation.percent}%"
+            installBar.progressTintList = android.content.res.ColorStateList.valueOf(MowerStyle.green)
+            installBar.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(MowerStyle.border)
         }
+        val url = MowerService.url
+        toggle.isEnabled = !MowerService.stopping && !requestingStart
+        val toggleLabel = if (MowerService.active) "停止服务" else "启动服务"
+        if (toggle.text.toString() != toggleLabel) toggle.text = toggleLabel
+        dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
+        if (url != null && url != loaded) { loaded = url; web.loadUrl(url) }
+        if (url == null && loaded != null) { loaded = null; web.loadUrl("about:blank") }
+        landing.visibility = if (url == null) View.VISIBLE else View.GONE
+        web.visibility = if (url == null) View.GONE else View.VISIBLE
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -156,22 +161,32 @@ class MowerActivity : Activity() {
             statusRow.setPadding(left + dp(18), dp(8), right + dp(16), dp(8))
             permissionRow.setPadding(left + dp(18), 0, right + dp(16), dp(6))
             (installBar.layoutParams as LinearLayout.LayoutParams).apply {
-                marginStart = left + dp(18); marginEnd = right + dp(16)
-                installBar.layoutParams = this
+                if (marginStart != left + dp(18) || marginEnd != right + dp(16)) {
+                    marginStart = left + dp(18); marginEnd = right + dp(16)
+                    installBar.layoutParams = this
+                }
             }
             insets
         }
-        setContentView(layout); layout.requestApplyInsets(); handler.post(update)
+        setContentView(layout); layout.requestApplyInsets()
     }
 
     override fun onResume() {
-        super.onResume(); AndroidSystemSettings.foreground = this; refreshPermissions()
+        super.onResume(); uiResumed = true; AndroidSystemSettings.foreground = this; refreshPermissions()
         val dark = getSharedPreferences("appearance", 0).getBoolean("dark", false)
         MowerStyle.dark = dark; MowerStyle.applyTheme(layout); chrome(); web.setBackgroundColor(MowerStyle.paper)
         if (dark != appliedTheme && loaded != null) web.reload()
         appliedTheme = dark
+        web.onResume(); web.resumeTimers(); refreshLoop.start()
     }
-    override fun onPause() { if (AndroidSystemSettings.foreground === this) AndroidSystemSettings.foreground = null; super.onPause() }
+    override fun onPause() {
+        uiResumed = false
+        refreshLoop.stop()
+        web.onPause(); web.pauseTimers()
+        android.util.Log.i("Mower", "主页进入后台，已暂停界面刷新和 WebView 计时器")
+        if (AndroidSystemSettings.foreground === this) AndroidSystemSettings.foreground = null
+        super.onPause()
+    }
 
     fun installUpdate(file: java.io.File): String {
         if (!packageManager.canRequestPackageInstalls()) {
@@ -267,24 +282,29 @@ class MowerActivity : Activity() {
     }
 
     private fun refreshPermissions() {
-        if (!::permissionSummary.isInitialized) return
+        if (!::permissionSummary.isInitialized || !uiResumed || permissionJob?.isCompleted == false) return
         permissionsCheckedAt = android.os.SystemClock.elapsedRealtime()
-        runCatching { PermissionChecks.inspect(this) }.onSuccess { snapshot ->
-            permissionSummary.text = snapshot.summary
-            permissionAction.visibility = if (snapshot.issues.isEmpty()) View.GONE else View.VISIBLE
-        }.onFailure {
-            permissionSummary.text = "权限状态读取失败，点击重试"
-            permissionAction.visibility = View.VISIBLE
+        permissionJob = scope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { PermissionChecks.inspect(this@MowerActivity) } }
+            if (!uiResumed) return@launch
+            result.onSuccess { snapshot ->
+                if (permissionSummary.text.toString() != snapshot.summary) permissionSummary.text = snapshot.summary
+                permissionAction.visibility = if (snapshot.issues.isEmpty()) View.GONE else View.VISIBLE
+            }.onFailure {
+                permissionSummary.text = "权限状态读取失败，稍后自动重试"
+                permissionAction.visibility = View.VISIBLE
+            }
         }
     }
 
-    private fun showPermissionIssues() {
-        val snapshot = runCatching { PermissionChecks.inspect(this) }.getOrElse {
-            refreshPermissions(); return
+    private fun showPermissionIssues() = scope.launch {
+        val snapshot = withContext(Dispatchers.IO) { runCatching { PermissionChecks.inspect(this@MowerActivity) } }.getOrElse {
+            refreshPermissions(); return@launch
         }
+        if (!uiResumed) return@launch
         val issues = snapshot.issues
-        if (issues.isEmpty()) { refreshPermissions(); return }
-        AlertDialog.Builder(this).setTitle("自动权限检查 · 点击可直接处理")
+        if (issues.isEmpty()) { refreshPermissions(); return@launch }
+        AlertDialog.Builder(this@MowerActivity).setTitle("自动权限检查 · 点击可直接处理")
             .setItems(issues.map { (if (it.required) "启动必需：" else "功能提醒：") + it.description }.toTypedArray()) { _, index ->
                 val issue = issues[index]
                 if (issue.action == PermissionAction.AUTHORIZE_BACKEND) {
@@ -294,12 +314,12 @@ class MowerActivity : Activity() {
                         finally { refreshPermissions() }
                     }
                 } else {
-                    val intent = PermissionChecks.intent(this, issue.action)
-                    if (intent == null) AlertDialog.Builder(this).setTitle("后台服务未就绪")
+                    val intent = PermissionChecks.intent(this@MowerActivity, issue.action)
+                    if (intent == null) AlertDialog.Builder(this@MowerActivity).setTitle("后台服务未就绪")
                         .setMessage("未找到 Shizuku 应用。请先安装并启动 Shizuku；使用 Sui 的设备请从其管理入口启动服务。")
                         .setPositiveButton("关闭", null).show()
                     else runCatching { startActivity(intent) }.onFailure {
-                        AlertDialog.Builder(this).setMessage("系统未提供此权限的快捷页面，请从应用系统设置处理。")
+                        AlertDialog.Builder(this@MowerActivity).setMessage("系统未提供此权限的快捷页面，请从应用系统设置处理。")
                             .setPositiveButton("打开应用系统设置") { _, _ -> startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) }
                             .setNegativeButton("关闭", null).show()
                     }
@@ -308,6 +328,6 @@ class MowerActivity : Activity() {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(update); scope.cancel(); web.destroy(); super.onDestroy()
+        refreshLoop.stop(); scope.cancel(); web.destroy(); super.onDestroy()
     }
 }

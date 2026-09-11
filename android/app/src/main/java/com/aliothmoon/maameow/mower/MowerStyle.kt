@@ -80,6 +80,14 @@ internal object MowerStyle {
         }
         if (view is ViewGroup) for (i in 0 until view.childCount) applyTheme(view.getChildAt(i))
     }
+    fun Activity.keepScreenOn(enabled: Boolean) {
+        val flag = android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        // Window.setFlags dispatches a window update even when the bits are unchanged.
+        if ((window.attributes.flags and flag != 0) != enabled) {
+            window.setFlags(if (enabled) flag else 0, flag)
+        }
+    }
+
     fun Activity.chrome() {
         window.statusBarColor = Color.TRANSPARENT; window.navigationBarColor = Color.TRANSPARENT
         if (android.os.Build.VERSION.SDK_INT >= 28) window.attributes = window.attributes.apply {

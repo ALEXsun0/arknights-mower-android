@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.*
 import com.aliothmoon.maameow.mower.MowerStyle.action
 import com.aliothmoon.maameow.mower.MowerStyle.chrome
+import com.aliothmoon.maameow.mower.MowerStyle.keepScreenOn
 import com.aliothmoon.maameow.mower.MowerStyle.dp
 import com.aliothmoon.maameow.mower.MowerStyle.label
 import com.aliothmoon.maameow.mower.MowerStyle.surface
@@ -29,6 +30,8 @@ class MowerSettingsActivity : Activity() {
     private val idleLabels = arrayOf("无操作", "返回游戏首页", "退出游戏")
     private val switches = linkedMapOf<String, Switch>()
     private var updating = false
+    private var permissionJob: Job? = null
+    private var uiResumed = false
     private var busy = false
     private lateinit var appearanceButton: Button
     private lateinit var permissionCard: LinearLayout
@@ -188,8 +191,7 @@ class MowerSettingsActivity : Activity() {
             }
         }
         updating = false
-        if (settings.enabled("keep_screen_on")) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        keepScreenOn(settings.enabled("keep_screen_on"))
     }
 
     private fun save(key: String, value: Boolean) {
@@ -365,12 +367,18 @@ class MowerSettingsActivity : Activity() {
         }
     }
     private fun refreshPermissions() {
-        if (!::permissionCard.isInitialized) return
-        val entries = runCatching { PermissionChecks.inspect(this).entries }.getOrElse {
-            (permissionCard.getChildAt(1) as TextView).text = "权限状态暂无法读取，正在自动重试。"
-            permissionRows.forEach { (text, button) -> text.text = "权限状态暂无法读取，正在自动重试"; button.isEnabled = false }
-            return
+        if (!::permissionCard.isInitialized || !uiResumed || permissionJob?.isCompleted == false) return
+        permissionJob = scope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { PermissionChecks.inspect(this@MowerSettingsActivity).entries } }
+            if (!uiResumed) return@launch
+            result.onSuccess { renderPermissions(it) }.onFailure {
+                (permissionCard.getChildAt(1) as TextView).text = "权限状态暂无法读取，正在自动重试。"
+                permissionRows.forEach { (text, button) -> text.text = "权限状态暂无法读取，正在自动重试"; button.isEnabled = false }
+            }
         }
+    }
+
+    private fun renderPermissions(entries: List<PermissionEntry>) {
         (permissionCard.getChildAt(1) as TextView).text = "已自动检测 · 返回本页后自动更新。屏保使用悬浮窗权限。"
         if (permissionRows.size != entries.size) {
             while (permissionCard.childCount > 2) permissionCard.removeViewAt(2)
@@ -401,7 +409,7 @@ class MowerSettingsActivity : Activity() {
             }
         }
     }
-    override fun onResume() { super.onResume(); if (::settings.isInitialized) { refresh(); refreshIdleAction(); permissionHandler.removeCallbacks(permissionPoll); permissionPoll.run() } }
-    override fun onPause() { permissionHandler.removeCallbacks(permissionPoll); super.onPause() }
+    override fun onResume() { super.onResume(); uiResumed = true; if (::settings.isInitialized) { refresh(); refreshIdleAction(); permissionHandler.removeCallbacks(permissionPoll); permissionPoll.run() } }
+    override fun onPause() { uiResumed = false; permissionHandler.removeCallbacks(permissionPoll); super.onPause() }
     override fun onDestroy() { permissionHandler.removeCallbacks(permissionPoll); scope.cancel(); super.onDestroy() }
 }
