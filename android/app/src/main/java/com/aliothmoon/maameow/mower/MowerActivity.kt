@@ -115,7 +115,7 @@ class MowerActivity : Activity() {
         val permissionRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         permissionSummary = label("正在自动检查权限…", 11f, MowerStyle.muted).apply { maxLines = 3 }
         permissionRow.addView(permissionSummary, LinearLayout.LayoutParams(0, -2, 1f))
-        permissionAction = action("处理权限") { showPermissionIssues() }
+        permissionAction = action("权限与后台运行") { startActivity(Intent(this, MowerSettingsActivity::class.java)) }
         permissionRow.addView(permissionAction, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(12) })
         layout.addView(permissionRow)
         val content = FrameLayout(this).apply {
@@ -224,6 +224,10 @@ class MowerActivity : Activity() {
             addView(label("在手机上运行 Mower", 26f, bold = true))
             addView(label("后台运行明日方舟，使用原版 WebUI 管理基建和 MAA。", 14f, MowerStyle.muted).apply {
                 setPadding(0, dp(8), 0, dp(24))
+            })
+            addView(label("跑单设置提示：启用葛朗台跑单时，请在 WebUI 设置中将「葛朗台缓冲时间」调至至少 15 秒；低帧率设备建议 30 秒。", 13f, MowerStyle.green, true).apply {
+                setLineSpacing(dp(3).toFloat(), 1f)
+                setPadding(0, 0, 0, dp(20))
             })
             val steps = LinearLayout(this@MowerActivity)
             listOf("01" to ("后台授权" to "未 Root 手机需启动并授权 Shizuku。Root 手机可在软件设置选择 Root 后端，也可使用已配置的 Sui。"),

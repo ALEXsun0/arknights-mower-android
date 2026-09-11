@@ -44,7 +44,17 @@ def capture_current():
     )
 
 
+def capture_task(instance):
+    from mower_android.python_package import capture_adapter
+
+    return {"component": capture_current(), "adapter": capture_adapter(instance)}
+
+
 def confirm_task(component_hash):
+    adapter = None
+    if isinstance(component_hash, dict):
+        adapter = component_hash.get("adapter")
+        component_hash = component_hash.get("component")
     if not isinstance(component_hash, str) or not re.fullmatch(
         r"[a-f0-9]{64}", component_hash
     ):
@@ -70,6 +80,11 @@ def confirm_task(component_hash):
                 backup.unlink()
             elif backup.is_dir():
                 shutil.rmtree(backup)
+        if adapter is not None:
+            from mower_android.python_package import retire_adapters
+
+            if not retire_adapters(adapter):
+                return False
         return True
     except (OSError, RuntimeError):
         logging.getLogger(__name__).warning(

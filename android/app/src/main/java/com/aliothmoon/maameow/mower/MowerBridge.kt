@@ -288,22 +288,28 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             "swipe" -> {
                 val raw = p.getJSONArray("points"); val durations = p.getJSONArray("durations")
                 require(raw.length() in 2..64 && durations.length() == raw.length() - 1)
-                val points = (0 until raw.length()).map { point(raw.getJSONArray(it)) }
+                val path = GameSwipePath((0 until raw.length()).map {
+                    val pair = raw.getJSONArray(it)
+                    require(pair.length() == 2)
+                    pair.getInt(0) to pair.getInt(1)
+                })
+                val points = path.points
                 val times = (0 until durations.length()).map { durations.getInt(it).also { d -> require(d in 1..10000) } }
                 require(times.sum() <= 30000)
                 val wait = p.optInt("up_wait", 0).also { require(it in 0..3000) }
                 try {
                     s.touchDown(points.first().first, points.first().second, 0)
                     for (i in times.indices) {
-                        val (x, y) = points[i]; val (ex, ey) = points[i+1]
                         val steps = maxOf(1, times[i] / 16)
                         for (n in 1..steps) {
                             Thread.sleep((times[i] / steps).toLong())
-                            s.touchMove(x + (ex-x)*n/steps, y + (ey-y)*n/steps, 0)
+                            val (x, y) = path.at(i, n, steps)
+                            s.touchMove(x, y, 0)
                         }
                     }
                     Thread.sleep(wait.toLong())
-                    s.touchUp(points.last().first, points.last().second, 0)
+                    val (endX, endY) = path.end
+                    s.touchUp(endX, endY, 0)
                 } finally { s.touchCancel() }
                 true
             }

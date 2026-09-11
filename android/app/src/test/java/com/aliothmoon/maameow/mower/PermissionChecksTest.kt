@@ -26,4 +26,20 @@ class PermissionChecksTest {
         assertTrue(root.issues.isEmpty())
         assertTrue(root.summary.contains("启动时验证"))
     }
+    @Test fun permissionBoardShowsGrantedAndOptionalUnrequestedPermissions() {
+        val entries = ready.entries
+        assertEquals(5, entries.size)
+        assertTrue(entries.first().granted)
+        assertFalse(entries.single { it.action == PermissionAction.OVERLAY }.granted)
+        assertTrue(entries.single { it.action == PermissionAction.OVERLAY }.state.contains("启用屏保时需要"))
+        assertTrue(ready.copy(overlay = true).entries.single { it.action == PermissionAction.OVERLAY }.granted)
+    }
+
+    @Test fun liveNotificationsOnlyAppearOnSupportedSystems() {
+        assertTrue(ready.entries.none { it.action == PermissionAction.PROMOTED_NOTIFICATIONS })
+        val entry = ready.copy(promotedNotifications = false).entries.last()
+        assertEquals(PermissionAction.PROMOTED_NOTIFICATIONS, entry.action)
+        assertFalse(entry.granted)
+    }
+
 }

@@ -120,11 +120,13 @@ class MowerService : Service() {
                 }
                 ensureActive()
                 // Recheck after the potentially long installation; another app may have bound it.
-                val webPort = webConnection.availablePort(lanEnabled)
+                val savedConnection = WebConnectionPreferences.resolve(network, ::secret)
+                lanEnabled = savedConnection.lan
+                val webPort = savedConnection.port.toInt()
                 startupStage("正在连接后台服务（最长 20 秒）")
                 RemoteServiceManager.getInstance()
                 val bridgeToken = secret()
-                val webToken = webConnection.token.ifEmpty { secret() }
+                val webToken = savedConnection.token
                 val localBridge = MowerBridge(this@MowerService, bridgeToken)
                 bridge = localBridge
                 engine = localBridge
@@ -172,6 +174,12 @@ class MowerService : Service() {
                         }
                     }.getOrDefault(false)
                     if (ready) {
+                        val verifiedRuntime = StartupChecks.commitRuntime(root)
+                        scope.launch {
+                            runCatching { StartupChecks.cleanupRuntime(root, verifiedRuntime) }.onFailure {
+                                android.util.Log.w("Mower", "旧运行环境暂未清理，下次启动后重试", it)
+                            }
+                        }
                         url = "http://127.0.0.1:$webPort/?token=$webToken"
                         message = "Mower 已运行；可在 WebUI 配置和启动调度"
                         saveStartupReport("启动成功；WebUI 就绪")
@@ -206,12 +214,12 @@ class MowerService : Service() {
         val stamp = assets.open("python-runtime.sha256").bufferedReader().use { it.readText().trim() }
         val marker = File(root, ".mower-runtime")
         val backup = File(filesDir, "rootfs-backup")
+        if (StartupChecks.recoverRuntime(root, backup)) startupReport += "上次环境未能启动，已回退至原运行环境；安装新版 APK 后重新尝试更新"
         if (!root.exists() && backup.exists()) check(backup.renameTo(root)) { "恢复上次运行环境失败，请检查存储" }
         val missing = StartupChecks.incompleteRuntime(root)
-        if (runCatching { marker.readText() == stamp }.getOrDefault(false) && missing.isEmpty()) {
-            backup.deleteRecursively()
-            return
-        }
+        val rejected = File(filesDir, "rootfs-rejected-version")
+        if (missing.isEmpty() && (runCatching { marker.readText() == stamp }.getOrDefault(false) ||
+                runCatching { rejected.readText() == stamp }.getOrDefault(false))) return
         if (missing.isNotEmpty() && marker.exists()) startupReport += "运行环境不完整，自动修复：${missing.joinToString()}"
         scope.ensureActive()
         File(filesDir, "rootfs-install").deleteRecursively()

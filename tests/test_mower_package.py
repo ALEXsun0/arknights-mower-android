@@ -17,6 +17,8 @@ class MowerPackageTests(unittest.TestCase):
         self.root=Path(self.temp.name)
         context=patch.dict(os.environ, {'MOWER_DATA_DIR':str(self.root)})
         context.start(); self.addCleanup(context.stop)
+        jobs = patch('mower_android.background_cleanup.submit', side_effect=lambda key, action: action())
+        jobs.start(); self.addCleanup(jobs.stop)
         os.environ.pop('MOWER_ACTIVE_ID', None)
         self.addCleanup(os.environ.pop, 'MOWER_ACTIVE_ID', None)
 

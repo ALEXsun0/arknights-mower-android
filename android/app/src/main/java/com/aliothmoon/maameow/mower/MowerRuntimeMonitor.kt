@@ -51,6 +51,11 @@ class MowerRuntimeMonitor(private val context: Context) {
                 return
             }
             if (settings.enabled("low_fps_alert")) advisor.onSample(gameFps)?.let {
+                val message = "后台游戏持续低帧率：中位数 ${it.medianFps} FPS（每 5 秒采样，本轮提醒）"
+                android.util.Log.w("Mower", message)
+                runCatching {
+                    java.io.File(context.filesDir, "python.log").appendText("\n${java.time.Instant.now()} $message\n")
+                }
                 externalAlert("low_fps")
                 MowerNotifications.event(context, "后台游戏持续低帧率（约 ${it.medianFps.toInt()} FPS），请检查省电设置、设备温度或尝试 720p。", false)
             }

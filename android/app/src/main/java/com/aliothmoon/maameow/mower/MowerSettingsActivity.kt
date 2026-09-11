@@ -31,6 +31,12 @@ class MowerSettingsActivity : Activity() {
     private var updating = false
     private var busy = false
     private lateinit var appearanceButton: Button
+    private lateinit var permissionCard: LinearLayout
+    private val permissionRows = mutableListOf<Pair<TextView, Button>>()
+    private val permissionHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val permissionPoll = object : Runnable {
+        override fun run() { refreshPermissions(); permissionHandler.postDelayed(this, 5000) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +56,14 @@ class MowerSettingsActivity : Activity() {
         utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         content.addView(utilities, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         content.addView(status)
+        permissionCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; background = surface(MowerStyle.control, 12)
+            setPadding(dp(20), dp(16), dp(20), dp(12))
+            addView(label("权限与后台运行", 18f, bold = true))
+            addView(label("自动检测授权状态，返回本页后自动更新。屏保使用悬浮窗权限。", 12f, MowerStyle.muted).apply { setPadding(0, dp(6), 0, dp(8)) })
+        }
+        content.addView(permissionCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+
         appearanceButton = action("显示模式：${if (MowerStyle.dark) "暗色" else "亮色"}") {
             AlertDialog.Builder(this).setTitle("显示模式")
                 .setSingleChoiceItems(arrayOf("亮色", "暗色"), if (MowerStyle.dark) 1 else 0) { dialog, index ->
@@ -140,25 +154,9 @@ class MowerSettingsActivity : Activity() {
         ))
         val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun button(title: String, run: () -> Unit) { actions.addView(action(title, run = run), LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(10) }) }
-        button("悬浮窗与屏保权限") { open(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
-        button("精确唤醒权限") {
-            if (android.os.Build.VERSION.SDK_INT >= 31) open(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
-            else status.text = "此版本 Android 无需单独授予精确闹钟权限。"
-        }
         button("导出诊断日志") { exportLogs() }
         button("恢复屏幕显示") { execute { MowerScreenSaver.hide(); "已请求恢复屏幕显示" } }
         button("重新连接后台服务") { engineAction("reconnect") }
-        button("电池优化设置") { open(PermissionChecks.batteryIntent(this)) }
-        button("运行通知设置") { open(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) }
-        button("实时通知权限") {
-            if (android.os.Build.VERSION.SDK_INT >= 36) open(Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-            else status.text = "此系统使用普通常驻通知显示运行状态与下一次任务时间。"
-        }
-        button("应用与通知设置") { open(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
-        button("打开 Shizuku") {
-            val intent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-            if (intent != null) open(intent) else status.text = "请先安装 Shizuku。"
-        }
         button("测试唤醒与锁屏状态") { engineAction("test_wake") }
         button("关闭静音并恢复声音") { engineAction("restore_audio") }
         button("APK 版本与更新") {
@@ -266,25 +264,28 @@ class MowerSettingsActivity : Activity() {
     }
     private fun showNetwork() {
         val prefs = getSharedPreferences("network", 0)
+        val saved = WebConnectionPreferences.read(prefs)
+        val dialogContext = android.view.ContextThemeWrapper(this,
+            if (MowerStyle.dark) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(12), dp(24), dp(12)) }
-        val enabled = Switch(this).apply {
-            text = "允许局域网访问"; isChecked = prefs.getBoolean("lan", false)
+        val enabled = Switch(dialogContext).apply {
+            text = "允许局域网访问"; isChecked = saved.lan
         }
         panel.addView(enabled)
         panel.addView(label("固定端口", 14f).apply { setPadding(0, dp(14), 0, 0) })
-        val port = EditText(this).apply {
-            hint = "留空自动分配；1024–65535"; setSingleLine()
+        val port = EditText(dialogContext).apply {
+            hint = "留空生成并保存；1024–65535"; setSingleLine()
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setText(prefs.getString("port", ""))
+            setText(saved.port)
             contentDescription = "WebUI 固定端口"
         }
         panel.addView(port)
         panel.addView(label("访问 Token", 14f).apply { setPadding(0, dp(12), 0, 0) })
-        val token = EditText(this).apply {
-            hint = "留空则每次启动自动生成"; setSingleLine()
+        val token = EditText(dialogContext).apply {
+            hint = "留空将在下次启动生成并保存"; setSingleLine()
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
-            setText(prefs.getString("token", ""))
+            setText(saved.token)
             contentDescription = "WebUI 访问 Token"
         }
         panel.addView(token)
@@ -298,10 +299,10 @@ class MowerSettingsActivity : Activity() {
                 .map { local.replace("127.0.0.1", it.hostAddress!!) }
         } else emptyList()
         val content = if (addresses.isEmpty()) "服务启用局域网访问后，这里会显示连接地址。" else addresses.joinToString("\n\n")
-        panel.addView(label("当前连接地址", 14f).apply { setPadding(0, dp(12), 0, 0) })
+        panel.addView(label("当前运行地址（未重启时可能与已保存值不同）", 14f).apply { setPadding(0, dp(12), 0, 0) })
         panel.addView(label(content, 12f).apply { setPadding(0, dp(16), 0, dp(12)); setTextIsSelectable(true) })
-        panel.addView(label("在同一网络的浏览器打开完整地址。地址含访问令牌，仅分享给可信设备；自动生成的令牌会在重启后更换。", 12f, MowerStyle.muted))
-        val builder = AlertDialog.Builder(this).setTitle("连接手机 WebUI")
+        panel.addView(label("在同一网络的浏览器打开完整地址。地址含访问令牌，仅分享给可信设备；自动生成的端口和令牌也会保存，重启后继续使用。", 12f, MowerStyle.muted))
+        val builder = AlertDialog.Builder(dialogContext).setTitle("连接手机 WebUI")
             .setView(ScrollView(this).apply { addView(panel) }).setPositiveButton("保存", null).setNegativeButton("取消", null)
         if (addresses.isNotEmpty()) builder.setNeutralButton("复制当前地址") { _, _ ->
             (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Mower WebUI", addresses.first()))
@@ -312,11 +313,18 @@ class MowerSettingsActivity : Activity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 try {
                     val connection = WebConnectionConfig.parse(port.text.toString(), token.text.toString())
-                    prefs.edit().putBoolean("lan", enabled.isChecked)
-                        .putString("port", if (connection.port == 0) "" else connection.port.toString())
-                        .putString("token", connection.token).apply()
-                    status.text = "局域网设置已保存，停止并重新启动服务后生效。"
-                    dialog.dismiss()
+                    val requested = SavedWebConnection(enabled.isChecked, if (connection.port == 0) "" else connection.port.toString(), connection.token)
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                    scope.launch {
+                        try {
+                            withContext(Dispatchers.IO) { WebConnectionPreferences.save(prefs, requested) }
+                            status.text = if (MowerService.active) "连接设置已保存；当前服务仍使用旧地址，停止并重新启动服务后生效。" else "连接设置已保存，下次启动服务时使用。"
+                            dialog.dismiss()
+                        } catch (failure: Exception) {
+                            error.text = failure.message ?: "连接设置保存失败"
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                        }
+                    }
                 } catch (failure: IllegalArgumentException) { error.text = failure.message }
             }
         }
@@ -356,6 +364,44 @@ class MowerSettingsActivity : Activity() {
             } catch (_: Exception) { idleButton.text = "任务结束后（Mower 暂未响应）" }
         }
     }
-    override fun onResume() { super.onResume(); if (::settings.isInitialized) { refresh(); refreshIdleAction() } }
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    private fun refreshPermissions() {
+        if (!::permissionCard.isInitialized) return
+        val entries = runCatching { PermissionChecks.inspect(this).entries }.getOrElse {
+            (permissionCard.getChildAt(1) as TextView).text = "权限状态暂无法读取，正在自动重试。"
+            permissionRows.forEach { (text, button) -> text.text = "权限状态暂无法读取，正在自动重试"; button.isEnabled = false }
+            return
+        }
+        (permissionCard.getChildAt(1) as TextView).text = "已自动检测 · 返回本页后自动更新。屏保使用悬浮窗权限。"
+        if (permissionRows.size != entries.size) {
+            while (permissionCard.childCount > 2) permissionCard.removeViewAt(2)
+            permissionRows.clear()
+            entries.forEach { _ ->
+                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
+                val text = label("正在检测…", 14f).apply { setPadding(0, 0, dp(16), 0) }
+                val button = action("去授权") {}
+                row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(button, LinearLayout.LayoutParams(dp(100), dp(48)))
+                permissionCard.addView(row); permissionRows += text to button
+            }
+        }
+        entries.zip(permissionRows).forEach { (entry, views) ->
+            val (text, button) = views
+            text.text = "${entry.title}\n${entry.state}"
+            button.text = if (entry.granted) "已获得" else if (entry.action == null) "启动时检查" else "去处理"
+            button.isEnabled = !entry.granted && entry.action != null
+            button.setOnClickListener {
+                if (entry.action == PermissionAction.AUTHORIZE_BACKEND) scope.launch {
+                    try { com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission() }
+                    catch (failure: Exception) { status.text = failure.message ?: "后台授权未完成" }
+                    finally { refreshPermissions() }
+                } else entry.action?.let { action ->
+                    val intent = PermissionChecks.intent(this, action)
+                    if (intent == null) status.text = "系统未提供此授权入口；请确认已安装 Shizuku。" else open(intent)
+                }
+            }
+        }
+    }
+    override fun onResume() { super.onResume(); if (::settings.isInitialized) { refresh(); refreshIdleAction(); permissionHandler.removeCallbacks(permissionPoll); permissionPoll.run() } }
+    override fun onPause() { permissionHandler.removeCallbacks(permissionPoll); super.onPause() }
+    override fun onDestroy() { permissionHandler.removeCallbacks(permissionPoll); scope.cancel(); super.onDestroy() }
 }

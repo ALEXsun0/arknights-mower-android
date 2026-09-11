@@ -68,7 +68,9 @@ def reset():
 _cache={}
 def adapter_class():
     from mower_android.maa_adapter import Asst as Bundled
-    state=info(); digest=state.get('sha256','')
+    state=info()
+    if state.get('bundled'): return Bundled
+    digest=state.get('sha256','')
     if not re.fullmatch('[a-f0-9]{64}',digest): return Bundled
     if digest in _cache: return _cache[digest]
     try:
@@ -85,3 +87,29 @@ def adapter_class():
         from arknights_mower.utils.log import logger
         logger.error('导入的 MAA Python 接口加载失败，已恢复 APK 内置接口')
         return Bundled
+
+
+def capture_adapter(instance):
+    from mower_android.maa_adapter import Asst as Bundled
+    if type(instance) is Bundled:
+        return "bundled"
+    with _install_lock:
+        return next((digest for digest, cls in _cache.items() if type(instance) is cls), None)
+
+
+def retire_adapters(verified):
+    if verified is None:
+        return False
+    with _install_lock:
+        current = info()
+        active = "bundled" if current.get("bundled") else current.get("sha256")
+        if active != verified:
+            return False
+        for path in ROOT.glob("*.py"):
+            if re.fullmatch(r"[a-f0-9]{64}\.py", path.name) and path.stem != active:
+                path.unlink(missing_ok=True)  # unlink never follows a symlink
+        (ROOT / "previous.json").unlink(missing_ok=True)
+        for digest in list(_cache):
+            if digest != active:
+                del _cache[digest]  # Existing instances still retain their own class.
+        return True

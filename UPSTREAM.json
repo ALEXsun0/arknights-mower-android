@@ -9,7 +9,7 @@
     "local_patches": [
       "Native Android screenshot and theme setting ownership in the shared WebUI; defaults/persistence provided by Android host",
       "Optional host-provided component update controls in shared SoftwareUpdate; Python adapter online updates and recovery are provided by Android host",
-      "Shared four-platform verified update backup cleanup from PR #1032 (28ae4ae0); Android host retires old program and native component versions after verified use"
+      "Shared four-platform verified backup cleanup and countdown digit-reader correction from PR #1032 (d9b110f3); background cleanup retries and actual Android Python adapter verification"
     ],
     "compatibility_pr": "https://github.com/ArkMowers/arknights-mower/pull/1032"
   },

@@ -124,8 +124,16 @@ def mark_ready():
         current.pop('previous', None); save(current)
     if current.get('pending'):
         return
-    # Successful authenticated WebUI startup commits the version. Startup
-    # failures still roll back in select_source before anything is deleted.
+    from mower_android.background_cleanup import submit
+    submit("mower-programs", lambda: cleanup_ready(active))
+
+
+@serialized
+def cleanup_ready(active):
+    current = state()
+    # Recheck after queueing: an update may have been staged in the meantime.
+    if current.get('id') != active or current.get('pending') or current.get('booting'):
+        return
     for candidate in folder().iterdir():
         if valid_id(candidate.name) and candidate.name != active and not candidate.is_symlink():
             try:

@@ -25,6 +25,7 @@ def notes(meta):
     m=meta['bundled']['mower']; maa=meta['bundled']['maa']
     text=f"Arknights Mower Android {meta['apk']['version']}（versionCode {meta['apk']['version_code']}）。\n\n"
     text+=f"内置 Mower 更新至 **{m['tag']}**，MAA 更新至 **{maa['tag']}**，均按公测渠道选择最新公测或正式发行。\n"
+    text+='\n> 跑单设置提示：启用葛朗台跑单时，请在 WebUI 设置中将「葛朗台缓冲时间」调至**至少 15 秒**；低帧率设备建议 **30 秒**。此项为确认换人的提前余量，不是延长确认前等待。\n'
     if m.get('note'): text+=f"Mower 打包说明：{m['note']}。\n"
     text+=('\n本期包含宿主功能或运行环境更新，可更新 APK。\n' if meta['apk']['host_update'] else '\n本期仅刷新内置组件，已安装相同宿主的用户无需更新 APK，可在 WebUI 分别更新组件。\n')
     text+='\n'+compatibility(meta)+'\n\n'

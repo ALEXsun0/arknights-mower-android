@@ -64,15 +64,52 @@ internal object StartupChecks {
         }
     }
 
+    @Synchronized
+    fun recoverRuntime(root: File, backup: File): Boolean {
+        val pending = File(root.parentFile, "rootfs-pending")
+        if (!pending.exists() || !backup.exists()) return false
+        val rejected = File(root.parentFile, "rootfs-rejected")
+        check(!rejected.exists()) { "上次失败环境尚未清理，请先启动原环境或清理存储后重试" }
+        val stamp = pending.readText()
+        if (root.exists()) check(root.renameTo(rejected)) { "无法暂存失败环境，回退备份已保留" }
+        check(backup.renameTo(root)) { "无法恢复原环境，回退备份已保留" }
+        File(root.parentFile, "rootfs-rejected-version").writeText(stamp)
+        pending.delete()
+        return true
+    }
+
+    @Synchronized
+    fun commitRuntime(root: File): String {
+        val stamp = File(root, ".mower-runtime").readText()
+        val pending = File(root.parentFile, "rootfs-pending")
+        check(!pending.exists() || pending.readText() == stamp) { "运行环境版本已改变，保留备份" }
+        check(!pending.exists() || pending.delete()) { "无法提交运行环境验证状态，备份已保留" }
+        return stamp
+    }
+
+    @Synchronized
+    fun cleanupRuntime(root: File, stamp: String) {
+        if (File(root.parentFile, "rootfs-pending").exists() || File(root, ".mower-runtime").readText() != stamp) return
+        for (name in listOf("rootfs-backup", "rootfs-rejected")) {
+            check(File(root.parentFile, name).deleteRecursively()) { "旧运行环境暂无法清理，下次服务启动后重试" }
+        }
+    }
+
+    @Synchronized
     fun activateRuntime(staged: File, root: File, backup: File) {
         check(backup.deleteRecursively()) { "无法清理旧运行环境，请检查存储权限" }
-        if (root.exists()) check(root.renameTo(backup)) { "无法暂存旧运行环境，请重试" }
+        val pending = File(root.parentFile, "rootfs-pending")
+        pending.writeText(File(staged, ".mower-runtime").takeIf { it.exists() }?.readText().orEmpty())
+        if (root.exists() && !root.renameTo(backup)) {
+            pending.delete()
+            error("无法暂存旧运行环境，请重试")
+        }
         if (!staged.renameTo(root)) {
             val restored = !backup.exists() || backup.renameTo(root)
+            if (restored) pending.delete()
             error(if (restored) "无法安装新运行环境，原环境已保留，请检查存储"
                 else "无法安装新运行环境，原环境备份已保留，请重新启动服务恢复")
         }
-        backup.deleteRecursively()
     }
 }
 

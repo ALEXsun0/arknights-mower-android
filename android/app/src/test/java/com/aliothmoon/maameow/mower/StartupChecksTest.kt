@@ -98,6 +98,21 @@ class StartupChecksTest {
         assertFalse(File(root, "old").exists())
     }
 
+    @Test fun failedOldRuntimeRenameDoesNotLeavePendingActivation() {
+        val parent = temporary.newFolder()
+        val actual = File(parent, "rootfs").apply { mkdir(); File(this, ".mower-runtime").writeText("old") }
+        val root = object : File(actual.path) {
+            override fun renameTo(dest: File): Boolean = false
+        }
+        val stage = File(parent, "stage").apply { mkdir(); File(this, ".mower-runtime").writeText("new") }
+        assertThrows(IllegalStateException::class.java) {
+            StartupChecks.activateRuntime(stage, root, File(parent, "rootfs-backup"))
+        }
+        assertFalse(File(parent, "rootfs-pending").exists())
+        assertEquals("old", File(root, ".mower-runtime").readText())
+        assertEquals("old", StartupChecks.commitRuntime(root))
+    }
+
     @Test fun failedReplacementRestoresOldEnvironment() {
         val parent = temporary.newFolder()
         val root = File(parent, "rootfs").apply { mkdir(); File(this, "old").writeText("old") }
@@ -106,4 +121,39 @@ class StartupChecksTest {
         }
         assertEquals("old", File(root, "old").readText())
     }
+    @Test fun unverifiedRuntimeRetainsBackupAndNextStartRecoversIt() {
+        val parent = temporary.newFolder()
+        val root = File(parent, "rootfs").apply { mkdir(); File(this, ".mower-runtime").writeText("old") }
+        val stage = File(parent, "stage").apply { mkdir(); File(this, ".mower-runtime").writeText("new") }
+        val backup = File(parent, "rootfs-backup")
+        StartupChecks.activateRuntime(stage, root, backup)
+        assertEquals("old", File(backup, ".mower-runtime").readText())
+        assertTrue(StartupChecks.recoverRuntime(root, backup))
+        assertEquals("old", File(root, ".mower-runtime").readText())
+        assertEquals("new", File(parent, "rootfs-rejected-version").readText())
+        assertTrue(File(parent, "rootfs-rejected").exists())
+        val verified = StartupChecks.commitRuntime(root)
+        StartupChecks.cleanupRuntime(root, verified)
+        assertFalse(File(parent, "rootfs-rejected").exists())
+    }
+
+    @Test fun verifiedCommitIsLightweightAndCleanupRechecksTheRunningVersion() {
+        val parent = temporary.newFolder()
+        val root = File(parent, "rootfs").apply { mkdir(); File(this, ".mower-runtime").writeText("old") }
+        val stage = File(parent, "stage").apply { mkdir(); File(this, ".mower-runtime").writeText("new") }
+        val backup = File(parent, "rootfs-backup")
+        StartupChecks.activateRuntime(stage, root, backup)
+        StartupChecks.cleanupRuntime(root, "new")
+        assertTrue(backup.exists())
+        val verified = StartupChecks.commitRuntime(root)
+        assertTrue(backup.exists())
+        assertFalse(StartupChecks.recoverRuntime(root, backup))
+        File(root, ".mower-runtime").writeText("newer")
+        StartupChecks.cleanupRuntime(root, verified)
+        assertTrue(backup.exists())
+        File(root, ".mower-runtime").writeText(verified)
+        StartupChecks.cleanupRuntime(root, verified)
+        assertFalse(backup.exists())
+    }
+
 }
