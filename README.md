@@ -80,7 +80,7 @@ bash scripts/build.sh
 
 ## 限制与许可证
 
-这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.2.0 内置最新 alpha（eaa05aa1）与 Android 兼容补丁（d8cbb41b）。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
+这是 Android 独立发行版，仅支持 ARM64。APK 版本独立于内置 Mower；0.2.0 内置最新 alpha（eaa05aa1）与已合并的 Android 兼容改动（打包提交 d8cbb41b，与 alpha 合并提交 22a73d44 文件树一致）。为运行内置 PRoot，当前 targetSdk 为 28、compileSdk 为 36，尚不适合作为 Play 商店发行包。需要允许后台运行；系统杀进程后的自动恢复、多日排班、不同品牌实机及 B 服尚未充分验证。手动文本输入暂限 ASCII。
 
 整体采用 AGPL-3.0，保留 Mower 的 MIT 许可、后台游戏代码及各组件声明。参见 [LICENSE](LICENSE)、[runtime/LICENSE](runtime/LICENSE)、[第三方代码声明](docs/licenses/Meow-THIRD-PARTY-NOTICES.md) 和 [运行时声明](docs/third-party-runtime.md)。个人配置、凭证、游戏截图和日志不会提交到 Git。
 

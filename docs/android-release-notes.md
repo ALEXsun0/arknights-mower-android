@@ -1,4 +1,4 @@
-Arknights Mower Android 0.2.0，内置最新 Mower alpha `eaa05aa1` 与 Android 兼容合并 `d8cbb41b`、官方 Android MAA v6.17.5。APK 沿用原签名，可覆盖安装并保留配置。
+Arknights Mower Android 0.2.0，内置最新 Mower alpha `eaa05aa1` 与已合并的 Android 兼容改动（打包提交 `d8cbb41b`，与 alpha `22a73d44` 文件树一致）、官方 Android MAA v6.17.5。APK 沿用原签名，可覆盖安装并保留配置。
 
 - 修复后台连接超时后卡在“正在启动”的问题；后台启动改为自有启动器直连 AIDL，支持 Shizuku/Sui 与可选 Root。
 - 原生设置增加操作录制/PIN 解锁、画中画、多点触控、720p、触点/FPS 监测、掉线停任务、屏保/物理熄屏、唤醒权限与日志导出。

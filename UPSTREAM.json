@@ -3,8 +3,9 @@
     "url": "https://github.com/ArkMowers/arknights-mower",
     "commit": "d8cbb41b834a34cc6a0aaba794d1081886a570fe",
     "branch": "alpha",
-    "source": "Alpha eaa05aa1 with unmerged Android compatibility PR #1029 and native idle preference protection",
-    "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724"
+    "source": "Alpha eaa05aa1 with Android compatibility PR #1029; packaged revision d8cbb41b has the same tree as merged alpha 22a73d44",
+    "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724",
+    "merged_commit": "22a73d44ff8930f1619931fcc8bd3c8f4127eda2"
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",
