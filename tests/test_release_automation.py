@@ -44,7 +44,7 @@ class ReleaseAutomationTests(unittest.TestCase):
         def read(path):
             data=real(path)
             if path.name=='build.gradle.kts': data=data.replace(b'versionCode = 15',b'versionCode = 500')
-            if path.name=='maa_adapter.py': return b'changed hot-update interface'
+            if path.name=='maa_adapter.py' or 'jniLibs' in path.parts: return b'changed generated or hot-update bytes'
             return data
         with patch.object(Path,'read_bytes',read): self.assertEqual(host_digest(ROOT),baseline)
         self.assertNotEqual(host_digest(ROOT,b'new-dependency==1.0'),baseline)
