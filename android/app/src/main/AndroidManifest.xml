@@ -12,7 +12,7 @@
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <queries><package android:name="moe.shizuku.privileged.api" /></queries>
     <application android:name=".MaaApplication" android:label="Mower Android" android:icon="@mipmap/ic_mower_light"
-        android:allowBackup="false" android:usesCleartextTraffic="true" android:extractNativeLibs="true"
+        android:allowBackup="false" android:usesCleartextTraffic="true" android:extractNativeLibs="true" android:appCategory="game"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".mower.MowerActivity" android:windowSoftInputMode="adjustResize" android:exported="true" android:screenOrientation="sensorLandscape" />
         <activity-alias android:name=".mower.LightLauncher" android:targetActivity=".mower.MowerActivity" android:enabled="true" android:exported="true" android:icon="@mipmap/ic_mower_light">

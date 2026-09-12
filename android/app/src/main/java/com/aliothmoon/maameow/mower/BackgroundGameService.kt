@@ -59,6 +59,10 @@ class BackgroundGameService : RemoteService.Stub() {
                 if (p.optBoolean("monitor") && onDisplay) com.aliothmoon.maameow.remote.internal.GameFpsMonitor.ensureStarted(pkg)
                 else com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
                 org.json.JSONObject().put("alive", alive).put("on_display", onDisplay)
+                    .put("display_id", VirtualDisplayManager.getDisplayId())
+                    .put("display_valid", VirtualDisplayManager.isDisplayValid())
+                    .put("display_state", VirtualDisplayManager.getDisplayState())
+                    .put("frame_count", NativeBridgeLib.getFrameCount())
                     .put("fps", com.aliothmoon.maameow.remote.internal.GameFpsMonitor.currentFps())
                     .put("width", width).put("height", height).put("maa_running", maa.running())
             }
@@ -138,20 +142,20 @@ class BackgroundGameService : RemoteService.Stub() {
     override fun mowerGame(packageName: String, launch: Boolean): Boolean {
         require(allowed(packageName))
         if (!launch) return command("/system/bin/am", "force-stop", packageName).first == 0
-        if (isAppOnVirtualDisplay(packageName)) return true
+        val id = display()
+        check(VirtualDisplayManager.isDisplayValid()) { "后台显示器已失效，请重新启动服务" }
+        check(VirtualDisplayManager.getDisplayState() == android.view.Display.STATE_ON) {
+            "后台显示器处于休眠状态，请先唤醒手机后再打开游戏"
+        }
+        val activities = gameActivities(packageName)
+        if (activities.any { it.displayId == id && it.resumed }) return true
         // Move an existing task first: relaunching alone may leave it on the main display.
         if (isAppAlive(packageName) == 1) {
-            var task: String? = null
-            for (line in command("/system/bin/dumpsys", "activity", "activities").second.lineSequence()) {
-                Regex("\\* Task\\{[^#]+#(\\d+)").find(line)?.let { match ->
-                    task = Regex("rootTaskId=(\\d+)").find(line)?.groupValues?.get(1) ?: match.groupValues[1]
-                }
-                if (line.contains("ActivityRecord{") && line.contains("$packageName/") && task != null) {
-                    command("/system/bin/am", "display", "move-stack", task!!, display().toString())
-                    Thread.sleep(250)
-                    if (isAppOnVirtualDisplay(packageName)) return true
-                    break
-                }
+            val existing = activities.firstOrNull { it.present && it.rootTaskId != null && it.displayId != id }
+            if (existing != null) {
+                command("/system/bin/am", "display", "move-stack", existing.rootTaskId.toString(), id.toString())
+                Thread.sleep(250)
+                if (gameActivities(packageName).any { it.displayId == id && it.resumed }) return true
             }
         }
         val resolved = command("/system/bin/cmd", "package", "resolve-activity", "--brief", packageName).second
@@ -161,7 +165,7 @@ class BackgroundGameService : RemoteService.Stub() {
         args.addAll(listOf("-f", "0x10800000", "-n", resolved))
         val (code, output) = command(*args.toTypedArray())
         if (code != 0 || output.contains("Error:")) return false
-        repeat(8) { if (isAppOnVirtualDisplay(packageName)) return true; Thread.sleep(250) }
+        repeat(8) { if (gameActivities(packageName).any { it.displayId == id && it.resumed }) return true; Thread.sleep(250) }
         return false
     }
     override fun isAppAlive(packageName: String): Int {
@@ -169,12 +173,10 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     override fun isAppOnVirtualDisplay(packageName: String): Boolean {
         require(allowed(packageName))
-        val id = display(); val dump = command("/system/bin/dumpsys", "activity", "activities").second
-        var current = -1
-        for (line in dump.lineSequence()) {
-            Regex("Display #(\\d+)").find(line)?.let { current = it.groupValues[1].toInt() }
-            if (current == id && line.contains("ActivityRecord{") && line.contains("$packageName/")) return true
-        }
-        return false
+        val id = VirtualDisplayManager.getDisplayId()
+        return id > 0 && VirtualDisplayManager.isDisplayValid() &&
+            gameActivities(packageName).any { it.displayId == id && it.present }
     }
+    private fun gameActivities(packageName: String): List<GameActivityState> =
+        GameActivityState.parse(command("/system/bin/dumpsys", "activity", "activities").second, packageName)
 }

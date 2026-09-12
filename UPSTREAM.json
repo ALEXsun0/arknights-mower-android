@@ -1,9 +1,9 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "d49734169afa46b607712f2fc0ce05cffe2fc2c7",
+    "commit": "f1156e7e911bc354b4e744dedca30b0d33b7f556",
     "branch": "alpha",
-    "source": "alpha branch snapshot; includes merged Android compatibility PR #1032",
+    "source": "Local phone validation snapshot based on verified latest alpha d4973416 (2026-09-12), with draft PR #1037 and dorm priority PR #1038",
     "local_patches": [
       "Production Vite build pins WebUI API requests to the current origin"
     ]

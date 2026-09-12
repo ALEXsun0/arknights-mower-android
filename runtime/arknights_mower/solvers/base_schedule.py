@@ -19,7 +19,7 @@ from arknights_mower.data import (
     stage_data_full,
     workshop_formula,
 )
-from arknights_mower.solvers.base_mixin import BaseMixin
+from arknights_mower.solvers.base_mixin import AgentSelectionNotReady, BaseMixin
 from arknights_mower.solvers.credit import CreditSolver
 from arknights_mower.solvers.cultivate_depot import cultivate as cultivateDepotSolver
 from arknights_mower.solvers.depotREC import depotREC as DepotSolver
@@ -61,6 +61,11 @@ from arknights_mower.utils.email import maa_template, send_message, task_templat
 from arknights_mower.utils.graph import SceneGraphSolver
 from arknights_mower.utils.image import cropimg, loadres, thres2
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.operation_timing import (
+    record_selection_retry,
+    timed_room,
+    timed_step,
+)
 from arknights_mower.utils.operators import (
     TRADE_ORDER_AGENTS,
     Operator,
@@ -3075,7 +3080,6 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             self.profession_filter(profession)
         if ope == "Free":
             self.profession_filter("ALL")
-        first_ret = None
         right_swipe = 0
         max_swipe = 50
         while not found:
@@ -3084,23 +3088,16 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 max_agent_count=1,
                 train=True,
             )
-            if sel == [ope] or ope == "Free":
+            if sel and (sel == [ope] or ope == "Free"):
                 ope = sel[0]
                 found = True
                 break
-            if ret == first_ret and right_swipe >= 3:
-                max_swipe = right_swipe
-            else:
-                first_ret = ret
-            st = ret[-2][1][0]  # 起点
-            ed = ret[0][1][0]  # 终点
-            self.swipe_noinertia(st, (ed[0] - st[0], 0))
-            right_swipe += 1
-            if right_swipe >= 3:
-                self.sleep(0.3)
             if right_swipe >= max_swipe:
-                break
-        right_swipe = self.swipe_left(right_swipe, special_filter=profession)
+                raise AgentSelectionNotReady("训练干员搜索达到上限，返回房间重试")
+            right_swipe += self.swipe_agent_page(ret, [ope], train=True)
+        right_swipe = self.swipe_left(
+            right_swipe, special_filter=profession, train=True
+        )
         self.ctap((1280, 60), 0.3)
         self.ctap((1280, 60), 0.3)
         logger.debug("验证训练位干员选择")
@@ -3184,6 +3181,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 continue
             agents[index] = replacements.pop(0).name if replacements else current.name
 
+    @timed_step("selection")
     def choose_agent(
         self,
         agents: list[str],
@@ -3195,7 +3193,6 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         """
         :param order: ArrangeOrder, 选择干员时右上角的排序功能
         """
-        first_name = ""
         max_swipe = 50
         position = [
             (0.35, 0.35),
@@ -3260,7 +3257,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                             self.recog.w * position[pos][0],
                             self.recog.h * position[pos][1],
                         ),
-                        interval=0,
+                        interval=0.2,
                     )
             agent = [x for x in agents if x not in exists]
         logger.info(f"安排干员 ：{agent}")
@@ -3357,27 +3354,6 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     self.profession_filter("ALL")
                     right_swipe = 0
                     last_special_filter = "ALL"
-                if (
-                    agent[0] in self.op_data.operators
-                    and self.op_data.operators[agent[0]].is_resting()
-                    and fast_mode
-                    and is_dorm
-                    and agent[0] != "阿米娅"
-                    and agent[0] not in self.choose_error
-                ):
-                    # 如果在休息，则直接翻最后:
-                    swipe_map = [20, 3, 5, 3, 3, 3, 3, 3, 3]
-                    skip_swipe_count = swipe_map[
-                        self.profession_labels.index(last_special_filter)
-                    ]
-                    for i in range(skip_swipe_count):
-                        self.swipe_noinertia(
-                            (0.8 * self.recog.w, 0.5 * self.recog.h),
-                            (-1900, 0),
-                            interval=0,
-                        )
-                    right_swipe = skip_swipe_count
-                    self.sleep(1)
             changed, ret = self.scan_agent(
                 agent, full_scan=last_special_filter == "ALL"
             )
@@ -3387,18 +3363,10 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 index_change = True
                 siege = False
             else:
-                # 如果没找到 而且右移次数大于5
-                if ret[0][0] == first_name and right_swipe >= 3:
-                    max_swipe = right_swipe
-                else:
-                    first_name = ret[0][0]
                 index_change = False
-                st = ret[-2][1][0]  # 起点
-                ed = ret[0][1][0]  # 终点
-                self.swipe_noinertia(st, (ed[0] - st[0], 0))
-                right_swipe += 1
-                if right_swipe >= 3:
-                    self.sleep(0.3)
+                right_swipe += self.swipe_agent_page(
+                    ret, agent, full_scan=last_special_filter == "ALL"
+                )
             if len(agent) == 0:
                 if siege:
                     if last_special_filter != "ALL":
@@ -3434,10 +3402,13 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 if free_num == 0:
                     break
                 else:
-                    st = ret[-2][1][0]  # 起点
-                    ed = ret[0][1][0]  # 终点
-                    self.swipe_noinertia(st, (ed[0] - st[0], 0))
-                    right_swipe += 1
+                    if right_swipe >= max_swipe:
+                        raise AgentSelectionNotReady(
+                            "空闲干员搜索达到上限，返回房间重试"
+                        )
+                    right_swipe += self.swipe_agent_page(
+                        ret, free_list, full_scan=last_special_filter == "ALL"
+                    )
         # 重排按完整已选名单的位置点击，不能保留最后一名干员的职业筛选。
         # 单回暂留名单没有 Free，也必须在重排和校验前恢复全部职业。
         if last_special_filter != "ALL":
@@ -3445,11 +3416,14 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             last_special_filter = "ALL"
             right_swipe = 0
         # 排序
+        verified = False
         if len(agents) != 1:
-            # 左移
-            right_swipe = self.swipe_left(right_swipe, last_special_filter)
             self.switch_arrange_order("技能", room)
-            exists.extend(selected)
+            # 排序后再确认左端，避免排序保留旧偏移时读取后续卡片。
+            right_swipe = self.swipe_left(right_swipe, last_special_filter)
+            exists = self.wait_for_arranged_agents(agents, ordered=False)
+            if exists is None:
+                raise Exception("检测到干员选择错误，重新选择")
             logger.info(exists)
             click_order = []
             for a in agents:
@@ -3457,16 +3431,21 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     click_order.append(exists.index(a))
                 else:
                     raise Exception("检测到干员选择错误，重新选择")
-            if click_order:
+            if click_order and exists != agents:
                 # 清空
                 self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
                 for p_idx in click_order:
                     x = self.recog.w * position[p_idx][0]
                     y = self.recog.h * position[p_idx][1]
-                    self.tap((x, y), interval=0)
-        logger.debug("验证干员选择..")
-        self.swipe_left(right_swipe, last_special_filter)
-        self.switch_arrange_order("技能", room)
+                    self.tap((x, y), interval=0.2)
+            else:
+                # 刚刚已连续确认完整名单与顺序，且之后未操作，无需再次切换排序。
+                verified = True
+        if not verified:
+            logger.debug("验证干员选择..")
+            self.switch_arrange_order("技能", room)
+            self.swipe_left(right_swipe, last_special_filter)
+            verified = self.verify_agent(agents, room)
         finish_time = datetime.now()
         if finish_time - start_time > timedelta(seconds=15) * len(agents):
             # 如果超过5分钟，则所有里面的干员自动用职介筛选
@@ -3474,7 +3453,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 if agent != "阿米娅" and agent:
                     logger.debug(f"检测到{agent}选择时间过长，自动使用职介筛选")
                     self.op_data.profession_filter.add(agent)
-        if not self.verify_agent(agents, room):
+        if not verified:
             logger.debug(agents)
             logger.debug(room)
             raise Exception("检测到干员选择错误，重新选择")
@@ -3792,6 +3771,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         logger.info(f"宿舍单回排序确认：{room} 目标 {target.name}，恢复原位")
         return True
 
+    @timed_room
     def agent_arrange_room(
         self, new_plan, room, plan, skip_enter=False, get_time=False
     ):
@@ -4006,6 +3986,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             except Exception as e:
                 save_exception(e)
                 logger.exception(e)
+                record_selection_retry()
                 choose_error += 1
                 self.recog.update()
                 if "检测到漏单！" in str(e):

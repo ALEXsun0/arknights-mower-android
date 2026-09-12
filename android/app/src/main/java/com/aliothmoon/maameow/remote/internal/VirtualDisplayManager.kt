@@ -63,7 +63,7 @@ object VirtualDisplayManager {
         Ln.i("setMonitorSurface: old=${old != null}, new=${surface != null}")
     }
 
-    fun start(): Int {
+    @Synchronized fun start(): Int {
         if (!state.compareAndSet(STATE_IDLE, STATE_CAPTURING)) {
             Ln.w("start: already capturing")
             return displayId.get()
@@ -71,7 +71,7 @@ object VirtualDisplayManager {
         return startInternal()
     }
 
-    fun stop() {
+    @Synchronized fun stop() {
         if (!state.compareAndSet(STATE_CAPTURING, STATE_IDLE)) {
             return
         }
@@ -80,7 +80,7 @@ object VirtualDisplayManager {
         Ln.i("VirtualDisplayManager stopped")
     }
 
-    fun restart() {
+    @Synchronized fun restart() {
         if (state.get() != STATE_CAPTURING) {
             return
         }
@@ -88,7 +88,7 @@ object VirtualDisplayManager {
         startInternal()
     }
 
-    fun setResolution(width: Int, height: Int, dpi: Int = config.get().dpi) {
+    @Synchronized fun setResolution(width: Int, height: Int, dpi: Int = config.get().dpi) {
         val newConfig = DisplayConfig(width, height, dpi)
         val oldConfig = config.getAndSet(newConfig)
         if (state.get() == STATE_CAPTURING && oldConfig != newConfig) {
@@ -99,25 +99,33 @@ object VirtualDisplayManager {
 
     fun getDisplayId(): Int = displayId.get()
 
+    fun isDisplayValid(): Boolean = virtualDisplay.get()?.display?.isValid == true
+
+    fun getDisplayState(): Int = virtualDisplay.get()?.display?.state ?: android.view.Display.STATE_UNKNOWN
+
     private fun startInternal(): Int {
         try {
             val cfg = config.get()
             val surface = NativeBridgeLib.setupNativeCapturer(cfg.width, cfg.height)
             createVirtualDisplay(surface, cfg)
+            PowerController.startVirtualDisplayKeepAlive(displayId.get())
 
             Ln.i("VirtualDisplayManager started, displayId=${displayId.get()}")
             return displayId.get()
         } catch (e: Exception) {
             Ln.e("VirtualDisplayManager start failed", e)
-            state.set(STATE_IDLE)
+            try { releaseResources() } finally { state.set(STATE_IDLE) }
             return DISPLAY_NONE
         }
     }
 
     private fun releaseResources() {
-        virtualDisplay.getAndSet(null)?.release()
-        NativeBridgeLib.releaseNativeCapturer()
-        displayId.set(DISPLAY_NONE)
+        PowerController.stopVirtualDisplayKeepAlive()
+        try {
+            runCatching { virtualDisplay.getAndSet(null)?.release() }
+                .onFailure { Ln.e("Virtual display release failed", it) }
+            NativeBridgeLib.releaseNativeCapturer()
+        } finally { displayId.set(DISPLAY_NONE) }
     }
 
     private fun createVirtualDisplay(surface: Surface, cfg: DisplayConfig) {

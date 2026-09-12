@@ -58,6 +58,8 @@ with tarfile.open(archive) as tar, zipfile.ZipFile(uncompressed, 'w', compressio
     for item in roots:
         base = runtime / item
         for file in ([base] if base.is_file() else base.rglob('*')):
+            if file.relative_to(runtime).as_posix() == 'arknights_mower/utils/git_revision':
+                continue  # Written once below from the selected source manifest.
             if file.is_file() and not any(part in ('__pycache__', '.pytest_cache', 'tests') for part in file.parts):
                 zip.write(file, 'mower/' + file.relative_to(runtime).as_posix())
     zip.writestr('mower/arknights_mower/utils/git_revision', json.loads((ROOT / 'UPSTREAM.json').read_text())['mower']['commit'])

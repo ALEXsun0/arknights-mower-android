@@ -15,6 +15,7 @@ class MowerRuntimeMonitor(private val context: Context) {
     private var missingSamples = 0
     private var nextWake = ""
     private var lastNotification = ""
+    private var lastDisplayObservation = ""
     @Volatile var gameFps = -1f; private set
     private fun externalAlert(event: String) {
         if (settings.enabled("external_device_alerts")) runCatching { NativeRuntimeClient.call("/android/runtime-event", event) }
@@ -33,6 +34,18 @@ class MowerRuntimeMonitor(private val context: Context) {
         if (cycle.started) { advisor.reset(); MowerScreenSaver.resetCycle(); missingSamples = 0 }
         val engine = MowerService.engine ?: return
         val game = runCatching { engine.gameState() }.getOrNull()
+        if (game != null) {
+            val observation = "screen_on=${context.getSystemService(PowerManager::class.java).isInteractive}" +
+                " display=${game.optInt("display_id", -1)} state=${game.optInt("display_state", 0)}" +
+                " valid=${game.optBoolean("display_valid")} alive=${game.optBoolean("alive")}" +
+                " on_display=${game.optBoolean("on_display")}"
+            if (observation != lastDisplayObservation) {
+                lastDisplayObservation = observation
+                val message = "后台显示状态 $observation frame_count=${game.optLong("frame_count", -1)}"
+                android.util.Log.i("Mower", message)
+                runCatching { java.io.File(context.filesDir, "python.log").appendText("\n${java.time.Instant.now()} $message\n") }
+            }
+        }
         gameFps = game?.optDouble("fps", -1.0)?.toFloat() ?: -1f
         if (name == "working" && !manual) {
             val expected = game?.optBoolean("expected_running") == true

@@ -1,6 +1,7 @@
 import lzma
 import pickle
 from datetime import datetime, timedelta
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -12,6 +13,7 @@ from arknights_mower.utils.character_recognize import operator_list, operator_li
 from arknights_mower.utils.csleep import MowerExit
 from arknights_mower.utils.image import cropimg, loadres, thres2
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.operation_timing import timed_step
 from arknights_mower.utils.resource_pkg import (
     register_resource_reload,
     resource_pkg_path,
@@ -34,6 +36,11 @@ kernel = np.ones((12, 12), np.uint8)
 PREFIX_NAME_SCORE_RATIO = 0.9
 PREFIX_NAME_WIDTH_RATIO = 0.75
 PREFIX_NAME_WIDTH_MARGIN = 30
+
+
+class AgentSelectionNotReady(RuntimeError):
+    """当前页面不足以继续选人；交由排班原有重试恢复，不结束任务线程。"""
+
 
 # #85：排序列→x 坐标单一来源（detect_arrange_order / switch_arrange_order 共用；
 # 2026-08-16 实机校准取读坐标，工作房 5 列、宿舍/中枢 4 列无「效率」）
@@ -141,13 +148,150 @@ class BaseMixin:
             ascending = ascending == "true"
         name_y = 60
         x = self._arrange_order_x(current_room)[name]
-        self.tap((x, name_y), interval=0.5)
-        while True:
-            self.recog.update()
-            n, s = self.detect_arrange_order(current_room)
-            if n == name and s == ascending:
+        before = None
+        for attempt in range(6):
+            if attempt:
+                self.sleep(0.5)
+            else:
+                self.recog.update()
+            before = self.detect_arrange_order(current_room)
+            if before is not None:
                 break
+        if before is None:
+            raise AgentSelectionNotReady("无法读取干员排序状态，返回房间重试")
+        # 即使排序方式相同，也要刷新已选干员置顶；每次点击必须等到
+        # 箭头实际变化后才能继续，不能把点击前的同方向旧帧当作完成。
+        for _ in range(2):
             self.tap((x, name_y), interval=0.5)
+            previous = None
+            for attempt in range(6):
+                if attempt:
+                    self.sleep(0.5)
+                # tap/sleep 已使识别缓存失效，后续按需获取画面。
+                actual = self.detect_arrange_order(current_room)
+                logger.debug(
+                    f"排序复核：点击前{before}，当前{actual}，目标{(name, ascending)}"
+                )
+                if actual is not None and actual != before and actual == previous:
+                    break
+                previous = actual
+            else:
+                raise AgentSelectionNotReady(
+                    "干员排序点击后尚未确认画面变化，返回房间重试"
+                )
+            if actual == (name, ascending):
+                return
+            before = actual
+        raise AgentSelectionNotReady("干员排序未到达目标状态，返回房间重试")
+
+    @staticmethod
+    def same_agent_page(left, right):
+        """比较整页名字及卡片位置，允许识别边界的少量像素抖动。"""
+        if not left or not right or len(left) != len(right):
+            return False
+        for (name, scope), (old_name, old_scope) in zip(left, right):
+            if not name or name != old_name or scope is None or old_scope is None:
+                return False
+            if any(
+                abs(value - old_value) > 3
+                for point, old_point in zip(scope, old_scope)
+                for value, old_value in zip(point, old_point)
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def agent_page_reader(*, full_scan=True, train=False):
+        """同一次等待内，名字区域像素完全相同则复用模板匹配结果。"""
+        previous_key = None
+        previous_ret = None
+
+        def read(img):
+            nonlocal previous_key, previous_ret
+            key = None
+            if isinstance(img, np.ndarray):
+                left, right = (
+                    (545, 1920) if train else (600, 1920 if full_scan else 1860)
+                )
+                rows = ((479, 506), (895, 922)) if train else ((488, 520), (909, 941))
+                key = tuple(img[y1:y2, left:right].tobytes() for y1, y2 in rows)
+            if key is not None and key == previous_key:
+                logger.debug("选人名字区域未变化，复用本次等待中的识别结果")
+                return previous_ret
+            started = perf_counter()
+            ret = (
+                operator_list_train(img)
+                if train
+                else operator_list(img, full_scan=full_scan)
+            )
+            logger.debug(
+                f"选人模板匹配耗时：{(perf_counter() - started) * 1000:.0f} ms"
+            )
+            previous_key, previous_ret = key, ret
+            return ret
+
+        return read
+
+    def wait_for_agent_page(self, *, full_scan=True, train=False, before=None):
+        """先复核当前页；滑动后不把连续两张相同的旧画面当成新页。"""
+        read = self.agent_page_reader(full_scan=full_scan, train=train)
+        previous = None
+        stable = False
+        ret = []
+        for attempt in range(6):
+            started = perf_counter()
+            if attempt:
+                self.sleep(0.5)
+            else:
+                self.recog.update()
+            connecting = self.find("connecting")
+            logger.debug(
+                f"选人等待及截图检查耗时：{(perf_counter() - started) * 1000:.0f} ms"
+            )
+            if connecting:
+                previous = None
+                stable = False
+                continue
+            try:
+                ret = read(self.recog.img)
+            except MowerExit:
+                raise
+            except Exception as e:
+                logger.debug(f"翻页名单读取失败，原地复核：{e}")
+                previous = None
+                stable = False
+                continue
+            stable = self.same_agent_page(ret, previous)
+            if stable and (before is None or not self.same_agent_page(ret, before)):
+                logger.debug(f"确认当前干员页：{ret}")
+                return ret
+            previous = ret
+        if stable:
+            # 滑动后仍是旧页：交给调用方确认手势未推进，不能当成新页跳过。
+            return ret
+        raise AgentSelectionNotReady("干员页面仍在移动或名字识别不全，返回房间重试")
+
+    def swipe_agent_page(self, page, agent, *, full_scan=True, train=False):
+        """保留两列重叠，确认翻页生效；未推进时只做一次短距离复核。"""
+        columns = sorted({scope[0][0] for _, scope in page})
+        if len(columns) < 2:
+            raise AgentSelectionNotReady("可识别干员列不足，返回房间重试")
+        start_x = columns[-2] if len(columns) > 2 else columns[-1]
+        y = page[0][1][0][1]
+        for attempt in range(2):
+            # 第二次只移动一列，防止第一次延迟完成时又跨过一整页。
+            distance = columns[0] - (start_x if attempt == 0 else columns[1])
+            self.swipe_noinertia((start_x, y), (distance, 0))
+            actual = self.wait_for_agent_page(
+                full_scan=full_scan, train=train, before=page
+            )
+            if not self.same_agent_page(actual, page):
+                return attempt + 1
+            logger.debug(f"翻页第{attempt + 1}次未确认推进，仍需查找：{agent}")
+        raise AgentSelectionNotReady(
+            f"两次滑动后整页干员及位置均未变化，可能已到末尾或手势未生效；"
+            f"返回房间重试，仍需查找：{agent}"
+        )
 
     def scan_agent(
         self,
@@ -157,39 +301,78 @@ class BaseMixin:
         full_scan=True,
         train=False,
     ):
-        try:
-            # 识别干员
-            self.recog.update()
-            while self.find("connecting"):
-                logger.info("等待网络连接")
-                self.sleep()
-            # 返回的顺序是从左往右从上往下
-            ret = (
-                operator_list(self.recog.img, full_scan=full_scan)
-                if not train
-                else operator_list_train(self.recog.img)
-            )
-            # 提取识别出来的干员的名字
-            select_name = []
-            for name, scope in ret:
-                if name in agent:
-                    select_name.append(name)
-                    self.tap(scope, interval=0)
-                    agent.remove(name)
-                    # 如果是按照个数选择 Free
-                    if max_agent_count != -1:
-                        if len(select_name) >= max_agent_count:
-                            return select_name, ret
-            return select_name, ret
-        except MowerExit:
-            raise
-        except Exception as e:
-            error_count += 1
-            if error_count < 3:
-                return self.scan_agent(agent, error_count, max_agent_count, False)
+        # 无目标时仍返回已复核的页面供调用方判断，但不进行点击。
+        ret = self.wait_for_agent_page(full_scan=full_scan, train=train)
+        select_name = []
+        while True:
+            target = next(((name, scope) for name, scope in ret if name in agent), None)
+            if target is None:
+                return select_name, ret
+            name, scope = target
+            self.tap(scope, interval=0.2)
+            select_name.append(name)
+            agent.remove(name)
+            if not agent or (
+                max_agent_count != -1 and len(select_name) >= max_agent_count
+            ):
+                return select_name, ret
+            # 点击可能改变卡片位置；下一名必须从新页面重新定位。
+            ret = self.wait_for_agent_page(full_scan=full_scan, train=train)
+
+    @timed_step("verify")
+    def wait_for_arranged_agents(
+        self, agent, *, ordered=True, full_scan=True, train=False
+    ):
+        """等待排序后的名单连续两帧符合预期，不在旧画面上继续点击。"""
+        if not agent:
+            return []
+        read = self.agent_page_reader(full_scan=full_scan, train=train)
+        previous = None
+        stable = False
+        actual = []
+        for attempt in range(6):
+            if attempt:
+                self.sleep(0.5)
             else:
-                logger.exception(e)
-                raise e
+                self.recog.update()
+            if self.find("connecting"):
+                previous = None
+                stable = False
+                continue
+            try:
+                ret = read(self.recog.img)
+            except MowerExit:
+                raise
+            except Exception as e:
+                logger.debug(f"选人名单读取失败，等待下一帧：{e}")
+                previous = None
+                stable = False
+                continue
+            if not train and ret and ret[0][1] is not None and ret[0][1][0][0] > 650:
+                logger.debug(
+                    "选人列表左侧仍被裁切，原地等待，不读取后续卡片作为已选名单"
+                )
+                previous = None
+                stable = False
+                actual = []
+                continue
+            selected = ret[: len(agent)]
+            actual = [name for name, _ in selected]
+            logger.debug(f"选人校验第{attempt + 1}次读取：{actual}")
+            stable = len(actual) == len(agent) and self.same_agent_page(
+                selected, previous
+            )
+            matches = actual == agent if ordered else sorted(actual) == sorted(agent)
+            if matches and stable:
+                return actual
+            previous = selected
+        if stable:
+            logger.warning(f"干员名单已稳定但不符合预期：预期{agent}，实际{actual}")
+            return None
+        raise AgentSelectionNotReady(
+            f"干员名单或位置仍在变化、左侧裁切或识别不全，返回房间重试："
+            f"预期{agent}，最后读取{actual}"
+        )
 
     def verify_agent(
         self,
@@ -201,53 +384,54 @@ class BaseMixin:
         train=False,
     ):
         try:
-            # 识别干员
-            while self.find("connecting"):
-                logger.info("等待网络连接")
-                self.sleep()
-            ret = (
-                operator_list(self.recog.img, full_scan=full_scan)
-                if not train
-                else operator_list_train(self.recog.img)
-            )  # 返回的顺序是从左往右从上往下
-            # 提取识别出来的干员的名字
-            index = 0
-            for name, scope in ret:
-                if index >= len(agent):
-                    return True
-                if name != agent[index]:
-                    return False
-                index += 1
-            return True
+            return (
+                self.wait_for_arranged_agents(agent, full_scan=full_scan, train=train)
+                is not None
+            )
+        except (MowerExit, AgentSelectionNotReady):
+            raise
         except Exception as e:
             error_count += 1
             if room != "train":
                 self.switch_arrange_order("技能", room)
             if error_count < 3:
                 return self.verify_agent(
-                    agent, room, error_count, max_agent_count, full_scan=False
+                    agent,
+                    room,
+                    error_count,
+                    max_agent_count,
+                    full_scan=False,
+                    train=train,
                 )
             else:
                 logger.exception(e)
                 raise e
 
-    def swipe_left(self, right_swipe, special_filter):
-        if right_swipe > 3:
-            selected_label = next(
-                (label for label in self.profession_labels if label != special_filter),
-                None,
+    @timed_step("rewind")
+    def swipe_left(self, right_swipe, special_filter, *, train=False):
+        # 2500 像素的屏外拖动在 Android 会被裁到边缘，不能按请求距离或
+        # “右移三次只回拉两次”推算归零。回拉使用屏内路径，并读取实际结果。
+        full_scan = special_filter in (None, "ALL")
+        # 回拉途中不用逐页找人。计数只用于减少中途识别，不能作为到头凭据；
+        # 保留至少一次末端实测，短滑、排序后计数归零仍按实际页面处理。
+        bulk = min(max(right_swipe - 1, 0), 8)
+        for _ in range(bulk):
+            self.swipe_noinertia((650, 540), (1100, 0), interval=0)
+        page = self.wait_for_agent_page(full_scan=full_scan, train=train)
+        # 排序/筛选可能将计数归零却保留列表偏移；完整卡片也可能恰好
+        # 对齐在中间页。因此即使计数为零，也必须实际回拉确认。
+        for attempt in range(12 - bulk):
+            self.swipe_noinertia((650, 540), (1100, 0))
+            actual = self.wait_for_agent_page(
+                full_scan=full_scan, train=train, before=page
             )
-            # 硬切换职业筛选 的时候有时候游戏会出bug，回不去，改成切换到ALL
-            if special_filter == "ALL":
-                self.profession_filter(selected_label)
-            else:
-                self.profession_filter("ALL")
-            self.profession_filter(special_filter)
-        else:
-            swipe_time = 2 if right_swipe == 3 else right_swipe
-            for i in range(swipe_time):
-                self.swipe_noinertia((650, 540), (2500, 0))
-        return 0
+            if self.same_agent_page(actual, page):
+                if train or actual[0][1][0][0] <= 650:
+                    return 0
+                raise AgentSelectionNotReady("回拉后列表仍被裁切且未推进，返回房间重试")
+            logger.debug(f"选人列表回拉第{attempt + 1}次，首张完整卡片：{actual[0]}")
+            page = actual
+        raise AgentSelectionNotReady("未能确认干员列表回到左端，返回房间重试")
 
     def profession_filter(self, profession=None):
         """
@@ -412,16 +596,34 @@ class BaseMixin:
 
         for enter_times in range(3):
             for retry_times in range(5):
-                if pos := self.find("control_central"):
+                if self.find("connecting"):
+                    self.sleep()
+                elif pos := self.find("control_central"):
                     _room = segment.base(self.recog.img, pos)[room]
+                    logger.debug(
+                        f"进入房间 {room}，第{enter_times + 1}轮第{retry_times + 1}次点击"
+                    )
                     self.tap(self.adjust_room(_room))
                 elif self.detect_room() == room:
                     return
                 else:
                     self.sleep()
-            if not pos:
+            # 最后一次点击也可能成功，检查其刷新后的画面再决定是否重试。
+            if (
+                not self.find("connecting")
+                and not self.find("control_central")
+                and self.detect_room() == room
+            ):
+                return
+            if enter_times < 2:
+                # 仍停在全局视角时，原逻辑会一直点击同一位置；退出基建
+                # 再重新进入，重新定位房间。此处不重启或关闭游戏。
+                logger.warning(
+                    f"未确认进入房间 {room}，返回首页后重新定位（{enter_times + 1}/2）"
+                )
+                self.back_to_index()
                 self.back_to_infrastructure()
-        raise Exception("未成功进入房间")
+        raise RuntimeError(f"未成功进入房间 {room}：重新定位后仍未确认房间画面")
 
     def double_read_time(self, cord, upperLimit=None, use_digit_reader=False):
         self.recog.update()
@@ -484,6 +686,7 @@ class BaseMixin:
             best_operator, max_score, scores, sample_width
         )
 
+    @timed_step("room_read")
     def read_screen(self, img, type="mood", limit=24, cord=None):
         if cord is not None:
             img = cropimg(img, cord)

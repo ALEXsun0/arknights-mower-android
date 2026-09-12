@@ -8,16 +8,20 @@ import com.aliothmoon.maameow.third.wrappers.DisplayControl
 import com.aliothmoon.maameow.third.wrappers.ServiceManager
 import com.aliothmoon.maameow.third.wrappers.SurfaceControl
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 object PowerController {
     private const val TAG = "PowerController"
     private const val USER_ACTIVITY_INTERVAL_MS = 4_000L
     private val file = File("/data/local/tmp/mower_power_off_flag")
 
-    private val keepAliveDisplayId = AtomicInteger(DefaultDisplayConfig.DISPLAY_NONE)
-    private val keepAliveRunning = AtomicBoolean(false)
+    private val keepAliveTargets = DisplayKeepAliveTargets()
+    private val activityWorker = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "display-user-activity").apply { isDaemon = true }
+    }
+    private var activityTask: ScheduledFuture<*>? = null
 
     var flag: Boolean
         get() = runCatching { file.exists() }.getOrDefault(false)
@@ -84,38 +88,47 @@ object PowerController {
         return SurfaceControl.setDisplayPowerMode(d, mode)
     }
 
-    fun startUserActivityKeepAlive(displayId: Int) {
-        keepAliveDisplayId.set(displayId)
-        if (!keepAliveRunning.compareAndSet(false, true)) return
-        Thread {
-            Ln.i("$TAG: userActivity keep-alive started, displayId=$displayId")
-            while (true) {
-                val id = keepAliveDisplayId.get()
-                if (id == DefaultDisplayConfig.DISPLAY_NONE) break
-                try {
-                    Thread.sleep(USER_ACTIVITY_INTERVAL_MS)
-                } catch (_: InterruptedException) {
-                    break
+    @Synchronized fun startUserActivityKeepAlive(displayId: Int) {
+        keepAliveTargets.physical(displayId)
+        updateActivityTask()
+    }
+
+    @Synchronized fun stopUserActivityKeepAlive() {
+        keepAliveTargets.physical(DefaultDisplayConfig.DISPLAY_NONE)
+        updateActivityTask()
+    }
+
+    @Synchronized fun startVirtualDisplayKeepAlive(displayId: Int) {
+        require(displayId > 0)
+        keepAliveTargets.virtual(displayId)
+        updateActivityTask()
+    }
+
+    @Synchronized fun stopVirtualDisplayKeepAlive() {
+        keepAliveTargets.virtual(DefaultDisplayConfig.DISPLAY_NONE)
+        updateActivityTask()
+    }
+
+    private fun updateActivityTask() {
+        val sdk = Build.VERSION.SDK_INT
+        val targets = keepAliveTargets.snapshot(sdk)
+        Ln.i("$TAG: userActivity targets=$targets")
+        if (targets.isEmpty()) {
+            activityTask?.cancel(false)
+            activityTask = null
+        } else if (activityTask == null) {
+            activityTask = activityWorker.scheduleWithFixedDelay({
+                for (id in keepAliveTargets.snapshot(sdk)) {
+                    runCatching { ServiceManager.getPowerManager().userActivity(id) }
+                        .onFailure { Ln.e("$TAG: display $id userActivity failed", it) }
                 }
-                val currentId = keepAliveDisplayId.get()
-                if (currentId == DefaultDisplayConfig.DISPLAY_NONE) break
-                runCatching { ServiceManager.getPowerManager().userActivity(currentId) }
-                    .onFailure { Ln.e("$TAG: userActivity failed", it) }
-            }
-            keepAliveRunning.set(false)
-            Ln.i("$TAG: userActivity keep-alive stopped")
-        }.apply {
-            name = "power-user-activity-keepalive"
-            isDaemon = true
-        }.start()
+            }, 0, USER_ACTIVITY_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        }
     }
 
-    fun stopUserActivityKeepAlive() {
-        keepAliveDisplayId.set(DefaultDisplayConfig.DISPLAY_NONE)
-    }
-
-    fun destroy() {
-        stopUserActivityKeepAlive()
+    @Synchronized fun destroy() {
+        keepAliveTargets.clear()
+        updateActivityTask()
         if (flag) {
             Ln.i("$TAG: Emergency recovering screen power...")
             runCatching {
