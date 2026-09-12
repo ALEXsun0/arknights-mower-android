@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import gzip
+import os
 import subprocess
 import time
 from contextlib import contextmanager
@@ -599,6 +600,5 @@ class Device:
 
 
 # Android owns capture and input through the background display service.
-import os as _os
-if _os.environ.get("MOWER_ANDROID") == "1":
+if os.environ.get("MOWER_ANDROID") == "1":
     from mower_android.device import AndroidDevice as Device

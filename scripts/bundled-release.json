@@ -1,9 +1,10 @@
 {
   "mower": {
     "tag": "v4.1.6-alpha.5",
-    "revision": "d8cbb41b834a34cc6a0aaba794d1081886a570fe",
+    "revision": "2f2a129df02d73c4c7bfa894c219640416708f4c",
     "source": "bundled",
-    "note": "alpha.5 + merged Android compatibility and native screenshot ownership patch"
+    "note": "alpha 分支源码快照 2f2a129d，包含已合并的 #1032、#1033、#1034、#1035；不是新的上游 Release 标签",
+    "branch": "alpha"
   },
   "maa": {
     "tag": "v6.17.5"

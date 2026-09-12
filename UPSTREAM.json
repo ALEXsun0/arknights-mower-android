@@ -1,18 +1,12 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "d8cbb41b834a34cc6a0aaba794d1081886a570fe",
+    "commit": "2f2a129df02d73c4c7bfa894c219640416708f4c",
     "branch": "alpha",
-    "source": "Alpha eaa05aa1 with Android compatibility PR #1029; packaged revision d8cbb41b has the same tree as merged alpha 22a73d44",
-    "base_commit": "eaa05aa1d18f9103217da06a3d1164311643d724",
-    "merged_commit": "22a73d44ff8930f1619931fcc8bd3c8f4127eda2",
+    "source": "alpha branch snapshot; includes merged Android compatibility PR #1032",
     "local_patches": [
-      "Native Android screenshot and theme setting ownership in the shared WebUI; defaults/persistence provided by Android host",
-      "Optional host-provided component update controls in shared SoftwareUpdate; Python adapter online updates and recovery are provided by Android host",
-      "Shared four-platform verified backup cleanup and countdown digit-reader correction from PR #1032 (d9b110f3); background cleanup retries and actual Android Python adapter verification",
-      "Shared touch number-input focus and real-signature countdown fix; facility row OCR retained, PR #1032 (03f4071c)"
-    ],
-    "compatibility_pr": "https://github.com/ArkMowers/arknights-mower/pull/1032"
+      "Production Vite build pins WebUI API requests to the current origin"
+    ]
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,8 @@ class SnapshotTests(unittest.TestCase):
             root=Path(temp)
             for name in ['scripts/bundled-release.json','android/app/build.gradle.kts','runtime/mower_android/maa-python.json','runtime/mower_android/maa_adapter.py']:
                 p=root/name;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,p)
+            gradle=root/'android/app/build.gradle.kts'
+            gradle.write_text(re.sub(r'versionCode = \d+', 'versionCode = 15', gradle.read_text()))
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
             adapter=json.loads((root/'runtime/mower_android/maa-python.json').read_text())
             previous={'apk':{'version':'0.2.0','version_code':15,'host_sha256':'a'*64,'host_version_code':15},'maa_python':adapter,'bundled':baseline}
