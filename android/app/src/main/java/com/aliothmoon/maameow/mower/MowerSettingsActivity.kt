@@ -160,10 +160,8 @@ class MowerSettingsActivity : Activity() {
         ))
         val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun button(title: String, run: () -> Unit) { actions.addView(action(title, run = run), LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(10) }) }
-        button("导出诊断日志") { exportLogs() }
         button("恢复屏幕显示") { execute { MowerScreenSaver.hide(); "已请求恢复屏幕显示" } }
         button("重新连接后台服务") { engineAction("reconnect") }
-        button("测试唤醒与锁屏状态") { engineAction("test_wake") }
         button("关闭静音并恢复声音") { engineAction("restore_audio") }
         content.addView(actions)
         root.addView(ScrollView(this).apply { isFillViewport = true; addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
