@@ -248,7 +248,7 @@ class MowerActivity : Activity() {
             addView(label("后台运行明日方舟，使用原版 WebUI 管理基建和 MAA。", 14f, MowerStyle.muted).apply {
                 setPadding(0, dp(8), 0, dp(24))
             })
-            addView(label("跑单设置提示：启用葛朗台跑单时，请在 WebUI 设置中将「葛朗台缓冲时间」调至至少 15 秒；低帧率设备建议 30 秒。", 13f, MowerStyle.green, true).apply {
+            addView(label("跑单设置提示：Android 推荐保持「跑单前置延时」5 分钟、「葛朗台缓冲时间」15 秒；前者为导航选人留余量，后者为确认入驻留余量。两项均可自行修改；设备较慢时可适当增加。", 13f, MowerStyle.green, true).apply {
                 setLineSpacing(dp(3).toFloat(), 1f)
                 setPadding(0, 0, 0, dp(20))
             })
