@@ -14,7 +14,7 @@
     <application android:name=".MaaApplication" android:label="Mower Android" android:icon="@mipmap/ic_mower_light"
         android:allowBackup="false" android:usesCleartextTraffic="true" android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <activity android:name=".mower.MowerActivity" android:windowSoftInputMode="adjustResize" android:exported="true" android:screenOrientation="sensorLandscape" />
+        <activity android:name=".mower.MowerActivity" android:windowSoftInputMode="adjustResize" android:exported="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <activity-alias android:name=".mower.LightLauncher" android:targetActivity=".mower.MowerActivity" android:enabled="true" android:exported="true" android:icon="@mipmap/ic_mower_light">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity-alias>
@@ -22,8 +22,8 @@
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity-alias>
         <activity android:name=".mower.MowerGameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
-        <activity android:name=".mower.MowerSettingsActivity" android:exported="false" android:screenOrientation="sensorLandscape" />
-        <activity android:name=".mower.UnlockSettingsActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize" />
+        <activity android:name=".mower.MowerSettingsActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
+        <activity android:name=".mower.UnlockSettingsActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <receiver android:name=".mower.MowerWakeReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
         </receiver>

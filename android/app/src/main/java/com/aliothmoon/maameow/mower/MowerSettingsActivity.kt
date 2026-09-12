@@ -49,13 +49,12 @@ class MowerSettingsActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = surface(MowerStyle.paper, 0) }
         val heading = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(12)) }
         heading.addView(action("返回") { finish() })
-        heading.addView(label("软件设置", 23f, bold = true).apply { setPadding(dp(20), 0, 0, 0) })
-        heading.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
+        heading.addView(label("软件设置", 20f, bold = true).apply { setPadding(dp(12), 0, 0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
         heading.addView(action("关于软件") { showMowerAbout() })
         root.addView(heading)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(24)) }
         status = label("设置直接保存在手机，修改后自动生效。", 13f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), dp(16)) }
-        val utilities = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val utilities = ResponsiveRow(this).apply { gravity = Gravity.CENTER_VERTICAL }
         utilities.addView(action("局域网连接") { showNetwork() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(12) })
         utilities.addView(action("诊断日志") { showLogs() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(12) })
         utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))

@@ -78,21 +78,26 @@ class MowerActivity : Activity() {
             orientation = LinearLayout.VERTICAL; background = surface(MowerStyle.paper, 0)
             setPadding(0, dp(10), 0, dp(12))
         }
-        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        bar.addView(ImageView(this).apply {
+        val bar = ResponsiveRow(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val brand = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        brand.addView(ImageView(this).apply {
             setImageResource(com.aliothmoon.maameow.R.drawable.mower_logo)
             contentDescription = "Mower"
             setPadding(dp(4), dp(4), dp(4), dp(4))
             background = iconSurface()
         }, LinearLayout.LayoutParams(dp(42), dp(42)))
-        bar.addView(LinearLayout(this).apply {
+        brand.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0)
             addView(label("Mower", 20f, bold = true))
             addView(label("ANDROID  /  后台基建助手", 10f, MowerStyle.muted))
         }, LinearLayout.LayoutParams(0, -2, 1f))
+        bar.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
+        val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        bar.addView(actions, LinearLayout.LayoutParams(dp(320), -2))
         fun add(value: String, primary: Boolean = false, block: () -> Unit): Button {
             val b = action(value, primary, block)
-            bar.addView(b, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(8) })
+            actions.addView(b, LinearLayout.LayoutParams(0, dp(44), 1f).apply { if (actions.childCount > 0) marginStart = dp(6) })
+            b.setPadding(dp(8), 0, dp(8), 0)
             return b
         }
         add("游戏画面") { startActivity(Intent(this, MowerGameActivity::class.java)) }
@@ -101,7 +106,7 @@ class MowerActivity : Activity() {
             if (MowerService.stopping) return@add
             if (MowerService.active) stopService(Intent(this, MowerService::class.java)) else startRuntime()
         }
-        val barScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; isFillViewport = true }
+        val barScroll = FrameLayout(this)
         barScroll.addView(bar, android.view.ViewGroup.LayoutParams(-1, -2))
         layout.addView(barScroll)
         val statusRow = LinearLayout(this).apply {
@@ -137,6 +142,7 @@ class MowerActivity : Activity() {
         }.apply {
             setBackgroundColor(MowerStyle.paper)
             settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+            settings.useWideViewPort = true
             settings.allowFileAccess = false; settings.allowContentAccess = false
             webChromeClient = object : android.webkit.WebChromeClient() {
                 override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
@@ -148,6 +154,19 @@ class MowerActivity : Activity() {
                 }
             }
             webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String?) {
+                    // Chromium can retain the landscape layout width when a focused
+                    // input rotates back to portrait. Keep the mobile viewport at
+                    // its normal minimum scale; Mower's own UI scale still applies.
+                    view.evaluateJavascript("""
+                        (() => {
+                            const viewport = document.querySelector('meta[name="viewport"]');
+                            if (viewport && !/minimum-scale\s*=/.test(viewport.content))
+                                viewport.content += ', minimum-scale=1';
+                        })();
+                    """.trimIndent(), null)
+                }
+
                 override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
                     val uri = request?.url ?: return true
                     val endpoint = MowerService.url ?: return true
@@ -165,7 +184,7 @@ class MowerActivity : Activity() {
             val right = safe.right
             layout.setPadding(0, safe.top + dp(8), 0, insets.systemWindowInsetBottom)
             barScroll.setPadding(left + dp(16), 0, right + dp(16), 0)
-            barScroll.clipToPadding = false
+            content.setPadding(left, 0, right, 0)
             statusRow.setPadding(left + dp(18), dp(8), right + dp(16), dp(8))
             permissionRow.setPadding(left + dp(18), 0, right + dp(16), dp(6))
             (installBar.layoutParams as LinearLayout.LayoutParams).apply {
@@ -243,7 +262,7 @@ class MowerActivity : Activity() {
         isFillViewport = true
         addView(LinearLayout(this@MowerActivity).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(36), dp(24), dp(36), dp(24))
+            setPadding(dp(20), dp(24), dp(20), dp(24))
             addView(label("在手机上运行 Mower", 26f, bold = true))
             addView(label("后台运行明日方舟，使用原版 WebUI 管理基建和 MAA。", 14f, MowerStyle.muted).apply {
                 setPadding(0, dp(8), 0, dp(24))
@@ -252,7 +271,7 @@ class MowerActivity : Activity() {
                 setLineSpacing(dp(3).toFloat(), 1f)
                 setPadding(0, 0, 0, dp(20))
             })
-            val steps = LinearLayout(this@MowerActivity)
+            val steps = ResponsiveRow(this@MowerActivity)
             listOf("01" to ("后台授权" to "未 Root 手机需启动并授权 Shizuku。Root 手机可在软件设置选择 Root 后端，也可使用已配置的 Sui。"),
                 "02" to ("启动服务与游戏" to "点击上方启动服务，再打开游戏画面，登录明日方舟。"),
                 "03" to ("安排基建" to "在 WebUI 编辑排班，再启动调度。")
