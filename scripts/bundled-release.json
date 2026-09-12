@@ -1,9 +1,9 @@
 {
   "mower": {
     "tag": "v4.1.6-alpha.5",
-    "revision": "24cf757c3b7c32e16d5f4f75bb9743ccae61543c",
+    "revision": "d49734169afa46b607712f2fc0ce05cffe2fc2c7",
     "source": "bundled",
-    "note": "alpha 分支源码快照 24cf757c，包含 #1036；不是新的上游 Release 标签",
+    "note": "alpha 分支源码快照 d4973416，包含 #1016；不是新的上游 Release 标签",
     "branch": "alpha"
   },
   "maa": {

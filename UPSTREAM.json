@@ -1,7 +1,7 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "24cf757c3b7c32e16d5f4f75bb9743ccae61543c",
+    "commit": "d49734169afa46b607712f2fc0ce05cffe2fc2c7",
     "branch": "alpha",
     "source": "alpha branch snapshot; includes merged Android compatibility PR #1032",
     "local_patches": [

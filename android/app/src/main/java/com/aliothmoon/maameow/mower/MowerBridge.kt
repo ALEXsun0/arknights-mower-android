@@ -316,8 +316,11 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             "text" -> { check(s.mowerText(p.getString("text"))); true }
             "tap" -> {
                 val (x, y) = point(JSONArray(listOf(p.getInt("x"), p.getInt("y"))))
-                try { s.touchDown(x, y, 0); Thread.sleep(45); s.touchUp(x, y, 0) }
-                finally { s.touchCancel() }
+                MowerTap.perform(
+                    down = { s.touchDown(x, y, 0) },
+                    up = { s.touchUp(x, y, 0) },
+                    cancel = { s.touchCancel() },
+                )
                 true
             }
             "swipe" -> {
