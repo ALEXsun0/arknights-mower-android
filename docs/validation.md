@@ -225,3 +225,6 @@ MuMu Wi-Fi 地址为 NAT 内部地址，电脑不能直接路由到该地址；�
 - 内置共享生产源码更新至 alpha `2f2a129df02d73c4c7bfa894c219640416708f4c`；包含已合并 #1032 与后续 #1033–#1035。核对所有共享生产 Python 与 WebUI 源文件后与该提交一致，保留宿主自己的生产 Vite API 同源设置。发行正文明确说明源码快照，不虚构上游 Release 标签。
 - WebUI 271 项测试和生产构建通过；上游新增专精、宿舍筛选/重选与倒计时相关 74 项专项通过；宿主 55 项通过。发行测试修正为独立固定的源版本 fixture，不再依赖真实 APK 当前构建号。
 - MAA 保持官方 v6.17.5，检查 9 个 Python API 与 13 个原生符号通过；Python 1.0.0 ZIP 与 v0.2.0 公开附件逐字节一致，兼容起点保持 v0.2.0。
+- 最终本地 Release APK 为 374,166,139 字节，141 项原生测试、lintRelease、APK/运行 ZIP CRC、固定签名、宿主指纹、内置 alpha 修订与 CHANGELOG 均通过。手机覆盖安装成功，已安装 APK 摘要与公开发行包一致。
+- 实机服务启动成功；通过已认证的局域网 API 确认当前 Mower 为 `4.1.6-alpha.5+2f2a129`。58000 端口与用户指定 Token 在覆盖安装和重启服务后仍可访问，未将 Token 记录到诊断文件。
+- [v0.2.1](https://github.com/ALEXsun0/arknights-mower-android/releases/tag/v0.2.1) 已正式公开，附件包含 APK、Python 1.0.0 ZIP、android-release.json 与 distribution.json。四个公开附件的大小和 GitHub digest 均与本地匹配，发布源码提交 a68b60d；无额外 SHA256 文件。没有启动整轮 MAA 或基建任务进行消耗资源测试。
