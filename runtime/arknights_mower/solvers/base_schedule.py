@@ -3082,19 +3082,25 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             self.profession_filter("ALL")
         right_swipe = 0
         max_swipe = 50
+        observation = None
         while not found:
             sel, ret = self.scan_agent(
                 [ope] if ope != "Free" else self.get_free_list([]),
                 max_agent_count=1,
                 train=True,
+                observation=observation,
             )
+            observation = None
             if sel and (sel == [ope] or ope == "Free"):
                 ope = sel[0]
                 found = True
                 break
             if right_swipe >= max_swipe:
                 raise AgentSelectionNotReady("训练干员搜索达到上限，返回房间重试")
-            right_swipe += self.swipe_agent_page(ret, [ope], train=True)
+            moved, observation = self.swipe_agent_page(
+                ret, [ope], train=True, return_page=True
+            )
+            right_swipe += moved
         right_swipe = self.swipe_left(
             right_swipe, special_filter=profession, train=True
         )
@@ -3269,6 +3275,9 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         free_num = agent.count("Free")
         for i in range(agent.count("Free")):
             agent.remove("Free")
+        single_visible_target = (
+            room.startswith("room") and free_num == 0 and len(agent) == 1
+        )
         index_change = False
         pre_order = ["技能", False]
         right_swipe = 0
@@ -3281,6 +3290,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         siege = False  # 推进之王
         last_special_filter = "ALL"
         start_time, finish_time = datetime.now(), datetime.now()
+        observation = None
         while len(agent) > 0:
             if retry_count > 1:
                 raise Exception("到达最大尝试次数 1次")
@@ -3313,13 +3323,26 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     and self.op_data.operators[agent[0]].room.startswith("dormitory")
                 ):
                     arrange_type = ("心情", "true")
-                # 如果重新排序则滑到最左边
+                # 如果重新排序则复位到列表起点
                 if pre_order[0] != arrange_type[0] or pre_order[1] != arrange_type[1]:
                     self.switch_arrange_order(arrange_type[0], room, arrange_type[1])
-                    # 滑倒最左边
+                    # 排序后的动画沿用原等待
                     self.sleep(interval=0.5)
                     if not siege:
-                        right_swipe = self.swipe_left(right_swipe, last_special_filter)
+                        if single_visible_target and len(agent) == 1:
+                            # 单个生产房目标已经可见时先选择，最终刷新排序并校验完整名单。
+                            changed, ret = self.scan_agent(
+                                agent, full_scan=last_special_filter == "ALL"
+                            )
+                            if changed:
+                                selected.extend(changed)
+                                logger.info(
+                                    f"排序后已在当前页选中目标{changed}，继续最终名单校验"
+                                )
+                                break
+                        right_swipe, observation = self.swipe_left(
+                            right_swipe, last_special_filter, return_page=True
+                        )
                     pre_order = arrange_type
             first_time = False
             if (
@@ -3355,8 +3378,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     right_swipe = 0
                     last_special_filter = "ALL"
             changed, ret = self.scan_agent(
-                agent, full_scan=last_special_filter == "ALL"
+                agent,
+                full_scan=last_special_filter == "ALL",
+                observation=observation,
             )
+            observation = None
             if changed:
                 selected.extend(changed)
                 # 如果找到了
@@ -3364,9 +3390,10 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 siege = False
             else:
                 index_change = False
-                right_swipe += self.swipe_agent_page(
-                    ret, agent, full_scan=last_special_filter == "ALL"
+                moved, observation = self.swipe_agent_page(
+                    ret, agent, full_scan=last_special_filter == "ALL", return_page=True
                 )
+                right_swipe += moved
             if len(agent) == 0:
                 if siege:
                     if last_special_filter != "ALL":
@@ -3378,7 +3405,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             if free_num == len(agents):
                 self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
             if not first_time:
-                # 滑动到最左边
+                # 通过筛选复位到列表起点
                 right_swipe = self.swipe_left(right_swipe, last_special_filter)
             if last_special_filter != "ALL":
                 self.profession_filter("ALL")
@@ -3388,12 +3415,15 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             # 只选择在列表里面的
             # 替换组小于20才休息，防止进入就满心情进行网络连接
             free_list = self.get_free_list(agents)
+            observation = None
             while free_num:
                 selected_name, ret = self.scan_agent(
                     free_list,
                     max_agent_count=free_num,
                     full_scan=last_special_filter == "ALL",
+                    observation=observation,
                 )
+                observation = None
                 selected.extend(selected_name)
                 free_num -= len(selected_name)
                 while len(selected_name) > 0:
@@ -3406,9 +3436,13 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         raise AgentSelectionNotReady(
                             "空闲干员搜索达到上限，返回房间重试"
                         )
-                    right_swipe += self.swipe_agent_page(
-                        ret, free_list, full_scan=last_special_filter == "ALL"
+                    moved, observation = self.swipe_agent_page(
+                        ret,
+                        free_list,
+                        full_scan=last_special_filter == "ALL",
+                        return_page=True,
                     )
+                    right_swipe += moved
         # 重排按完整已选名单的位置点击，不能保留最后一名干员的职业筛选。
         # 单回暂留名单没有 Free，也必须在重排和校验前恢复全部职业。
         if last_special_filter != "ALL":
@@ -3419,9 +3453,20 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         verified = False
         if len(agents) != 1:
             self.switch_arrange_order("技能", room)
-            # 排序后再确认左端，避免排序保留旧偏移时读取后续卡片。
-            right_swipe = self.swipe_left(right_swipe, last_special_filter)
-            exists = self.wait_for_arranged_agents(agents, ordered=False)
+            # 未翻页时先读取完整已选名单；校验成功无需再切筛选复位。
+            exists = None
+            if right_swipe == 0 and room.startswith("room"):
+                try:
+                    exists = self.wait_for_arranged_agents(agents, ordered=False)
+                except AgentSelectionNotReady:
+                    logger.debug("当前已选名单尚不能确认，筛选复位后再校验")
+            if exists is None:
+                right_swipe, observation = self.swipe_left(
+                    right_swipe, last_special_filter, return_page=True
+                )
+                exists = self.wait_for_arranged_agents(
+                    agents, ordered=False, observation=observation
+                )
             if exists is None:
                 raise Exception("检测到干员选择错误，重新选择")
             logger.info(exists)
@@ -3444,8 +3489,16 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         if not verified:
             logger.debug("验证干员选择..")
             self.switch_arrange_order("技能", room)
-            self.swipe_left(right_swipe, last_special_filter)
-            verified = self.verify_agent(agents, room)
+            if right_swipe == 0 and room.startswith("room"):
+                try:
+                    verified = self.verify_agent(agents, room)
+                except AgentSelectionNotReady:
+                    logger.debug("当前已选顺序尚不能确认，筛选复位后再校验")
+            if not verified:
+                _, observation = self.swipe_left(
+                    right_swipe, last_special_filter, return_page=True
+                )
+                verified = self.verify_agent(agents, room, observation=observation)
         finish_time = datetime.now()
         if finish_time - start_time > timedelta(seconds=15) * len(agents):
             # 如果超过5分钟，则所有里面的干员自动用职介筛选
@@ -3584,7 +3637,33 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             data["agent"] = _name
             data["mood"] = _mood
             if i in read_time_index and _name != "":
-                if _mood == 24 or room in ["meeting", "factory"] and not update_time:
+                exhausted_working = False
+                if (
+                    room == "central"
+                    and room in self.op_data.true_exhaust_room
+                    and _name != "菲亚梅塔"
+                    and update_time
+                    and _mood == 0
+                    and agent.is_working()
+                ):
+                    # 中枢耗尽后不再显示倒计时；换帧复核房间、干员和心情，
+                    # 不用缓存估算值或一次空 OCR 推断耗尽，宿舍恢复时间仍照常读。
+                    self.recog.update()
+                    exhausted_working = (
+                        not self.find("connecting")
+                        and self.find("room_detail") is not None
+                        and self.detect_room() == room
+                        and self.read_screen(
+                            cropimg(self.recog.gray, name_p[i]), type="name"
+                        )
+                        == _name
+                        and self.read_accurate_mood(cropimg(self.recog.gray, mood_p[i]))
+                        == 0
+                    )
+                if exhausted_working:
+                    data["time"] = datetime.now()
+                    logger.debug(f"中枢干员 {_name} 已复核心情耗尽，无需读取倒计时")
+                elif _mood == 24 or room in ["meeting", "factory"] and not update_time:
                     data["time"] = datetime.now()
                 else:
                     logger.debug(f"开始记录时间:{room},{i}")

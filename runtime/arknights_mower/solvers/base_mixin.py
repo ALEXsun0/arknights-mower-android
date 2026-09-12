@@ -1,5 +1,6 @@
 import lzma
 import pickle
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from time import perf_counter
 
@@ -40,6 +41,31 @@ PREFIX_NAME_WIDTH_MARGIN = 30
 
 class AgentSelectionNotReady(RuntimeError):
     """当前页面不足以继续选人；交由排班原有重试恢复，不结束任务线程。"""
+
+
+@dataclass
+class AgentPageObservation:
+    """相邻操作间的一次性稳定观测，消费后仍须读取新画面复核。"""
+
+    page: tuple
+    recognizer: object
+    image: object
+    full_scan: bool
+    train: bool
+
+    def consume(self, recognizer, *, full_scan, train):
+        valid = (
+            self.image is not None
+            and self.recognizer is recognizer
+            and getattr(recognizer, "_img", None) is self.image
+            and self.full_scan == full_scan
+            and self.train == train
+        )
+        page = self.page if valid else None
+        # 包括模式不符在内，尝试消费即失效，不跨输入或房间保留坐标。
+        self.page = ()
+        self.recognizer = self.image = None
+        return page
 
 
 # #85：排序列→x 坐标单一来源（detect_arrange_order / switch_arrange_order 共用；
@@ -135,12 +161,19 @@ class BaseMixin:
 
     def detect_arrange_order(self, current_room):
         y = 70
-        hsv = cv2.cvtColor(self.recog.img, cv2.COLOR_RGB2HSV)
+        order = self._arrange_order_x(current_room)
+        left, right = min(order.values()), max(order.values()) + 5
+        # 只转换排序箭头覆盖区域，坐标与检测顺序仍由原房型映射决定。
+        region = self.recog.img[y : y + 13, left:right]
+        if region.size == 0:
+            return None
+        hsv = cv2.cvtColor(region, cv2.COLOR_RGB2HSV)
         mask = cv2.inRange(hsv, (95, 100, 100), (105, 255, 255))
-        for name, x in self._arrange_order_x(current_room).items():
-            if np.count_nonzero(mask[y : y + 3, x : x + 5]):
+        for name, x in order.items():
+            x -= left
+            if np.count_nonzero(mask[:3, x : x + 5]):
                 return (name, False)
-            if np.count_nonzero(mask[y + 10 : y + 13, x : x + 5]):
+            if np.count_nonzero(mask[10:13, x : x + 5]):
                 return (name, True)
 
     def switch_arrange_order(self, name, current_room, ascending=False):
@@ -232,10 +265,27 @@ class BaseMixin:
 
         return read
 
-    def wait_for_agent_page(self, *, full_scan=True, train=False, before=None):
+    def observe_agent_page(self, page, *, full_scan=True, train=False):
+        return AgentPageObservation(
+            tuple(
+                (name, tuple(tuple(point) for point in scope)) for name, scope in page
+            ),
+            self.recog,
+            getattr(self.recog, "_img", None),
+            full_scan,
+            train,
+        )
+
+    def wait_for_agent_page(
+        self, *, full_scan=True, train=False, before=None, observation=None
+    ):
         """先复核当前页；滑动后不把连续两张相同的旧画面当成新页。"""
         read = self.agent_page_reader(full_scan=full_scan, train=train)
-        previous = None
+        previous = (
+            observation.consume(self.recog, full_scan=full_scan, train=train)
+            if observation is not None
+            else None
+        )
         stable = False
         ret = []
         for attempt in range(6):
@@ -271,7 +321,9 @@ class BaseMixin:
             return ret
         raise AgentSelectionNotReady("干员页面仍在移动或名字识别不全，返回房间重试")
 
-    def swipe_agent_page(self, page, agent, *, full_scan=True, train=False):
+    def swipe_agent_page(
+        self, page, agent, *, full_scan=True, train=False, return_page=False
+    ):
         """保留两列重叠，确认翻页生效；未推进时只做一次短距离复核。"""
         columns = sorted({scope[0][0] for _, scope in page})
         if len(columns) < 2:
@@ -286,6 +338,10 @@ class BaseMixin:
                 full_scan=full_scan, train=train, before=page
             )
             if not self.same_agent_page(actual, page):
+                if return_page:
+                    return attempt + 1, self.observe_agent_page(
+                        actual, full_scan=full_scan, train=train
+                    )
                 return attempt + 1
             logger.debug(f"翻页第{attempt + 1}次未确认推进，仍需查找：{agent}")
         raise AgentSelectionNotReady(
@@ -300,9 +356,12 @@ class BaseMixin:
         max_agent_count=-1,
         full_scan=True,
         train=False,
+        observation=None,
     ):
         # 无目标时仍返回已复核的页面供调用方判断，但不进行点击。
-        ret = self.wait_for_agent_page(full_scan=full_scan, train=train)
+        ret = self.wait_for_agent_page(
+            full_scan=full_scan, train=train, observation=observation
+        )
         select_name = []
         while True:
             target = next(((name, scope) for name, scope in ret if name in agent), None)
@@ -321,13 +380,18 @@ class BaseMixin:
 
     @timed_step("verify")
     def wait_for_arranged_agents(
-        self, agent, *, ordered=True, full_scan=True, train=False
+        self, agent, *, ordered=True, full_scan=True, train=False, observation=None
     ):
         """等待排序后的名单连续两帧符合预期，不在旧画面上继续点击。"""
+        page = (
+            observation.consume(self.recog, full_scan=full_scan, train=train)
+            if observation is not None
+            else None
+        )
         if not agent:
             return []
         read = self.agent_page_reader(full_scan=full_scan, train=train)
-        previous = None
+        previous = page[: len(agent)] if page else None
         stable = False
         actual = []
         for attempt in range(6):
@@ -382,10 +446,13 @@ class BaseMixin:
         max_agent_count=-1,
         full_scan=True,
         train=False,
+        observation=None,
     ):
         try:
             return (
-                self.wait_for_arranged_agents(agent, full_scan=full_scan, train=train)
+                self.wait_for_arranged_agents(
+                    agent, full_scan=full_scan, train=train, observation=observation
+                )
                 is not None
             )
         except (MowerExit, AgentSelectionNotReady):
@@ -407,31 +474,39 @@ class BaseMixin:
                 logger.exception(e)
                 raise e
 
-    @timed_step("rewind")
-    def swipe_left(self, right_swipe, special_filter, *, train=False):
-        # 2500 像素的屏外拖动在 Android 会被裁到边缘，不能按请求距离或
-        # “右移三次只回拉两次”推算归零。回拉使用屏内路径，并读取实际结果。
-        full_scan = special_filter in (None, "ALL")
-        # 回拉途中不用逐页找人。计数只用于减少中途识别，不能作为到头凭据；
-        # 保留至少一次末端实测，短滑、排序后计数归零仍按实际页面处理。
-        bulk = min(max(right_swipe - 1, 0), 8)
-        for _ in range(bulk):
-            self.swipe_noinertia((650, 540), (1100, 0), interval=0)
-        page = self.wait_for_agent_page(full_scan=full_scan, train=train)
-        # 排序/筛选可能将计数归零却保留列表偏移；完整卡片也可能恰好
-        # 对齐在中间页。因此即使计数为零，也必须实际回拉确认。
-        for attempt in range(12 - bulk):
-            self.swipe_noinertia((650, 540), (1100, 0))
-            actual = self.wait_for_agent_page(
-                full_scan=full_scan, train=train, before=page
-            )
-            if self.same_agent_page(actual, page):
-                if train or actual[0][1][0][0] <= 650:
-                    return 0
-                raise AgentSelectionNotReady("回拉后列表仍被裁切且未推进，返回房间重试")
-            logger.debug(f"选人列表回拉第{attempt + 1}次，首张完整卡片：{actual[0]}")
-            page = actual
-        raise AgentSelectionNotReady("未能确认干员列表回到左端，返回房间重试")
+    @timed_step("filter_reset")
+    def swipe_left(
+        self, right_swipe, special_filter, *, train=False, return_page=False
+    ):
+        # 保留旧接口供选人调用；实际通过切换职业筛选复位，不再反向拖动。
+        # 即使计数为零也要真正切换，重复点击当前筛选不能证明列表已归零。
+        confirm_buttons = [
+            button
+            for resource in ("confirm_blue", "confirm_train")
+            if (button := self.find(resource))
+        ]
+        filter_was_closed = bool(confirm_buttons) and all(
+            button[0][0] > 1650 for button in confirm_buttons
+        )
+        profession = special_filter or "ALL"
+        temporary = (
+            next(label for label in self.profession_labels if label != "ALL")
+            if profession == "ALL"
+            else "ALL"
+        )
+        self.profession_filter(temporary)
+        self.profession_filter(profession)
+        if filter_was_closed:
+            # 只恢复明确读到的入口状态，不以职业推断侧栏是否展开。
+            self._close_profession_filter()
+        full_scan = profession == "ALL"
+        actual = self.wait_for_agent_page(full_scan=full_scan, train=train)
+        if not actual or (not train and actual[0][1][0][0] > 650):
+            raise AgentSelectionNotReady("筛选复位后列表仍被裁切，返回房间重试")
+        logger.debug(f"职业筛选已复位选人列表，首张完整卡片：{actual[0]}")
+        if return_page:
+            return 0, self.observe_agent_page(actual, full_scan=full_scan, train=train)
+        return 0
 
     def profession_filter(self, profession=None):
         """
@@ -448,17 +523,7 @@ class BaseMixin:
         else:
             logger.info("关闭职业筛选")
             self.profession_filter("ALL")
-            while (
-                (confirm_btn := self.find("confirm_blue")) is not None
-                and confirm_btn[0][0] < open_threshold
-            ) or (
-                (confirm_btn := self.find("confirm_train")) is not None
-                and confirm_btn[0][0] < open_threshold
-            ):
-                self.tap((1860, 60), 0.1)
-                retry += 1
-                if retry > 5:
-                    raise Exception("关闭职业筛选失败")
+            self._close_profession_filter()
             return
         x = 1918
         label_pos = [(x, 135 + i * 110) for i in range(9)]
@@ -483,6 +548,22 @@ class BaseMixin:
             retry += 1
             if retry > 5:
                 raise Exception("打开职业筛选失败")
+
+    def _close_profession_filter(self):
+        """仅收起筛选侧栏，保留当前职业。"""
+        retry = 0
+        open_threshold = 1650
+        while (
+            (confirm_btn := self.find("confirm_blue")) is not None
+            and confirm_btn[0][0] < open_threshold
+        ) or (
+            (confirm_btn := self.find("confirm_train")) is not None
+            and confirm_btn[0][0] < open_threshold
+        ):
+            self.tap((1860, 60), 0.1)
+            retry += 1
+            if retry > 5:
+                raise Exception("关闭职业筛选失败")
 
     def detect_room_number(self, img) -> int:
         score = []
@@ -547,49 +628,45 @@ class BaseMixin:
         return room
 
     def adjust_room(self, _room):
-        # 定义屏幕范围
-        screen_min_x = 0
-        screen_max_x = 1920
-
-        # 检查是否有点在屏幕范围内
-        any_point_in_view = any(screen_min_x <= p[0] <= screen_max_x for p in _room)
-
-        if any_point_in_view:
-            logger.debug(
-                f"At least one point of {_room} is within screen range [0, 1920]. No movement needed."
-            )
-            for i in range(4):
-                _room[i, 0] = max(_room[i, 0], 0)
-                _room[i, 0] = min(_room[i, 0], self.recog.w)
-                _room[i, 1] = max(_room[i, 1], 0)
-                _room[i, 1] = min(_room[i, 1], self.recog.h)
-            return _room
-
-        # 如果所有点都超出屏幕范围，则计算需要的移动距离
-        min_x = min(p[0] for p in _room)
-        max_x = max(p[0] for p in _room)
+        """只返回当前画面可点击的矩形；拖动后交由下一次尝试重新定位。"""
+        rectangle = np.array(_room, dtype=float, copy=True)
+        width, height = self.recog.w, self.recog.h
+        if (
+            rectangle.shape != (4, 2)
+            or not np.isfinite(rectangle).all()
+            or width <= 1
+            or height <= 1
+        ):
+            self.sleep(0.5)
+            return None
+        min_x, min_y = rectangle.min(axis=0)
+        max_x, max_y = rectangle.max(axis=0)
+        if min_x >= max_x or min_y >= max_y:
+            self.sleep(0.5)
+            return None
+        if max(min_x, 0) < min(max_x, width - 1) and max(min_y, 0) < min(
+            max_y, height - 1
+        ):
+            rectangle[:, 0] = np.clip(rectangle[:, 0], 0, width - 1)
+            rectangle[:, 1] = np.clip(rectangle[:, 1], 0, height - 1)
+            return rectangle
 
         dx = 0
-        start = (960, 540)
-        if min_x < screen_min_x:
-            # 左边超出，向右移动
-            dx = screen_min_x - min_x
-            logger.debug(f"Moving right by {dx} to bring room into view.")
-        elif max_x > screen_max_x:
-            # 右边超出，向左移动
-            dx = screen_max_x - max_x
-            logger.debug(f"Moving left by {-dx} to bring room into view.")
-
-        # 如果需要移动，则移动视图
-        if dx != 0:
-            movement = (dx, 0)  # 仅水平移动
-            self.swipe_noinertia(start, movement, interval=0.5)
-            # 更新 _room 的所有点位置
-            for i in range(len(_room)):
-                _room[i][0] += dx
-
-        # 返回修正后的 _room
-        return _room
+        if max_x <= 0:
+            dx = -min_x
+        elif min_x >= width - 1:
+            dx = width - 1 - max_x
+        # 水平无惯性拖动会先向下偏移40像素，整条路径都应留在屏内。
+        if dx and height > 40:
+            start = (width // 2, min(height // 2, height - 41))
+            end_x = int(np.clip(start[0] + dx, 0, width - 1))
+            if end_x != start[0]:
+                logger.debug("房间在屏外，拖动地图后重新识别实际位置")
+                self.swipe_noinertia(start, (end_x - start[0], 0), interval=0.5)
+                return None
+        # 纵向不可见或没有有效水平路径时，不把边缘线当成房间点击。
+        self.sleep(0.5)
+        return None
 
     def enter_room(self, room):
         """从基建首页进入房间"""
@@ -601,9 +678,11 @@ class BaseMixin:
                 elif pos := self.find("control_central"):
                     _room = segment.base(self.recog.img, pos)[room]
                     logger.debug(
-                        f"进入房间 {room}，第{enter_times + 1}轮第{retry_times + 1}次点击"
+                        f"进入房间 {room}，第{enter_times + 1}轮第{retry_times + 1}次尝试"
                     )
-                    self.tap(self.adjust_room(_room))
+                    visible_room = self.adjust_room(_room)
+                    if visible_room is not None:
+                        self.tap(visible_room)
                 elif self.detect_room() == room:
                     return
                 else:

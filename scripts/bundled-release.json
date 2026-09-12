@@ -1,10 +1,15 @@
 {
   "mower": {
     "tag": "v4.1.6-alpha.5",
-    "revision": "f1156e7e911bc354b4e744dedca30b0d33b7f556",
+    "revision": "0bcdf18c469e76d7a7928c43433a0cfcbe547d04",
     "source": "bundled",
-    "note": "手机测试整合快照 f1156e7e，基于 alpha d4973416，含待验证 PR #1037/#1038；未发布上游新版本",
-    "branch": "alpha"
+    "note": "基于最新 alpha 2f566ee8（已合入 #1038，包括保存失败时恢复状态的修复），额外整合尚未合并的 PR #1037（ae3baa8d）；保留选中后的排序刷新，生产房未翻页且完整名单正确时省略重复筛选复位，指定职业复位后仍恢复原职业",
+    "branch": "alpha",
+    "base_revision": "2f566ee81a2fa467b69a2c28b09efa36e5f0606c",
+    "included_prs": [
+      1037,
+      1038
+    ]
   },
   "maa": {
     "tag": "v6.17.5"
