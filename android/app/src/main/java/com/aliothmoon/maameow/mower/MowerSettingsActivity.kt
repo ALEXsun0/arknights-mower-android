@@ -127,7 +127,7 @@ class MowerSettingsActivity : Activity() {
             content.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         }
         group("屏幕与唤醒", listOf(
-            Triple("wake_on_launch", "启动游戏或 MAA 时唤醒手机", "启动前检查并唤醒屏幕；通常可直接熄屏运行。"),
+            Triple("wake_on_launch", "启动游戏或 MAA 时唤醒手机", "启动前检查并唤醒屏幕；部分手机息屏会限制游戏渲染。"),
             Triple("dismiss_keyguard", "自动解锁手机", "按本机设置使用滑动、录制操作或 PIN；失败后停止尝试。"),
             Triple("keep_screen_on", "查看 Mower 时保持亮屏", "仅在本应用前台生效，切换到其他应用后按系统设置熄屏。")
         ))
@@ -144,7 +144,7 @@ class MowerSettingsActivity : Activity() {
             Triple("resolution_720p", "后台游戏使用 720p", "下次连接生效；Mower 截图转换为 1080p。默认 1080p 识别更清晰。"),
             Triple("fps_monitor", "监测后台游戏帧率", "优先使用系统帧率回调，旧系统使用合成帧计数。"),
             Triple("low_fps_alert", "低帧率提醒", "持续低帧率时每轮提醒一次，静止画面不按掉线处理。"),
-            Triple("disconnect_stop", "游戏意外退出时停止任务", "工作期间确认游戏进程退出后，停止 Mower 与 MAA 并通知。")
+            Triple("disconnect_stop", "游戏无法恢复时停止任务", "工作期间优先按保活设置恢复游戏；恢复失败或后台连接断开时停止 Mower 与 MAA 并通知。")
         ))
         group("任务与熄屏", listOf(
             Triple("sleep_when_idle", "本轮任务完成后锁屏休眠", "按 Mower 的工作与等待状态判断，不另建一套排班。"),
@@ -153,6 +153,7 @@ class MowerSettingsActivity : Activity() {
             Triple("hardware_screen_off", "屏保期间关闭物理屏幕", "保持后台游戏运行；长按屏幕、打开本应用或通知栏可恢复。")
         ))
         group("后台保活", listOf(
+            Triple("keep_game_alive", "任务期间自动恢复游戏", "游戏退出后按需拉起，10 分钟最多 3 次；空闲主动退出、停止任务和手动操作期间不拉起。不能解除系统息屏限帧。"),
             Triple("keep_cpu_awake", "服务运行期间保持 CPU 唤醒", "帮助熄屏后继续调度；关闭可降低耗电，但系统休眠可能使任务延迟。"),
             Triple("restart_on_boot", "手机重启后恢复服务", "仍需后台权限可用；只恢复服务，任务由 Mower 自身配置决定。"),
             Triple("root_backend", "直接使用 Root 启动后台", "适用于已 Root 手机；下次启动服务生效，会请求 su 授权。默认使用 Shizuku / Sui。")

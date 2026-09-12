@@ -10,7 +10,7 @@ class AndroidSystemSettings(private val context: Context) {
     companion object {
         val defaults = linkedMapOf("mute_game" to false, "preview_sound" to true,
             "force_fullscreen" to false, "recover_game" to true, "wake_on_launch" to false,
-            "dismiss_keyguard" to false, "keep_cpu_awake" to true, "keep_screen_on" to false,
+            "dismiss_keyguard" to false, "keep_cpu_awake" to true, "keep_screen_on" to false, "keep_game_alive" to true,
             "auto_pip" to false, "show_touch" to false, "resolution_720p" to false,
             "external_device_alerts" to false, "fps_monitor" to true, "low_fps_alert" to true, "disconnect_stop" to true,
             "sleep_when_idle" to false, "preserve_screen_on" to true,

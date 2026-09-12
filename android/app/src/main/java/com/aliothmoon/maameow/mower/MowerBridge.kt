@@ -24,6 +24,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     private val audioLedger = context.getSharedPreferences("game-audio-recovery", 0)
     private var prepared = false
     private var expectedGameRunning = false
+    private val gameRecovery = GameRecoveryPolicy()
+    private var nextGameProbe = 0L
     private var recoveredBinder: android.os.IBinder? = null
     private var systemError: String? = null
 
@@ -179,6 +181,37 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     }
     @Synchronized fun sleepPhone(): Int = system(remote(), "sleep") as Int
 
+    /** Only the task's next capture may recover an intentional solver exit.
+     * The periodic monitor must respect idle exits and never launch from idle. */
+    @Synchronized fun recoverTaskGame(captureDemand: Boolean = false): Boolean {
+        if (!GameRecoveryPolicy.eligible(settings.enabled("keep_game_alive"),
+                !closed && !MowerService.stopping && MowerService.active,
+                MowerService.manual || MowerService.unlocking, expectedGameRunning, captureDemand)) return false
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (captureDemand && now < nextGameProbe) return false
+        val s = ensurePrepared()
+        val alive = s.isAppAlive(packageName) == 1
+        if (alive && s.isAppOnVirtualDisplay(packageName)) { nextGameProbe = now + 5000; return false }
+        if (alive && !settings.enabled("recover_game")) return false
+        // Do not interrupt a live MAA controller and accidentally report its task as completed.
+        val maa = JSONObject(s.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result")
+        check(!maa.optBoolean("running")) { "MAA 执行期间游戏退出，请停止任务后重新启动" }
+        if (!captureDemand && JSONObject(NativeRuntimeClient.call("/status")).optString("status") != "working") return false
+        // If recovery fails, the monitor must still know a working task needs the game.
+        expectedGameRunning = true
+        check(gameRecovery.acquire(now)) { "游戏短时间内反复退出，已限制自动恢复，请查看诊断日志" }
+        if (settings.enabled("wake_on_launch")) wake(s, settings.enabled("dismiss_keyguard"))
+        check(s.mowerGame(packageName, true)) { "后台游戏自动恢复失败" }
+        expectedGameRunning = true
+        nextGameProbe = android.os.SystemClock.elapsedRealtime() + 5000
+        applyAudio(s)
+        val message = "任务需要游戏画面，已自动恢复后台游戏（10 分钟最多 3 次）"
+        AndroidSystemSettings.lastAction = message
+        android.util.Log.i("Mower", message)
+        runCatching { java.io.File(context.filesDir, "python.log").appendText("\n${java.time.Instant.now()} $message\n") }
+        return true
+    }
+
     private fun status(): JSONObject {
         val s = RemoteServiceManager.getInstanceOrNull()
         val maa = runCatching { JSONObject(s!!.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }.getOrNull()
@@ -264,6 +297,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         val s = ensurePrepared()
         return when (method) {
             "screenshot" -> {
+                if (p.optBoolean("require_game")) recoverTaskGame(captureDemand = true)
                 val fd = s.mowerFrame() ?: error("后台画面尚未就绪")
                 val bytes = ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
                 Base64.encodeToString(bytes, Base64.NO_WRAP)
@@ -274,6 +308,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                 if (method == "launch" && settings.enabled("wake_on_launch")) wake(s, settings.enabled("dismiss_keyguard"))
                 check(s.mowerGame(packageName, method == "launch")) { "游戏启动或关闭失败" }
                 expectedGameRunning = method == "launch"
+                nextGameProbe = 0L
                 if (method == "launch") applyAudio(s) else restoreAudio(s)
                 true
             }

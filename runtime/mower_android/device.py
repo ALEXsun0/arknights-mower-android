@@ -25,9 +25,15 @@ class AndroidDevice:
         self.bridge.call('prepare', package=config.conf.APPNAME)
 
     def launch(self):
+        from arknights_mower.utils.log import logger
+        logger.info('明日方舟，启动！（Android 后台显示）')
         self.bridge.call('launch')
 
     def exit(self):
+        import traceback
+        from arknights_mower.utils.log import logger
+        logger.info('退出游戏（Android 后台显示）')
+        logger.debug('device.exit 调用来源:\n' + ''.join(traceback.format_stack()[:-1]))
         self.bridge.call('exit_game')
 
     def return_home(self):
@@ -68,11 +74,16 @@ class AndroidDevice:
         import cv2
         import numpy as np
         from arknights_mower.utils import config
+        from arknights_mower.utils.csleep import MowerExit
+        if config.stop_mower.is_set():
+            raise MowerExit
         delay = config.conf.screenshot_interval / 1000 - (datetime.now() - config.screenshot_time).total_seconds()
         if delay > 0:
             time.sleep(delay)
         started = time.monotonic()
-        png = base64.b64decode(self.bridge.call('screenshot'), validate=True)
+        if config.stop_mower.is_set():
+            raise MowerExit
+        png = base64.b64decode(self.bridge.call('screenshot', require_game=True), validate=True)
         bgr = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
         if bgr is None or bgr.shape[:2] != (1080, 1920):
             raise RuntimeError('后台画面不是 1920×1080，请重新启动后台游戏')

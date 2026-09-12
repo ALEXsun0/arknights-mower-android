@@ -39,11 +39,27 @@ class MowerRuntimeMonitor(private val context: Context) {
             val missing = expected && (game?.optBoolean("alive") != true)
             missingSamples = if (missing) missingSamples + 1 else 0
             val disconnected = RemoteServiceManager.getInstanceOrNull() == null
+            if (missingSamples >= 2 && !disconnected) {
+                // A solver may intentionally close the game after our first sample.
+                val latest = engine.gameState()
+                if (!latest.optBoolean("expected_running") || latest.optBoolean("alive")) missingSamples = 0
+            }
+            if (missingSamples >= 2 && !disconnected && settings.enabled("keep_game_alive")) {
+                runCatching { engine.recoverTaskGame() }.onSuccess { recovered ->
+                    if (recovered) missingSamples = 0
+                }.onFailure {
+                    AndroidSystemSettings.lastAction = it.message ?: "后台游戏自动恢复失败"
+                }
+            }
             if (settings.enabled("disconnect_stop") && (missingSamples >= 2 || disconnected)) {
+                if (JSONObject(NativeRuntimeClient.call("/status")).optString("status") != "working") {
+                    missingSamples = 0
+                    return
+                }
                 NativeRuntimeClient.stopTasks()
                 runCatching { RemoteServiceManager.getInstanceOrNull()?.maaRpc("{\"method\":\"maa_stop\"}") }
                 MowerScreenSaver.hide()
-                val message = if (disconnected) "Shizuku 连接中断，已停止任务，请恢复连接后手动启动。" else "游戏进程意外退出，已停止任务，请检查游戏后手动启动。"
+                val message = if (disconnected) "Shizuku 连接中断，已停止任务，请恢复连接后手动启动。" else "游戏进程退出且未能恢复，已停止任务，请检查游戏后手动启动。"
                 AndroidSystemSettings.lastAction = message
                 MowerNotifications.event(context, message, true)
                 externalAlert(if (disconnected) "backend_exit" else "game_exit")
