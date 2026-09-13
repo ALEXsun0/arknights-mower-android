@@ -91,7 +91,8 @@ def timed_room(function):
             _current.reset(token)
             from arknights_mower.utils.log import logger
 
-            logger.info(
+            # 保留后台诊断数据，不推送到 INFO 级别的前端运行日志。
+            logger.debug(
                 "换班耗时统计 "
                 + json.dumps(timing.report(room, outcome), ensure_ascii=False)
             )

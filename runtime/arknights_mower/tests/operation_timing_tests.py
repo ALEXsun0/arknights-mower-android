@@ -22,7 +22,7 @@ def test_error_closes_step_and_clears_room_context(monkeypatch):
     from arknights_mower.utils.log import logger
 
     reports = []
-    monkeypatch.setattr(logger, "info", reports.append)
+    monkeypatch.setattr(logger, "debug", reports.append)
 
     @timing.timed_step("names")
     def fail():

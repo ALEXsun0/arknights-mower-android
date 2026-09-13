@@ -39,6 +39,10 @@ def state():
 
 
 def save(value):
+    value = dict(value)
+    generation = os.environ.get('MOWER_APK_GENERATION')
+    if generation:
+        value.setdefault('apk_generation', generation)
     root = folder()
     temp = root/'active.new'; temp.write_text(json.dumps(value)); temp.replace(root/'active.json')
 
@@ -99,7 +103,13 @@ def install(package):
 
 @serialized
 def select_source(bundled):
-    current = state(); ident = current.get('id')
+    current = state()
+    generation = os.environ.get('MOWER_APK_GENERATION')
+    if generation and current.get('apk_generation') != generation:
+        previous = current.get('previous') if current.get('pending') or current.get('booting') else current.get('id')
+        current = {'id': None, 'previous': previous, 'pending': True, 'apk_generation': generation}
+        save(current)
+    ident = current.get('id')
     # An earlier launch which never served the WebUI is rolled back on restart.
     if current.get('booting'):
         ident = current.get('previous'); current = {'id':ident, 'rollback':True}
@@ -109,6 +119,8 @@ def select_source(bundled):
             current['booting'] = True; save(current)
         os.environ['MOWER_ACTIVE_ID'] = ident
         return folder()/ident/'mower'
+    if current.get('pending'):
+        current['booting'] = True; save(current)
     os.environ.pop('MOWER_ACTIVE_ID', None)
     return bundled
 

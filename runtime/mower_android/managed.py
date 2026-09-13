@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from mower_android.backup_cleanup import component_transaction
@@ -33,7 +34,15 @@ def screenshot_hours():
 
 
 def prepare_files():
-    if (MAA_PATH / '.mower-android.json').is_file(): return
+    pending = COMPONENT.with_name('maa-bundled-pending')
+    generation = pending.read_text().strip() if pending.is_file() else None
+    marker = MAA_PATH / '.apk-bundle-generation'
+    if (MAA_PATH / '.mower-android.json').is_file():
+        if generation is None:
+            return
+        if marker.is_file() and marker.read_text() == generation:
+            pending.unlink()
+            return
     expected = COMPONENT.with_suffix('.sha256').read_text().strip()
     if hashlib.sha256(COMPONENT.read_bytes()).hexdigest() != expected: raise RuntimeError('MAA 组件校验失败')
     stage = MAA_PATH.with_name('maa-install'); shutil.rmtree(stage, ignore_errors=True); stage.mkdir()
@@ -45,14 +54,19 @@ def prepare_files():
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info) as source, path.open('wb') as output: shutil.copyfileobj(source, output)
+    if generation is not None:
+        (stage / '.apk-bundle-generation').write_text(generation)
     if MAA_PATH.exists():
-        backup = MAA_PATH.with_name('maa.bootstrap-old'); shutil.rmtree(backup, ignore_errors=True)
-        MAA_PATH.rename(backup)
-        try: stage.rename(MAA_PATH)
-        except Exception:
-            backup.rename(MAA_PATH); raise
-        shutil.rmtree(backup)
+        # Settings survive; cached hot resources must not override APK resources.
+        for name in ('config', 'config.json'):
+            source = MAA_PATH / name
+            if source.is_dir(): shutil.copytree(source, stage / name, dirs_exist_ok=True)
+            elif source.is_file(): shutil.copy2(source, stage / name)
+        from arknights_mower.utils.maa_update import replace_with_backup
+        with tempfile.TemporaryDirectory(prefix='.maa-bundle-', dir=MAA_PATH.parent) as work:
+            replace_with_backup(stage, MAA_PATH, Path(work))
     else: stage.rename(MAA_PATH)
+    if generation is not None: pending.unlink()
 
 
 def normalize(data):

@@ -189,6 +189,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         self.global_plan = {}
         self.local_operation_followup_time = None
         self.restart_after_mood_read = False
+        self.mastery_restart_check_pending = False
 
     def find_next_task(
         self,
@@ -221,6 +222,35 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 and current_party_time <= datetime.now()
             ):
                 self.op_data.party_time = value
+
+    def set_detected_party_time(self, value):
+        """写入会客室界面确认过的线索交流状态。
+
+        ``party_time`` 的普通 setter 会保留尚未到期的旧值，避免开始刷新时的
+        临时清空让依赖它的副表误切换。界面读取结果不是临时状态：读不到倒计时
+        表示交流已经结束，必须覆盖旧预测，哪怕旧预测时间仍在未来。
+        """
+        self._party_time = value
+        if self.op_data is not None:
+            self.op_data.party_time = value
+
+    def read_party_time(self):
+        """读取线索交流结束时间；空倒计时表示交流已经结束。"""
+        remaining = self.read_time(((1768, 438), (1902, 480)), None)
+        if remaining is None:
+            return None
+        return datetime.now() + timedelta(seconds=remaining)
+
+    def read_operator_time(self, room, index, cord):
+        """读取干员倒计时；空值按非工作状态或心情耗尽处理。"""
+        remaining = self.read_time(cord, None)
+        if remaining is None:
+            logger.info(
+                f"{self.translate_room(room)} {index + 1}号位未显示干员倒计时，"
+                "按非工作状态或心情耗尽处理"
+            )
+            return datetime.now()
+        return datetime.now() + timedelta(seconds=remaining)
 
     def run(self) -> None:
         """
@@ -789,6 +819,10 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 if not self.no_pending_task(1):
                     self.skip(["planned", "todo_task", "collect_notification"])
                 else:
+                    self._check_mastery_after_restart()
+                    if not self.no_pending_task(1):
+                        self.skip(["planned", "todo_task", "collect_notification"])
+                        return True
                     mood_result = self.agent_get_mood(skip_dorm=True)
                     if self.restart_after_mood_read:
                         self.restart_after_mood_read = False
@@ -878,6 +912,53 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 return translation_func(parts)
 
         return room
+
+    def _check_mastery_after_restart(self):
+        """清缓存后核对一次训练室；读取失败交给后续原有流程处理。"""
+        if not getattr(self, "mastery_restart_check_pending", False):
+            return
+        if not config.conf.enable_mastery:
+            self.mastery_restart_check_pending = False
+            return
+        from arknights_mower.solvers.mastery_reader import (
+            _can_adopt_expiry,
+            _maybe_recover_swap,
+            read_room_state,
+        )
+        from arknights_mower.utils.mastery_db import get_active_plan
+
+        plan = get_active_plan()
+        if plan is None or plan["status"] != "training":
+            self.mastery_restart_check_pending = False
+            return
+        logger.info("缓存清零后主动核对训练室，恢复专精中途换人任务")
+        self.mastery_restart_check_pending = False
+        try:
+            room = read_room_state(self)
+            if (
+                room is None
+                or room.read_failed
+                or (
+                    room.state != "empty"
+                    and (not room.panel.operator_name or not room.panel.skill_name)
+                )
+            ):
+                logger.warning("重启后训练室状态未读清，跳过本次换人任务恢复")
+                return
+            # 启动检查只恢复专一/专二的协助位任务；收取、开训和合成仍走原有入口。
+            if (
+                room.state == "training"
+                and room.panel.mastery_tier in (1, 2)
+                and room.panel.countdown is not None
+                and _can_adopt_expiry(plan, room)
+            ):
+                _maybe_recover_swap(self, plan, room)
+        except MowerExit:
+            raise
+        except Exception as e:
+            logger.warning(f"重启后训练室核对失败，跳过本次换人任务恢复: {e}")
+        finally:
+            self.back_to_infrastructure()
 
     def agent_get_mood(self, skip_dorm=False, force=False):
         # 暂时规定纠错只适用于主班表
@@ -2466,10 +2547,9 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         if pos := self.find("clue/check_party"):
                             logger.info("tap")
                             self.tap(pos)
-                        self.party_time = self.double_read_time(
-                            ((1768, 438), (1902, 480))
-                        )
-                        if self.party_time > datetime.now():
+                        party_time = self.read_party_time()
+                        if party_time is not None and party_time > datetime.now():
+                            self.set_detected_party_time(party_time)
                             logger.info(f"线索交流结束时间：{self.party_time}")
                             if not find_next_task(
                                 self.tasks,
@@ -2483,8 +2563,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                                     )
                                 )
                         else:
-                            self.party_time = None
-                            logger.info("线索交流未开启")
+                            self.set_detected_party_time(None)
+                            logger.info("线索交流未开启或已结束")
+                        # party_time 是副表表达式可引用的状态。界面确认状态后立即
+                        # 重算，不能等下一轮调度，否则跃跃等会客室副表不会及时触发。
+                        self.backup_plan_solver()
                         ctm.complete("party_time")
                     else:
                         # 点击左下角，关闭进驻信息，进入线索界面
@@ -3130,6 +3213,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         right_swipe = 0
         max_swipe = 50
         observation = None
+        previous_page = None
         while not found:
             sel, ret = self.scan_agent(
                 [ope] if ope != "Free" else self.get_free_list([]),
@@ -3144,6 +3228,13 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 break
             if right_swipe >= max_swipe:
                 raise AgentSelectionNotReady("训练干员搜索达到上限，返回房间重试")
+            if (
+                not self.low_frame_rate_mode
+                and right_swipe >= 3
+                and ret == previous_page
+            ):
+                raise AgentSelectionNotReady("训练干员列表已到末尾，返回房间重试")
+            previous_page = ret
             moved, observation = self.swipe_agent_page(
                 ret, [ope], train=True, return_page=True
             )
@@ -3310,7 +3401,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                             self.recog.w * position[pos][0],
                             self.recog.h * position[pos][1],
                         ),
-                        interval=0.2,
+                        interval=0.2 if self.low_frame_rate_mode else 0,
                     )
             agent = [x for x in agents if x not in exists]
         logger.info(f"安排干员 ：{agent}")
@@ -3338,6 +3429,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         last_special_filter = "ALL"
         start_time, finish_time = datetime.now(), datetime.now()
         observation = None
+        previous_page = None
         while len(agent) > 0:
             if retry_count > 1:
                 raise Exception("到达最大尝试次数 1次")
@@ -3424,6 +3516,27 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     self.profession_filter("ALL")
                     right_swipe = 0
                     last_special_filter = "ALL"
+                if (
+                    not self.low_frame_rate_mode
+                    and agent[0] in self.op_data.operators
+                    and self.op_data.operators[agent[0]].is_resting()
+                    and fast_mode
+                    and is_dorm
+                    and agent[0] != "阿米娅"
+                    and agent[0] not in self.choose_error
+                ):
+                    # 普通设备保留休息干员的末页快路；低帧率设备逐页确认。
+                    swipe_map = [20, 3, 5, 3, 3, 3, 3, 3, 3]
+                    right_swipe = swipe_map[
+                        self.profession_labels.index(last_special_filter)
+                    ]
+                    for _ in range(right_swipe):
+                        self.swipe_noinertia(
+                            (0.8 * self.recog.w, 0.5 * self.recog.h),
+                            (-1900, 0),
+                            interval=0,
+                        )
+                    self.sleep(1)
             changed, ret = self.scan_agent(
                 agent,
                 full_scan=last_special_filter == "ALL",
@@ -3437,6 +3550,14 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 siege = False
             else:
                 index_change = False
+                if (
+                    not self.low_frame_rate_mode
+                    and right_swipe >= 3
+                    and ret == previous_page
+                ):
+                    self.choose_error.add(agent[0])
+                    raise AgentSelectionNotReady("干员列表已到末尾，返回房间重试")
+                previous_page = ret
                 moved, observation = self.swipe_agent_page(
                     ret, agent, full_scan=last_special_filter == "ALL", return_page=True
                 )
@@ -3463,6 +3584,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             # 替换组小于20才休息，防止进入就满心情进行网络连接
             free_list = self.get_free_list(agents)
             observation = None
+            previous_page = None
             while free_num:
                 selected_name, ret = self.scan_agent(
                     free_list,
@@ -3483,6 +3605,15 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         raise AgentSelectionNotReady(
                             "空闲干员搜索达到上限，返回房间重试"
                         )
+                    if (
+                        not self.low_frame_rate_mode
+                        and right_swipe >= 3
+                        and ret == previous_page
+                    ):
+                        raise AgentSelectionNotReady(
+                            "空闲干员列表已到末尾，返回房间重试"
+                        )
+                    previous_page = ret
                     moved, observation = self.swipe_agent_page(
                         ret,
                         free_list,
@@ -3500,9 +3631,9 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         verified = False
         if len(agents) != 1:
             self.switch_arrange_order("技能", room)
-            # 未翻页时先读取完整已选名单；校验成功无需再切筛选复位。
+            # 未翻页时先定位目标卡片，名字匹配后无需再切筛选复位。
             exists = None
-            if right_swipe == 0 and room.startswith("room"):
+            if right_swipe == 0:
                 try:
                     exists = self.wait_for_arranged_agents(agents, ordered=False)
                 except AgentSelectionNotReady:
@@ -3523,20 +3654,21 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     click_order.append(exists.index(a))
                 else:
                     raise Exception("检测到干员选择错误，重新选择")
-            if click_order and exists != agents:
-                # 清空
+            if click_order:
+                # 名字前缀相同不能证明卡片已选中：漏点的目标可能恰好排在
+                # 已选干员之后。保留多人清空重选，再刷新排序并校验。
                 self.tap((self.recog.w * 0.38, self.recog.h * 0.95), interval=0.5)
                 for p_idx in click_order:
                     x = self.recog.w * position[p_idx][0]
                     y = self.recog.h * position[p_idx][1]
-                    self.tap((x, y), interval=0.2)
+                    self.tap((x, y), interval=0.2 if self.low_frame_rate_mode else 0)
             else:
-                # 刚刚已连续确认完整名单与顺序，且之后未操作，无需再次切换排序。
+                # 空目标没有需要重排和校验的卡片。
                 verified = True
         if not verified:
             logger.debug("验证干员选择..")
             self.switch_arrange_order("技能", room)
-            if right_swipe == 0 and room.startswith("room"):
+            if right_swipe == 0:
                 try:
                     verified = self.verify_agent(agents, room)
                 except AgentSelectionNotReady:
@@ -3724,8 +3856,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     data["time"] = datetime.now()
                 else:
                     logger.debug(f"开始记录时间:{room},{i}")
-                    # 房间干员倒计时随行号变化；订单模板只识别无人机界面的固定区域。
-                    data["time"] = self.double_read_time(time_p[i])
+                    data["time"] = self.read_operator_time(room, i, time_p[i])
                 self.op_data.refresh_dorm_time(room, i, data)
                 logger.debug(f"停止记录时间:{str(data)}")
             result.append(data)

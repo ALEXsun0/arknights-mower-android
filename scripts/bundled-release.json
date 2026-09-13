@@ -1,14 +1,17 @@
 {
   "mower": {
     "tag": "v4.1.6-alpha.5",
-    "revision": "1c5b788a0cd1fad7ede5bd9e44880335d0c59d07",
+    "revision": "f9255384eedc0dff808b795ff8b51d8419675fdc",
     "source": "bundled",
-    "note": "基于 alpha dafe02b2（含 #1046、#1047、#1048），保留 #1037 选人优化；用于竖屏适配验证",
+    "note": "基于最新 alpha 228ef978，合入 #1037 最新提交 e02562bb；包含专精任务重启恢复、旧缓冲配置迁移与滑动反馈优化",
     "branch": "alpha",
-    "base_revision": "dafe02b28522825d2c01a12101909b592931559f",
+    "base_revision": "228ef978cedc11b8c64b541fff1de0a9f5845391",
     "included_prs": [
       1037
-    ]
+    ],
+    "pr_revisions": {
+      "1037": "e02562bb8511f50867cd46b19f8d2a931ab63206"
+    }
   },
   "maa": {
     "tag": "v6.17.5"

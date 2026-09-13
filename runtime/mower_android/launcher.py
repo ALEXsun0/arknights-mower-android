@@ -74,7 +74,7 @@ def main():
         supplied = request.args.get('token', '')
         if supplied and hmac.compare_digest(supplied, token):
             response.set_cookie('mower_access', token, httponly=True, samesite='Strict')
-        if response.status_code == 200 and request.path == '/' and request.environ.get('HTTP_TOKEN') == token:
+        if response.status_code == 200 and request.path in ('/', '/software-update/info') and request.environ.get('HTTP_TOKEN') == token:
             mower_package.mark_ready()
         response.headers['Referrer-Policy'] = 'no-referrer'
         return response

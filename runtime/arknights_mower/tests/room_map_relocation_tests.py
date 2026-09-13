@@ -56,7 +56,7 @@ def test_visible_rectangle_is_clipped_copy_without_drag(monkeypatch, source, exp
 
 @pytest.mark.parametrize("side", [-1, 1])
 @pytest.mark.parametrize("distance", [500, 100000])
-@pytest.mark.parametrize("size", [(1920, 1080), (800, 480), (120, 41)])
+@pytest.mark.parametrize("size", [(1920, 1080), (800, 480), (120, 101)])
 def test_offscreen_room_drags_entire_path_inside_screen_without_predicted_click(
     monkeypatch, side, distance, size
 ):
@@ -70,7 +70,7 @@ def test_offscreen_room_drags_entire_path_inside_screen_without_predicted_click(
     solver.device.swipe_ext.assert_called_once()
     points = solver.device.swipe_ext.call_args.args[0]
     assert all(0 <= x < width and 0 <= y < height for x, y in points)
-    assert points[1][1] - points[0][1] == 40
+    assert points[1][1] - points[0][1] == 100
     assert (points[-1][0] - points[0][0]) * side < 0
     solver.sleep.assert_called_once_with(0.5)
     solver.recog.update.assert_called_once()
@@ -84,6 +84,7 @@ def test_offscreen_room_drags_entire_path_inside_screen_without_predicted_click(
         (rectangle(100, 300, 100, 500), (1920, 1080)),
         (rectangle(100, 300, 500, 300), (1920, 1080)),
         (rectangle(-300, 10, -100, 30), (1920, 40)),
+        (rectangle(-300, 10, -100, 30), (1920, 100)),
         (rectangle(100, 20, 300, 40), (1, 1080)),
         (np.array([[np.nan, 10]] * 4), (1920, 1080)),
         (np.zeros((2, 2)), (1920, 1080)),

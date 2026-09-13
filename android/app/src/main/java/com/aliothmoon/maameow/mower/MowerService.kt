@@ -102,22 +102,14 @@ class MowerService : Service() {
                 lanEnabled = network.getBoolean("lan", false)
                 webConnection.availablePort(lanEnabled)
                 startupStage("正在检查 Python 运行环境")
-                installRuntime()
+                val apkGeneration = "${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}:${packageManager.getPackageInfo(packageName, 0).lastUpdateTime}"
+                val bundled = BundledComponents(filesDir, apkGeneration)
+                installRuntime(bundled)
                 startupStage("正在检查 Python 网络设置")
                 runtimeNetwork = RuntimeNetwork(this@MowerService, File(filesDir, "rootfs"))
                 startupReport += runtimeNetwork!!.start()
                 startupStage("正在准备 MAA 组件")
-                val maaData = File(filesDir, "mower-data").apply { mkdirs() }
-                val componentFormat = File(maaData, "maa-component-format")
-                if (!File(maaData, "maa-component.zip").exists() || !componentFormat.exists()) {
-                    for (name in listOf("maa-component.zip", "maa-component.sha256")) assets.open(name).use { input -> File(maaData, name).outputStream().use { input.copyTo(it) } }
-                    File(maaData, "maa/.mower-android.json").delete()
-                    componentFormat.writeText("ncnn-v1")
-                }
-                check(File(maaData, "maa-component.zip").length() > 0 &&
-                    runCatching { File(maaData, "maa-component.sha256").readText().trim().matches(Regex("[a-f0-9]{64}")) }.getOrDefault(false)) {
-                    "MAA 组件或校验文件不完整，请查看诊断日志"
-                }
+                if (bundled.prepareMaa { assets.open(it) }) startupReport += "已切换到此 APK 内置 MAA，首次正常任务后清理旧核心备份"
                 ensureActive()
                 // Recheck after the potentially long installation; another app may have bound it.
                 val savedConnection = WebConnectionPreferences.resolve(network, ::secret)
@@ -149,7 +141,7 @@ class MowerService : Service() {
                 val args = listOf(File(native, "libproot.so").path, "--kill-on-exit", "-0", "-r", root.path,
                     "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${data.path}:/mower-data", "-w", "/mower",
                     "/usr/bin/env", "-i", "HOME=/mower-data", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TZ=${java.util.TimeZone.getDefault().id}",
-                    "MOWER_ANDROID=1", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
+                    "MOWER_ANDROID=1", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
                     "MOWER_BRIDGE_TOKEN=$bridgeToken", "MOWER_WEB_TOKEN=$webToken", "MOWER_WEB_PORT=$webPort",
                     "OPENBLAS_NUM_THREADS=2", "OMP_NUM_THREADS=2", "PYTHONUNBUFFERED=1", "/usr/local/bin/python", "-m", "mower_android.launcher")
                 val builder = ProcessBuilder(args).redirectErrorStream(true)
@@ -209,7 +201,7 @@ class MowerService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun installRuntime() {
+    private fun installRuntime(bundled: BundledComponents) {
         val root = File(filesDir, "rootfs")
         val stamp = assets.open("python-runtime.sha256").bufferedReader().use { it.readText().trim() }
         val marker = File(root, ".mower-runtime")
@@ -218,7 +210,7 @@ class MowerService : Service() {
         if (!root.exists() && backup.exists()) check(backup.renameTo(root)) { "恢复上次运行环境失败，请检查存储" }
         val missing = StartupChecks.incompleteRuntime(root)
         val rejected = File(filesDir, "rootfs-rejected-version")
-        if (missing.isEmpty() && (runCatching { marker.readText() == stamp }.getOrDefault(false) ||
+        if (!bundled.refreshMower() && missing.isEmpty() && (runCatching { marker.readText() == stamp }.getOrDefault(false) ||
                 runCatching { rejected.readText() == stamp }.getOrDefault(false))) return
         if (missing.isNotEmpty() && marker.exists()) startupReport += "运行环境不完整，自动修复：${missing.joinToString()}"
         scope.ensureActive()
@@ -281,6 +273,7 @@ class MowerService : Service() {
         check(StartupChecks.incompleteRuntime(temp).isEmpty()) { "解压后的关键文件不完整，请重试或覆盖安装 APK" }
         File(temp, ".mower-runtime").writeText(stamp)
         StartupChecks.activateRuntime(temp, root, backup)
+        bundled.mowerActivated()
         archive.delete()
         progress("环境安装完成", 100)
         installProgress = null

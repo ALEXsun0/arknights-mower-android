@@ -1,15 +1,19 @@
 {
   "mower": {
     "url": "https://github.com/ArkMowers/arknights-mower",
-    "commit": "1c5b788a0cd1fad7ede5bd9e44880335d0c59d07",
+    "commit": "f9255384eedc0dff808b795ff8b51d8419675fdc",
     "branch": "alpha",
-    "source": "Android test snapshot based on alpha dafe02b2, retaining PR #1037 selection fixes",
+    "source": "Android bundle based on alpha 228ef978 and PR #1037 e02562bb",
     "local_patches": [
       "Production Vite build pins WebUI API requests to the current origin"
     ],
     "included_prs": [
       1037
-    ]
+    ],
+    "base_revision": "228ef978cedc11b8c64b541fff1de0a9f5845391",
+    "pr_revisions": {
+      "1037": "e02562bb8511f50867cd46b19f8d2a931ab63206"
+    }
   },
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",

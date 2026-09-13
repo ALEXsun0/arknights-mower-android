@@ -16,6 +16,8 @@ from arknights_mower.solvers.base_mixin import (  # noqa: E402
 )
 from arknights_mower.utils.csleep import MowerExit  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("low_frame_rate")
+
 
 def page(names=("杜林", "芬", "克洛丝", "炎熔", "安赛尔", "香草"), offset=0):
     return tuple(
@@ -98,7 +100,7 @@ def test_free_slot_limit_does_not_overselect(monkeypatch):
     solver.tap.assert_called_once()
 
 
-@pytest.mark.parametrize("frame", [[], page(("", "苍苔"))])
+@pytest.mark.parametrize("frame", [[], [("砾", None)]])
 def test_unreadable_page_pauses_without_tapping_or_swiping(monkeypatch, frame):
     solver = reader(monkeypatch, [frame] * 6)
     with pytest.raises(AgentSelectionNotReady):
@@ -147,6 +149,24 @@ def test_failed_swipe_gets_only_one_short_confirmation(monkeypatch):
     assert [c.args[1] for c in solver.swipe_noinertia.call_args_list] == [
         (-860, 0),
         (-215, 0),
+    ]
+    assert [c.kwargs for c in solver.swipe_noinertia.call_args_list] == [
+        {},
+        {"retry": True},
+    ]
+
+
+def test_next_page_returns_to_fast_gesture_after_slow_retry(monkeypatch):
+    before = page(tuple(str(i) for i in range(12)))
+    after = page(tuple(str(i) for i in range(2, 14)))
+    next_page = page(tuple(str(i) for i in range(10, 22)))
+    solver = reader(monkeypatch, [before] * 6 + [after, after, next_page, next_page])
+    assert solver.swipe_agent_page(before, ["21"]) == 2
+    assert solver.swipe_agent_page(after, ["21"]) == 1
+    assert [c.kwargs for c in solver.swipe_noinertia.call_args_list] == [
+        {},
+        {"retry": True},
+        {},
     ]
 
 

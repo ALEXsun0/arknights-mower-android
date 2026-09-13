@@ -11,6 +11,8 @@ sys.modules.setdefault("arknights_mower.utils.skland", MagicMock())
 from arknights_mower.solvers import base_mixin, base_schedule  # noqa: E402
 from arknights_mower.solvers.base_schedule import BaseSchedulerSolver  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("low_frame_rate")
+
 RESIDENTS = ["冰酿", "闪灵", "菲亚梅塔", "爱丽丝"]
 
 
@@ -49,14 +51,14 @@ def test_already_selected_mixed_roster_still_reorders(monkeypatch):
     solver.scan_agent.assert_not_called()
 
 
-def test_correct_order_does_not_clear_and_reselect(monkeypatch):
+def test_matching_card_names_still_clear_and_reselect(monkeypatch):
     solver, selected = selection_solver(monkeypatch, residents=RESIDENTS)
     solver.choose_agent(RESIDENTS.copy(), "dormitory_1")
     assert selected == RESIDENTS
-    solver.tap.assert_not_called()
+    assert solver.tap.call_count == len(RESIDENTS) + 1
     solver.scan_agent.assert_not_called()
-    solver.switch_arrange_order.assert_called_once()
-    assert solver.recog.update.call_count == 2
+    assert solver.switch_arrange_order.call_count == 2
+    solver.swipe_left.assert_not_called()
 
 
 def test_reorder_does_not_trust_cached_selection_order(monkeypatch):
