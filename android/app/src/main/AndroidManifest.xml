@@ -23,6 +23,7 @@
         </activity-alias>
         <activity android:name=".mower.MowerGameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <activity android:name=".mower.MowerSettingsActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
+        <activity android:name=".mower.MowerDiagnosticsActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <activity android:name=".mower.UnlockSettingsActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
         <receiver android:name=".mower.MowerWakeReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
