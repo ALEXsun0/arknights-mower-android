@@ -58,6 +58,7 @@ class MowerDiagnosticsActivity : Activity() {
         header.addView(label("诊断日志", 20f, bold = true), LinearLayout.LayoutParams(0, dp(52), 1f).apply { leftMargin = dp(16) })
         root.addView(header)
         controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(12), 0, dp(12)) }
+        controls.addView(action("MCP 诊断连接") { showDiagnosticMcp() }, LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(16) })
         controls.addView(label("选择导出时段", 18f, bold = true))
         controls.addView(label("时间按手机本地时区显示，日志与截图使用相同范围。", 12f, MowerStyle.muted))
         val presets = LinearLayout(this)
