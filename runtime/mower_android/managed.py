@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -33,7 +34,7 @@ def screenshot_hours():
         return 0.0
 
 
-def prepare_files():
+def prepare_files(progress=lambda stage, percent=-1: None):
     pending = COMPONENT.with_name('maa-bundled-pending')
     generation = pending.read_text().strip() if pending.is_file() else None
     marker = MAA_PATH / '.apk-bundle-generation'
@@ -44,16 +45,19 @@ def prepare_files():
             pending.unlink()
             return
     expected = COMPONENT.with_suffix('.sha256').read_text().strip()
-    if hashlib.sha256(COMPONENT.read_bytes()).hexdigest() != expected: raise RuntimeError('MAA 组件校验失败')
-    stage = MAA_PATH.with_name('maa-install'); shutil.rmtree(stage, ignore_errors=True); stage.mkdir()
-    with zipfile.ZipFile(COMPONENT) as archive:
-        for info in archive.infolist():
-            path = stage / info.filename
-            if not path.resolve().is_relative_to(stage.resolve()): raise ValueError('Invalid component path')
-            if info.is_dir(): path.mkdir(parents=True, exist_ok=True)
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as source, path.open('wb') as output: shutil.copyfileobj(source, output)
+    receipt = COMPONENT.with_name('maa-bundled-unpacked.json')
+    stage = COMPONENT.with_name('maa-bundled-unpacked')
+    try:
+        prepared = json.loads(receipt.read_text())
+    except (OSError, ValueError):
+        prepared = {}
+    if not (generation is not None and isinstance(prepared, dict)
+            and prepared.get('generation') == generation
+            and prepared.get('sha256') == expected
+            and (stage / '.mower-android.json').is_file()):
+        # Older APKs do not prepare resources natively.
+        stage = _extract_component(expected, progress)
+    progress('应用 MAA 组件')
     if generation is not None:
         (stage / '.apk-bundle-generation').write_text(generation)
     if MAA_PATH.exists():
@@ -67,6 +71,53 @@ def prepare_files():
             replace_with_backup(stage, MAA_PATH, Path(work))
     else: stage.rename(MAA_PATH)
     if generation is not None: pending.unlink()
+    receipt.unlink(missing_ok=True)
+    progress('MAA 组件就绪', 100)
+
+
+def _extract_component(expected, progress):
+    progress('校验 MAA 组件', 0)
+    digest = hashlib.sha256()
+    size = COMPONENT.stat().st_size
+    consumed = 0
+    with COMPONENT.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+            consumed += len(chunk)
+            progress('校验 MAA 组件', consumed * 100 // max(1, size))
+    if digest.hexdigest() != expected: raise RuntimeError('MAA 组件校验失败')
+    progress('清理未完成的 MAA 安装')
+    stage = MAA_PATH.with_name('maa-install'); shutil.rmtree(stage, ignore_errors=True); stage.mkdir()
+    with zipfile.ZipFile(COMPONENT) as archive:
+        entries = archive.infolist()
+        # This staging directory was just created and we never extract symlinks.
+        # Validate lexical paths once; resolving every ancestor for every entry
+        # costs tens of seconds through PRoot's intercepted filesystem calls.
+        for info in entries:
+            name = info.filename.rstrip('/') if info.is_dir() else info.filename
+            if (not name or name.startswith('/') or '\\' in name or '\x00' in name
+                    or any(part in ('', '.', '..') for part in name.split('/'))
+                    or stat.S_ISLNK(info.external_attr >> 16)):
+                raise ValueError('Invalid component path')
+        total = sum(info.file_size for info in entries) + len(entries)
+        consumed = 0
+        directories = {stage}
+        progress('解压 MAA 组件', 0)
+        for info in entries:
+            path = stage / info.filename
+            parent = path if info.is_dir() else path.parent
+            if parent not in directories:
+                parent.mkdir(parents=True, exist_ok=True)
+                directories.add(parent)
+            if not info.is_dir():
+                with archive.open(info) as source, path.open('wb') as output:
+                    while chunk := source.read(1024 * 1024):
+                        output.write(chunk)
+                        consumed += len(chunk)
+                        progress('解压 MAA 组件', consumed * 100 // max(1, total))
+            consumed += 1
+            progress('解压 MAA 组件', consumed * 100 // max(1, total))
+    return stage
 
 
 def normalize(data):

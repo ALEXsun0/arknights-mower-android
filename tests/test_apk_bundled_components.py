@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -106,3 +107,57 @@ class ApkBundledTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '校验失败'): managed.prepare_files()
         self.assertEqual(metadata.read_text(), '{"version":"old"}')
         self.assertTrue(pending.exists())
+
+    def test_maa_extraction_reports_progress_and_creates_nested_directories(self):
+        component = self.root / 'maa-component.zip'
+        maa = self.root / 'maa'
+        with zipfile.ZipFile(component, 'w') as z:
+            z.writestr('.mower-android.json', '{"version":"test"}')
+            z.writestr('resource/nested/a.txt', 'a' * 2000000)
+            z.writestr('resource/nested/b.txt', 'b')
+        component.with_suffix('.sha256').write_text(hashlib.sha256(component.read_bytes()).hexdigest())
+        events = []
+        with patch.object(managed, 'MAA_PATH', maa), patch.object(managed, 'COMPONENT', component):
+            managed.prepare_files(lambda stage, percent=-1: events.append((stage, percent)))
+        self.assertEqual((maa / 'resource/nested/b.txt').read_text(), 'b')
+        self.assertIn(('解压 MAA 组件', 100), events)
+        self.assertEqual(events[-1], ('MAA 组件就绪', 100))
+
+    def test_native_resources_are_activated_without_python_extraction(self):
+        component = self.root / 'maa-component.zip'
+        component.with_suffix('.sha256').write_text('a' * 64)
+        (self.root / 'maa-bundled-pending').write_text('28:100')
+        stage = self.root / 'maa-bundled-unpacked'
+        stage.mkdir()
+        (stage / '.mower-android.json').write_text('{"version":"native"}')
+        receipt = self.root / 'maa-bundled-unpacked.json'
+        receipt.write_text(json.dumps({'generation': '28:100', 'sha256': 'a' * 64}))
+        with patch.object(managed, 'MAA_PATH', self.root / 'maa'), patch.object(managed, 'COMPONENT', component), patch.object(managed, '_extract_component', side_effect=AssertionError('must not unpack twice')):
+            managed.prepare_files()
+        self.assertEqual(json.loads((self.root / 'maa/.mower-android.json').read_text())['version'], 'native')
+        self.assertFalse(stage.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_native_receipt_from_another_apk_does_not_activate_stale_files(self):
+        component = self.root / 'maa-component.zip'
+        component.with_suffix('.sha256').write_text('a' * 64)
+        (self.root / 'maa-bundled-pending').write_text('28:100')
+        stage = self.root / 'maa-bundled-unpacked'; stage.mkdir()
+        (stage / '.mower-android.json').write_text('{"version":"old"}')
+        (self.root / 'maa-bundled-unpacked.json').write_text(json.dumps({'generation':'27:100', 'sha256':'a' * 64}))
+        with patch.object(managed, 'MAA_PATH', self.root / 'maa'), patch.object(managed, 'COMPONENT', component), patch.object(managed, '_extract_component', side_effect=RuntimeError('fallback')):
+            with self.assertRaisesRegex(RuntimeError, 'fallback'): managed.prepare_files()
+        self.assertFalse((self.root / 'maa').exists())
+
+    def test_maa_rejects_paths_and_links_before_extraction(self):
+        component = self.root / 'maa-component.zip'
+        for name in ('../outside', '/outside', 'resource/../outside', 'resource\\outside', 'resource//outside', 'link'):
+            with self.subTest(name=name), zipfile.ZipFile(component, 'w') as z:
+                z.writestr('valid.txt', 'not extracted before validation')
+                entry = zipfile.ZipInfo(name)
+                if name == 'link': entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                z.writestr(entry, 'outside')
+            component.with_suffix('.sha256').write_text(hashlib.sha256(component.read_bytes()).hexdigest())
+            with patch.object(managed, 'MAA_PATH', self.root / 'maa'), patch.object(managed, 'COMPONENT', component):
+                with self.assertRaisesRegex(ValueError, 'Invalid component path'): managed.prepare_files()
+            self.assertFalse((self.root / 'maa-install/valid.txt').exists())

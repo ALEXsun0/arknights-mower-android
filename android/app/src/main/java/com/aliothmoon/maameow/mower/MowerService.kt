@@ -110,6 +110,16 @@ class MowerService : Service() {
                 startupReport += runtimeNetwork!!.start()
                 startupStage("正在准备 MAA 组件")
                 if (bundled.prepareMaa { assets.open(it) }) startupReport += "已切换到此 APK 内置 MAA，首次正常任务后清理旧核心备份"
+                var resourceStage = ""
+                val resourceStarted = android.os.SystemClock.elapsedRealtime()
+                val resourcesPrepared = BundledMaaPreparation.prepare(dataDirectory) { label, percent ->
+                    scope.ensureActive()
+                    if (label != resourceStage) { startupStage(label); resourceStage = label }
+                    installProgress = RuntimeInstallProgress(label, percent)
+                    message = "$label $percent%"
+                }
+                if (resourcesPrepared) startupReport += "原生 MAA 资源校验及解压耗时 ${android.os.SystemClock.elapsedRealtime() - resourceStarted} ms"
+                installProgress = null
                 ensureActive()
                 // Recheck after the potentially long installation; another app may have bound it.
                 val savedConnection = WebConnectionPreferences.resolve(network, ::secret)
@@ -153,10 +163,21 @@ class MowerService : Service() {
                 }
                 val pythonLog = File(filesDir, "python.log")
                 val logOffset = pythonLog.length()
+                val startupFile = File(data, "runtime-startup.json")
+                startupFile.delete()
                 startupStage("Python 正在启动")
                 python = builder.start()
-                repeat(120) {
+                val startup = PythonStartup(android.os.SystemClock.elapsedRealtime())
+                while (true) {
                     if (python?.isAlive != true) error(StartupChecks.pythonFailure(pythonLog, logOffset) ?: "Python 已退出，请查看诊断日志")
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (startup.observe(PythonStartupProgress.read(startupFile), now)) {
+                        val progress = startup.progress!!
+                        startupStage(progress.stage)
+                        message = progress.description
+                        installProgress = if (progress.percent >= 0) RuntimeInstallProgress(progress.stage, progress.percent) else null
+                        saveStartupReport(progress.description)
+                    }
                     val ready = runCatching {
                         (java.net.URL("http://127.0.0.1:$webPort/software-update/info").openConnection() as java.net.HttpURLConnection).run {
                             setRequestProperty("token", webToken)
@@ -166,6 +187,7 @@ class MowerService : Service() {
                         }
                     }.getOrDefault(false)
                     if (ready) {
+                        installProgress = null
                         val verifiedRuntime = StartupChecks.commitRuntime(root)
                         scope.launch {
                             runCatching { StartupChecks.cleanupRuntime(root, verifiedRuntime) }.onFailure {
@@ -184,9 +206,9 @@ class MowerService : Service() {
                         if (active) error("Python 进程退出：$result")
                         return@launch
                     }
+                    if (startup.expired(now)) error(StartupChecks.pythonFailure(pythonLog, logOffset) ?: startup.failure(now))
                     delay(500)
                 }
-                error(StartupChecks.pythonFailure(pythonLog, logOffset) ?: "Python 启动超时，请查看诊断日志")
             } catch (e: Exception) {
                 ensureActive()
                 failed = true

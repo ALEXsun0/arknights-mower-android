@@ -7,6 +7,12 @@ from pathlib import Path
 
 
 def main():
+    import faulthandler
+    from mower_android.startup import StartupProgress
+    progress = StartupProgress()
+    progress.report('加载 Python 启动器')
+    # Capture the actual blocking stack if initialization stops making progress.
+    faulthandler.dump_traceback_later(45, repeat=True)
     from mower_android import mower_package
     source = mower_package.select_source(Path(__file__).resolve().parents[1])
     sys.path.insert(0, str(source))
@@ -16,7 +22,8 @@ def main():
     Path(os.environ['MOWER_DATA_DIR']).mkdir(parents=True, exist_ok=True)
     Path(os.environ['MOWER_DATA_DIR'], 'runtime-python.pid').write_text(str(os.getpid()))
     from mower_android.managed import prepare_files, MAA_PATH
-    prepare_files()
+    prepare_files(progress.report)
+    progress.report('加载 Mower 配置')
     from arknights_mower.utils import path
     path._internal_dir = source; path._install_dir = source
     from arknights_mower.utils import config
@@ -30,6 +37,7 @@ def main():
     config.conf.webview.token = token
     config.conf.webview.port = int(os.environ.get('MOWER_WEB_PORT', '58000'))
     from mower_android.bridge import Bridge
+    progress.report('加载 Mower WebUI')
     import server
     from mower_android.backup_cleanup import install_hooks
     install_hooks(server)
@@ -118,6 +126,8 @@ def main():
         finally: raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
+    progress.report('启动 WebUI 监听')
+    faulthandler.cancel_dump_traceback_later()
     server.app.run(host=os.environ.get('MOWER_WEB_BIND', '127.0.0.1'), port=config.conf.webview.port, threaded=True, use_reloader=False)
 
 
