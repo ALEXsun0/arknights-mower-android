@@ -1,9 +1,17 @@
 """无惯性手势参数；是否需要重试由调用场景根据实际画面判断。"""
 
+from arknights_mower.utils import typealias as tp
+
 NOINERTIA_OFFSET = 100
 
 
-def noinertia_path(start, movement, duration=20, *, retry=False):
+def noinertia_path(
+    start: tp.Coordinate,
+    movement: tp.Coordinate,
+    duration: int = 20,
+    *,
+    retry: bool = False,
+) -> tuple[list[tp.Coordinate], list[int]]:
     """duration 为每 100px 的毫秒数；重试只延长主轴拖动，不改变路径。"""
     x, y = start
     dx, dy = movement

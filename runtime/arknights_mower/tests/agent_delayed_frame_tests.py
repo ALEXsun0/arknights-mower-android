@@ -114,11 +114,11 @@ def test_slow_matching_waits_for_late_frame_before_using_coordinates(
 
     assert page == (("砾", NEW_SCOPE),)
     assert [marker for _, marker in solver.device.captures] == [0, 1, 1]
-    assert [at for at, _ in solver.device.captures] == pytest.approx([0.1, 1.5, 2.9])
+    assert [at for at, _ in solver.device.captures] == pytest.approx([0.1, 1.4, 2.7])
     # 旧页、新页各冷识别一次；第三帧相同区域命中真实 reader 缓存。
     assert [marker for _, marker in reads] == [0, 1]
-    assert solver.device.taps == [(pytest.approx(2.9), BaseSolver.get_pos(NEW_SCOPE))]
-    assert clock.waits == [0.5, 0.5, 0.2]
+    assert solver.device.taps == [(pytest.approx(2.7), BaseSolver.get_pos(NEW_SCOPE))]
+    assert clock.waits == pytest.approx([0.4, 0.4, 0.2])
 
 
 @pytest.mark.parametrize("interval", [0, 0.5])

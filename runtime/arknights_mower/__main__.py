@@ -127,7 +127,6 @@ def simulate(saved, restart_after_mood_read=False):
                 raise MowerExit
             base_scheduler = initialize([], connection_retries=connection_retries)
             base_scheduler.restart_after_mood_read = restart_after_mood_read
-            base_scheduler.mastery_restart_check_pending = not saved
             success = True
         except MowerExit:
             return
@@ -171,7 +170,7 @@ def simulate(saved, restart_after_mood_read=False):
                 base_scheduler.op_data.operators[k].dorm_recovery_room = getattr(
                     v, "dorm_recovery_room", ""
                 )
-            base_scheduler.op_data.dorm = saved["dorm"]
+            base_scheduler.op_data.restore_dorm_state(saved["dorm"])
             base_scheduler.party_time = saved["party_time"]
             base_scheduler.daily_visit_friend = saved["daily_visit_friend"]
             base_scheduler.daily_report = saved["daily_report"]

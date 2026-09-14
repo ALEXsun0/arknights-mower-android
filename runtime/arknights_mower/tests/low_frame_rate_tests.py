@@ -18,6 +18,12 @@ from arknights_mower.utils.solver import BaseSolver
 conf_module = import_module("arknights_mower.utils.config.conf")
 
 
+@pytest.fixture(autouse=True)
+def instant_mock_capture(monkeypatch):
+    # 本组只计算固定等待预算；真实取帧耗时由 observation_interval_tests 覆盖。
+    monkeypatch.setattr(base_mixin, "perf_counter", lambda: 0.0)
+
+
 @pytest.mark.parametrize("platform", ["android", "linux", "windows", "darwin"])
 def test_platform_default_only_applies_to_missing_setting(monkeypatch, platform):
     monkeypatch.delenv("MOWER_ANDROID", raising=False)

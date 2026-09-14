@@ -66,7 +66,7 @@ def room_reader():
         solver.read_screen = MagicMock(return_value=name)
         solver.read_accurate_mood = MagicMock(return_value=mood)
         deadline = datetime.now() + timedelta(hours=1)
-        solver.double_read_time = MagicMock(return_value=deadline)
+        solver.read_operator_time = MagicMock(return_value=deadline)
         return solver, target, deadline
 
     return make
@@ -82,7 +82,7 @@ def test_confirmed_exhausted_central_sets_real_exhaust_time_without_timer_ocr(
     assert before <= result["time"] <= after
     assert before <= target.exhaust_time <= after
     assert result["mood"] == 0
-    solver.double_read_time.assert_not_called()
+    solver.read_operator_time.assert_not_called()
     assert solver.read_screen.call_count == 2
     assert solver.read_accurate_mood.call_count == 2
     solver.recog.update.assert_called_once()
@@ -93,14 +93,16 @@ def test_zero_mood_outside_central_keeps_existing_countdown(room_reader, room):
     solver, _, deadline = room_reader(room=room)
     result = solver.get_agent_from_room(room, [0])[0]
     assert result["time"] == deadline
-    solver.double_read_time.assert_called_once_with(((1650, 270), (1780, 305)))
+    solver.read_operator_time.assert_called_once_with(
+        room, 0, ((1650, 270), (1780, 305))
+    )
     solver.recog.update.assert_not_called()
 
 
 def test_fiammetta_keeps_countdown_even_when_in_central(room_reader):
     solver, _, deadline = room_reader(name="菲亚梅塔")
     assert solver.get_agent_from_room("central", [0])[0]["time"] == deadline
-    solver.double_read_time.assert_called_once()
+    solver.read_operator_time.assert_called_once()
     solver.recog.update.assert_not_called()
 
 
@@ -108,7 +110,7 @@ def test_nonzero_central_keeps_measured_working_countdown(room_reader):
     solver, target, deadline = room_reader(mood=8)
     result = solver.get_agent_from_room("central", [0])[0]
     assert result["time"] == target.exhaust_time == deadline
-    solver.double_read_time.assert_called_once()
+    solver.read_operator_time.assert_called_once()
     solver.recog.update.assert_not_called()
 
 
@@ -133,7 +135,7 @@ def test_uncertain_second_observation_keeps_existing_countdown(room_reader, chan
 
         solver.find.side_effect = find
     assert solver.get_agent_from_room("central", [0])[0]["time"] == deadline
-    solver.double_read_time.assert_called_once()
+    solver.read_operator_time.assert_called_once()
 
 
 def test_cached_zero_mood_is_not_an_exhaustion_measurement(room_reader):
@@ -143,7 +145,7 @@ def test_cached_zero_mood_is_not_an_exhaustion_measurement(room_reader):
     solver.op_data.update_detail = MagicMock(return_value=0)
     assert solver.get_agent_from_room("central")[0]["time"] == deadline
     solver.read_accurate_mood.assert_not_called()
-    solver.double_read_time.assert_called_once()
+    solver.read_operator_time.assert_called_once()
     solver.recog.update.assert_not_called()
 
 
@@ -157,5 +159,5 @@ def test_zero_mood_without_working_exhaustion_semantics_keeps_countdown(
     else:
         solver.op_data.true_exhaust_room.clear()
     assert solver.get_agent_from_room("central", [0])[0]["time"] == deadline
-    solver.double_read_time.assert_called_once()
+    solver.read_operator_time.assert_called_once()
     solver.recog.update.assert_not_called()

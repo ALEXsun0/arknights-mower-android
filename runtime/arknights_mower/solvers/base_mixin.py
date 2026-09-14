@@ -194,12 +194,15 @@ class BaseMixin:
                     return
             raise AgentSelectionNotReady("干员排序未到达目标状态，返回房间重试")
         before = None
+        capture_time = 0
         for attempt in range(6):
             if attempt:
-                self.sleep(0.5)
+                self.wait_for_next_observation(capture_time)
             else:
                 self.recog.update()
+            started = perf_counter()
             before = self.detect_arrange_order(current_room)
+            capture_time = perf_counter() - started
             if before is not None:
                 break
         if before is None:
@@ -209,11 +212,14 @@ class BaseMixin:
         for _ in range(2):
             self.tap((x, name_y), interval=0.5)
             previous = None
+            capture_time = 0
             for attempt in range(6):
                 if attempt:
-                    self.sleep(0.5)
+                    self.wait_for_next_observation(capture_time)
+                started = perf_counter()
                 # tap/sleep 已使识别缓存失效，后续按需获取画面。
                 actual = self.detect_arrange_order(current_room)
+                capture_time = perf_counter() - started
                 logger.debug(
                     f"排序复核：点击前{before}，当前{actual}，目标{(name, ascending)}"
                 )
@@ -228,6 +234,10 @@ class BaseMixin:
                 return
             before = actual
         raise AgentSelectionNotReady("干员排序未到达目标状态，返回房间重试")
+
+    def wait_for_next_observation(self, capture_time, interval=0.5):
+        """仅扣除取帧耗时，名字识别耗时不能替代等待；零等待也清除旧帧。"""
+        self.sleep(max(0, interval - capture_time))
 
     @staticmethod
     def same_agent_page(left, right, *, allow_unknown=False):
@@ -305,13 +315,15 @@ class BaseMixin:
         )
         stable = False
         ret = []
+        capture_time = 0
         for attempt in range(6):
-            started = perf_counter()
             if attempt:
-                self.sleep(0.5)
+                self.wait_for_next_observation(capture_time)
             else:
                 self.recog.update()
+            started = perf_counter()
             connecting = self.find("connecting")
+            capture_time = perf_counter() - started
             logger.debug(
                 f"选人等待及截图检查耗时：{(perf_counter() - started) * 1000:.0f} ms"
             )
@@ -458,12 +470,16 @@ class BaseMixin:
         previous = page[: len(agent)] if page else None
         stable = False
         actual = []
+        capture_time = 0
         for attempt in range(6):
             if attempt:
-                self.sleep(0.5)
+                self.wait_for_next_observation(capture_time)
             else:
                 self.recog.update()
-            if self.find("connecting"):
+            started = perf_counter()
+            connecting = self.find("connecting")
+            capture_time = perf_counter() - started
+            if connecting:
                 previous = None
                 stable = False
                 continue
@@ -613,7 +629,7 @@ class BaseMixin:
             and confirm_btn[0][0] > open_threshold
         ):
             if retry >= max_attempts:
-                raise Exception("打开职业筛选失败")
+                raise AgentSelectionNotReady("打开职业筛选失败")
             if retry:
                 self.sleep(poll_interval)
             else:
@@ -652,7 +668,7 @@ class BaseMixin:
             and confirm_btn[0][0] < open_threshold
         ):
             if retry >= max_attempts:
-                raise Exception("关闭职业筛选失败")
+                raise AgentSelectionNotReady("关闭职业筛选失败")
             if retry:
                 self.sleep(poll_interval)
             else:
@@ -765,21 +781,33 @@ class BaseMixin:
         self.sleep(0.5)
         return None
 
+    @timed_step("enter_room")
     def enter_room(self, room):
         """从基建首页进入房间"""
 
         for enter_times in range(3):
-            for retry_times in range(5):
+            pending = False
+            actions = 0
+            for retry_times in range(9):
                 if self.find("connecting"):
                     self.sleep()
                 elif pos := self.find("control_central"):
+                    if pending:
+                        # 地图可能仍是点击前的旧画面，先等一帧反馈再重发点击。
+                        pending = False
+                        self.sleep(0.2)
+                        continue
+                    if actions >= 5:
+                        break
+                    actions += 1
                     _room = segment.base(self.recog.img, pos)[room]
                     logger.debug(
                         f"进入房间 {room}，第{enter_times + 1}轮第{retry_times + 1}次尝试"
                     )
                     visible_room = self.adjust_room(_room)
                     if visible_room is not None:
-                        self.tap(visible_room)
+                        self.tap(visible_room, interval=0.2)
+                        pending = True
                 elif self.detect_room() == room:
                     return
                 else:

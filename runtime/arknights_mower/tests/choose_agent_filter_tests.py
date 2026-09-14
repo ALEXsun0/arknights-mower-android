@@ -43,6 +43,21 @@ def test_single_operator_still_selects_correctly(monkeypatch):
     assert selected == ["伊芙利特"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_free_search_switches_directly_to_all_and_keeps_final_roster(
+    monkeypatch, enabled
+):
+    monkeypatch.setattr(base_mixin.config.conf, "low_frame_rate_mode", enabled)
+    solver, selected = selection_solver(monkeypatch, residents=[])
+    agents = ["爱丽丝", "Free"]
+    solver.choose_agent(agents, "dormitory_1")
+    assert selected == agents == ["爱丽丝", "伊芙利特"]
+    filters = [c.args for c in solver.profession_filter.call_args_list]
+    assert ("CASTER",) in filters
+    # 选完术师直接切 ALL；不能先复位回术师，再重复切一次 ALL。
+    assert all(c.args[1] != "CASTER" for c in solver.swipe_left.call_args_list)
+
+
 def test_already_selected_mixed_roster_still_reorders(monkeypatch):
     current = ["伊芙利特"] + RESIDENTS
     solver, selected = selection_solver(monkeypatch, residents=current)

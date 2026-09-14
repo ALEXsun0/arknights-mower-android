@@ -87,6 +87,19 @@ def test_room_entered_by_final_click_is_not_reported_failed(monkeypatch):
     solver.back_to_index.assert_not_called()
 
 
+def test_delayed_map_frame_is_not_clicked_again(monkeypatch):
+    solver = room_solver(monkeypatch)
+    solver.sleep.side_effect = lambda *_: setattr(
+        solver.detect_room, "side_effect", lambda: "room_1_1"
+    )
+    find = solver.find.side_effect
+    solver.find.side_effect = lambda name: None if solver.sleep.called else find(name)
+    solver.enter_room("room_1_1")
+    solver.tap.assert_called_once()
+    solver.sleep.assert_called_once_with(0.2)
+    solver.back_to_index.assert_not_called()
+
+
 def test_unchanged_overview_is_reentered_before_more_room_clicks(monkeypatch):
     solver = room_solver(monkeypatch, enter_after_reset=True)
     solver.enter_room("room_1_1")

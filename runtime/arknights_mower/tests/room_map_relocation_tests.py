@@ -28,7 +28,7 @@ def adjustment_solver(monkeypatch, width=1920, height=1080):
     solver = BaseMixin()
     solver.recog = SimpleNamespace(w=width, h=height, update=MagicMock())
     solver.device = SimpleNamespace(swipe_ext=MagicMock())
-    solver.sleep = MagicMock(side_effect=lambda *_: solver.recog.update())
+    solver.sleep = MagicMock(side_effect=lambda *_, **kwargs: solver.recog.update())
     solver.swipe_noinertia = BaseSolver.swipe_noinertia.__get__(solver)
     return solver
 
@@ -146,7 +146,7 @@ def navigation_solver(monkeypatch, frames):
     solver.detect_room = MagicMock(
         side_effect=lambda: ROOM if solver.recog.img["kind"] == "room" else "other"
     )
-    solver.tap = MagicMock(side_effect=lambda *_: solver.recog.update())
+    solver.tap = MagicMock(side_effect=lambda *_, **kwargs: solver.recog.update())
     solver.back_to_index = MagicMock(side_effect=solver.recog.update)
     solver.back_to_infrastructure = MagicMock(side_effect=solver.recog.update)
     return solver, segmentation

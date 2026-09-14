@@ -237,3 +237,27 @@ def test_unknown_or_conflicting_panel_state_is_not_guessed(buttons):
     assert solver.swipe_left(0, "ALL") == 0
     solver._close_profession_filter.assert_not_called()
     solver.swipe_noinertia.assert_not_called()
+
+
+@pytest.mark.parametrize("opened", [False, True])
+@pytest.mark.parametrize("low_frame_rate", [False, True])
+def test_stuck_filter_panel_raises_domain_error_without_repeated_taps(
+    monkeypatch, opened, low_frame_rate
+):
+    monkeypatch.setattr(config.conf, "low_frame_rate_mode", low_frame_rate)
+    monkeypatch.setattr(config, "stop_mower", MagicMock(is_set=lambda: False))
+    solver = BaseMixin()
+    x = 1609 if opened else 1724
+    solver.find = MagicMock(
+        side_effect=lambda name: (
+            ((x, 990), (x + 89, 1041)) if name == "confirm_blue" else None
+        )
+    )
+    solver.tap = MagicMock()
+    solver.sleep = MagicMock()
+    with pytest.raises(AgentSelectionNotReady, match="职业筛选失败"):
+        if opened:
+            solver._close_profession_filter()
+        else:
+            solver.profession_filter("ALL")
+    solver.tap.assert_called_once_with((1860, 60), interval=0.1)

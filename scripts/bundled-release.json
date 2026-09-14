@@ -1,17 +1,11 @@
 {
   "mower": {
     "tag": "v4.1.6-alpha.5",
-    "revision": "f9255384eedc0dff808b795ff8b51d8419675fdc",
+    "revision": "be68df10eded5c37e95d49a6d503d7e378772b9a",
     "source": "bundled",
-    "note": "基于最新 alpha 228ef978，合入 #1037 最新提交 e02562bb；包含专精任务重启恢复、旧缓冲配置迁移与滑动反馈优化",
     "branch": "alpha",
-    "base_revision": "228ef978cedc11b8c64b541fff1de0a9f5845391",
-    "included_prs": [
-      1037
-    ],
-    "pr_revisions": {
-      "1037": "e02562bb8511f50867cd46b19f8d2a931ab63206"
-    }
+    "base_revision": "be68df10eded5c37e95d49a6d503d7e378772b9a",
+    "note": "alpha be68df10 \u5df2\u5305\u542b\u5408\u5e76\u540e\u7684 #1037\uff1b\u4e0b\u4e00\u6b21\u4e0a\u6e38\u53d1\u5e03 Android \u66f4\u65b0\u5305\u540e\u81ea\u52a8\u4f7f\u7528\u6b63\u5f0f\u5f52\u6863"
   },
   "maa": {
     "tag": "v6.17.5"
