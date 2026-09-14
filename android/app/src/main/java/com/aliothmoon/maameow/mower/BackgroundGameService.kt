@@ -16,6 +16,7 @@ import kotlin.system.exitProcess
 class BackgroundGameService : RemoteService.Stub() {
     companion object { @JvmStatic var current: BackgroundGameService? = null; private set }
     private val maa = AndroidMaaCore()
+    private val audio = GameAudioSession({ audioModes(it).packageMode }, { pkg, mode -> setAudioMode(pkg, mode) })
     init {
         if (Process.myUid() == 0 && android.os.Build.VERSION.SDK_INT < 34) {
             // Use the shell identity expected by Android's display attribution checks.
@@ -69,18 +70,22 @@ class BackgroundGameService : RemoteService.Stub() {
             "dismiss_keyguard" -> { check(command("/system/bin/wm", "dismiss-keyguard").first == 0); true }
             "audio_get", "audio_set" -> {
                 val pkg = p.getString("package"); require(allowed(pkg))
-                if (p.getString("action") == "audio_set") {
-                    val mode = p.getString("mode")
-                    require(mode in setOf("allow", "ignore", "deny", "default", "foreground"))
-                    val changed = command("/system/bin/cmd", "appops", "set", "--user", "0", pkg, "PLAY_AUDIO", mode)
-                    check(changed.first == 0 && !changed.second.contains("Error")) { "系统拒绝修改游戏声音权限" }
+                if (p.getString("action") == "audio_set") audio.set(pkg, p.getString("mode"))
+                val modes = audioModes(pkg)
+                org.json.JSONObject().put("mode", modes.packageMode)
+                    .put("uid_mode", modes.uidMode ?: org.json.JSONObject.NULL).put("blocked", modes.blocked)
+            }
+            "audio_repair" -> {
+                val (code, output) = command("/system/bin/pm", "list", "packages", "--user", "0")
+                check(code == 0) { "无法查询已安装的明日方舟" }
+                val packages = output.lineSequence().map { it.trim().removePrefix("package:") }.filter { allowed(it) }.toList()
+                check(packages.isNotEmpty()) { "未找到已安装的明日方舟" }
+                for (pkg in packages) {
+                    repairGameAudio({ audioModes(pkg) }) { mode, uid ->
+                        if (uid) setAudioMode(pkg, mode, uid = true) else audio.set(pkg, mode)
+                    }
                 }
-                val (code, output) = command("/system/bin/cmd", "appops", "get", "--user", "0", pkg, "PLAY_AUDIO")
-                check(code == 0) { "无法读取游戏声音权限" }
-                val mode = if (output.contains("No operations")) "default" else
-                    Regex("PLAY_AUDIO: (allow|ignore|deny|default|foreground)").find(output)?.groupValues?.get(1)
-                        ?: error("无法识别系统声音权限状态")
-                org.json.JSONObject().put("mode", mode)
+                true
             }
             else -> error("不支持的系统操作")
         }
@@ -94,6 +99,27 @@ class BackgroundGameService : RemoteService.Stub() {
         val output = process.inputStream.bufferedReader().use { it.readText() }
         return process.waitFor() to output
     }
+    private fun audioCommand(vararg args: String): String {
+        val process = ProcessBuilder(*args).redirectErrorStream(true).start()
+        if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            error("系统声音权限操作超时")
+        }
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        check(process.exitValue() == 0 && !output.contains("Error", ignoreCase = true)) { "系统声音权限操作失败：$output" }
+        return output
+    }
+    private fun audioModes(pkg: String) = GameAudioModes.parse(
+        audioCommand("/system/bin/cmd", "appops", "get", "--user", "0", pkg, "PLAY_AUDIO")
+    )
+    private fun setAudioMode(pkg: String, mode: String, uid: Boolean = false) {
+        require(allowed(pkg))
+        require(mode in setOf("allow", "ignore", "deny", "default", "foreground"))
+        val args = mutableListOf("/system/bin/cmd", "appops", "set", "--user", "0")
+        if (uid) args.add("--uid")
+        args.addAll(listOf(pkg, "PLAY_AUDIO", mode))
+        audioCommand(*args.toTypedArray())
+    }
     @Synchronized override fun unlockPhone(kind: String, credential: String, test: Boolean): Int {
         val controller = com.aliothmoon.maameow.remote.internal.WakeUnlockController
         return when (kind) {
@@ -106,13 +132,28 @@ class BackgroundGameService : RemoteService.Stub() {
     override fun pollUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.poll()
     override fun cancelUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.cancel()
 
-    override fun destroy() { cancelUnlockRecording(); com.aliothmoon.maameow.remote.internal.PowerController.destroy(); runCatching { stopVirtualDisplay() }; exitProcess(0) }
+    @Synchronized override fun destroy() {
+        // 应用被强退时也从独立后台进程恢复，不依赖主进程的 onDestroy。
+        runCatching { audio.restoreAll() }.onFailure { android.util.Log.e("Mower", "退出前恢复游戏声音失败", it) }
+        runCatching { cancelUnlockRecording() }
+        runCatching { com.aliothmoon.maameow.remote.internal.PowerController.destroy() }
+        runCatching { stopVirtualDisplay() }
+        exitProcess(0)
+    }
     override fun setVirtualDisplayMode(mode: Int) = mode == 2
     override fun setVirtualDisplayResolution(width: Int, height: Int, dpi: Int) {
         require((width == 1920 && height == 1080) || (width == 1280 && height == 720)); this.width = width; this.height = height; VirtualDisplayManager.setResolution(width, height, dpi)
     }
     override fun startVirtualDisplay() = VirtualDisplayManager.start()
-    override fun stopVirtualDisplay() { com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop(); maa.stop(); InputControlUtils.cancel(VirtualDisplayManager.getDisplayId()); VirtualDisplayManager.stop() }
+    @Synchronized override fun stopVirtualDisplay() {
+        try { audio.restoreAll() }
+        finally {
+            com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
+            maa.stop()
+            InputControlUtils.cancel(VirtualDisplayManager.getDisplayId())
+            VirtualDisplayManager.stop()
+        }
+    }
     override fun setMonitorSurface(surface: Surface?) {
         VirtualDisplayManager.setMonitorSurface(surface); NativeBridgeLib.setPreviewSurface(surface)
     }

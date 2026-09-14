@@ -1,9 +1,7 @@
 package com.aliothmoon.maameow.root;
 
-import android.os.Binder;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.Parcel;
 
 import com.aliothmoon.maameow.RemoteService;
 import com.aliothmoon.maameow.third.Ln;
@@ -12,7 +10,6 @@ import com.aliothmoon.maameow.third.Ln;
 public final class RemoteServiceStarter {
 
     private static final String TAG = "RemoteServiceStarter";
-    private static final int DESTROY_TRANSACTION_CODE = 16777115;
 
     // linkToDeath 随 BinderProxy 被 GC 而失效，须持强引用保证死亡通知可送达
     private static IBinder appLifecycleBinder;
@@ -81,19 +78,11 @@ public final class RemoteServiceStarter {
             return;
         }
 
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
         try {
-            String descriptor = service.getInterfaceDescriptor();
-            if (descriptor != null) {
-                data.writeInterfaceToken(descriptor);
-            }
-            service.transact(DESTROY_TRANSACTION_CODE, data, reply, Binder.FLAG_ONEWAY);
+            // 等待本地服务完成清理后再退出，不能发出异步销毁信号后立即结束进程。
+            RemoteService.Stub.asInterface(service).destroy();
         } catch (Throwable tr) {
             Ln.w(TAG + ": destroy remote service failed", tr);
-        } finally {
-            data.recycle();
-            reply.recycle();
         }
     }
 }

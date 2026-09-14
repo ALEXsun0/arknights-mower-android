@@ -21,7 +21,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     val port: Int get() = listener.localPort
     @Volatile private var closed = false
     private val settings = AndroidSystemSettings(context)
-    private val audioLedger = context.getSharedPreferences("game-audio-recovery", 0)
+    private val audioRecovery = GameAudioRecovery(context)
     private var prepared = false
     private var expectedGameRunning = false
     private val gameRecovery = GameRecoveryPolicy()
@@ -35,31 +35,14 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         return response.get("result")
     }
 
-    // Record the previous mode BEFORE muting. Failed cleanup remains retryable after a crash.
-    private fun restoreAudio(s: RemoteService) {
-        for ((pkg, value) in audioLedger.all) {
-            val current = (system(s, "audio_get", JSONObject().put("package", pkg)) as JSONObject).getString("mode")
-            if (current == "ignore") {
-                val restored = system(s, "audio_set", JSONObject().put("package", pkg).put("mode", value)) as JSONObject
-                check(restored.getString("mode") == value) { "游戏声音恢复未生效，可在设置页重试" }
-            }
-            // If someone changed this operation themselves, preserve their newer choice.
-            check(audioLedger.edit().remove(pkg).commit()) { "声音恢复记录保存失败" }
-        }
-    }
+    private fun restoreAudio(s: RemoteService) = audioRecovery.restore(s)
 
     private fun applyAudio(s: RemoteService) {
         if (!settings.enabled("mute_game") || ((MowerService.manual || MowerService.previewing) && settings.enabled("preview_sound"))) {
             restoreAudio(s); return
         }
         if (s.isAppAlive(packageName) != 1) { restoreAudio(s); return }
-        if (!audioLedger.contains(packageName)) {
-            val mode = (system(s, "audio_get", JSONObject().put("package", packageName)) as JSONObject).getString("mode")
-            if (mode == "ignore") return // Already muted by the owner; we must not undo it.
-            check(audioLedger.edit().putString(packageName, mode).commit()) { "无法保存声音恢复记录" }
-        }
-        val applied = system(s, "audio_set", JSONObject().put("package", packageName).put("mode", "ignore")) as JSONObject
-        check(applied.getString("mode") == "ignore") { "游戏静音未生效" }
+        audioRecovery.mute(s, packageName)
     }
 
     private fun wake(s: RemoteService, dismiss: Boolean): JSONObject {
@@ -102,7 +85,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
     fun performSystemAction(action: String): JSONObject = dispatch("system_action", JSONObject().put("action", action)) as JSONObject
 
     private fun settingsState(): JSONObject = settings.snapshot().put("device", settings.deviceState())
-        .put("engine", status()).put("audio_restore_pending", audioLedger.all.isNotEmpty())
+        .put("engine", status()).put("audio_restore_pending", audioRecovery.pending)
         .put("error", systemError ?: JSONObject.NULL)
         .put("audio_mode", runCatching {
             (system(remote(), "audio_get", JSONObject().put("package", packageName)) as JSONObject).getString("mode")
@@ -264,9 +247,9 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                 "reconnect" -> { prepare(JSONObject()); maintainSystem() }
                 "restore_audio" -> {
                     settings.save(settings.snapshot().put("settings", settings.values().put("mute_game", false)))
-                    restoreAudio(remote())
+                    audioRecovery.repair(remote())
                     systemError = null
-                    AndroidSystemSettings.lastAction = "已关闭自动静音，并恢复本应用修改的游戏声音权限"
+                    AndroidSystemSettings.lastAction = "已关闭自动静音，并确认游戏声音权限已恢复"
                 }
                 "test_wake" -> wake(remote(), settings.enabled("dismiss_keyguard"))
                 "battery_settings", "app_settings", "shizuku" -> {

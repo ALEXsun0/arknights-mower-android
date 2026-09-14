@@ -204,6 +204,16 @@ class MowerSettingsActivity : Activity() {
     }
 
     private fun engineAction(action: String) = execute {
+        if (action == "restore_audio" && MowerService.engine == null) {
+            settings.save(settings.snapshot().put("settings", settings.values().put("mute_game", false)))
+            val remote = kotlinx.coroutines.runBlocking {
+                check(com.aliothmoon.maameow.manager.RemoteServiceManager.requestPermission()) { "请先启动并授权 Shizuku，或启用 Root 后台" }
+                com.aliothmoon.maameow.manager.RemoteServiceManager.getInstance()
+            }
+            GameAudioRecovery(this).repair(remote)
+            AndroidSystemSettings.lastAction = "已关闭自动静音，并确认游戏声音权限已恢复"
+            return@execute AndroidSystemSettings.lastAction
+        }
         val engine = MowerService.engine ?: error("请先返回首页并启动服务；设置已保存在手机。")
         engine.performSystemAction(action)
         AndroidSystemSettings.lastAction
