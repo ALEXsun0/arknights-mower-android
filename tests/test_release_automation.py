@@ -89,4 +89,50 @@ class SnapshotTests(unittest.TestCase):
                 prepare.apply(metadata_only=True)
                 self.assertTrue((root/'android/app/src/main/assets/host-build.json').is_file())
 
+
+class OfficialMowerReleaseTests(unittest.TestCase):
+    def test_official_archive_is_preferred_and_applied_with_its_dependencies(self):
+        import prepare_distribution as prepare
+        import shutil
+        import zipfile
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for name in ['scripts/bundled-release.json','android/app/build.gradle.kts','runtime/mower_android/maa-python.json','runtime/mower_android/maa_adapter.py','UPSTREAM.json']:
+                target=root/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)
+            baseline=json.loads((root/'scripts/bundled-release.json').read_text())
+            tag=baseline['mower']['tag']
+            version=tag.removeprefix('v')
+            meta={'kind':'mower-android','format':1,'platform':'android','arch':'arm64','runtime_api':1,'python':'3.12','version':version,'revision':'a'*40}
+            archive=root/'official.zip'
+            with zipfile.ZipFile(archive,'w') as z:
+                for name,data in {
+                    'mower-android.json':json.dumps(meta),
+                    'mower/server.py':'# official server',
+                    'mower/arknights_mower/__init__.py':f'__version__ = "{version}"',
+                    'mower/ui/dist/index.html':'<html>official UI</html>',
+                    'mower/requirements.txt':'Flask==3.0.3\n',
+                    'mower/CHANGELOG.md':'new release notes',
+                }.items():z.writestr(name,data)
+            def item(name):return {'name':name,'digest':'sha256:'+'b'*64,'size':10,'browser_download_url':'https://github.com/example/archive'}
+            mower={'tag_name':tag,'published_at':'2026-09-15T00:00:00Z','assets':[item(f'arknights-mower_{version}_android_arm64.zip')]}
+            maa={'tag_name':'v6.18.0-beta.1','published_at':'2026-09-15T00:00:00Z','assets':[item('MAAComponent-v6.18.0-beta.1-android-arm64.tar.gz')]}
+            responses={prepare.MOWER_REPO:[mower],prepare.MAA_REPO:[maa],prepare.ANDROID_REPO:[]}
+            old=root/'runtime/arknights_mower/old.py';old.parent.mkdir(parents=True);old.write_text('# obsolete')
+            config=root/'runtime/mower-data/conf.yml';config.parent.mkdir();config.write_text('keep configuration')
+            with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo:responses[repo]),patch.object(prepare,'download',return_value=archive),patch.object(prepare,'host_digest',return_value='a'*64) as fingerprint:
+                plan=prepare.plan(publish=True)
+                self.assertTrue(plan['publish'])
+                self.assertEqual(plan['bundled']['mower']['source'],'release')
+                fingerprint.assert_called_once_with(root,b'Flask==3.0.3\n')
+                prepare.apply()
+                self.assertFalse(old.exists())
+                self.assertEqual((root/'runtime/requirements.in').read_text(),'Flask==3.0.3\n')
+                self.assertEqual((root/'runtime/ui/dist/index.html').read_text(),'<html>official UI</html>')
+                self.assertEqual(config.read_text(),'keep configuration')
+                self.assertTrue((root/'runtime/mower_android/maa_adapter.py').is_file())
+                self.assertEqual(json.loads((root/'UPSTREAM.json').read_text())['mower']['commit'],'a'*40)
+                mower['tag_name']='v4.2.0-alpha.1';mower['assets']=[]
+                with self.assertRaisesRegex(ValueError,'has not published'):
+                    prepare.plan(publish=True)
+
 if __name__=='__main__': unittest.main()

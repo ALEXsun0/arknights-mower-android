@@ -33,12 +33,17 @@ def plan(publish=False, force=False):
     if previous_release:
         descriptor = asset(previous_release, 'android-release.json')
         previous = json.loads(download(descriptor, ROOT/'artifacts/previous-release.json', 1024**2).read_text())
-    # alpha.5 predates Android release assets; retain the locally validated compatibility snapshot.
-    if mower['tag_name'] == baseline['mower']['tag']:
+    # Prefer an official update archive even if this tag was once bundled locally.
+    mower_asset_name = f"arknights-mower_{mower['tag_name'].removeprefix('v')}_android_arm64.zip"
+    if any(a['name'] == mower_asset_name for a in mower.get('assets', [])):
+        component = asset(mower, mower_asset_name)
+        mower_state = {'tag':mower['tag_name'], 'source':'release', 'asset':component}
+    elif mower['tag_name'] == baseline['mower']['tag'] and baseline['mower']['source'] == 'bundled':
+        # The old alpha.5 predates official Android archives. Only that configured
+        # bootstrap snapshot may fall back; a new incomplete release must retry.
         mower_state = dict(baseline['mower'])
     else:
-        component = asset(mower, f"arknights-mower_{mower['tag_name'].removeprefix('v')}_android_arm64.zip")
-        mower_state = {'tag':mower['tag_name'], 'source':'release', 'asset':component}
+        raise ValueError(f"{mower['tag_name']} has not published {mower_asset_name} yet")
     maa_asset = asset(maa, f"MAAComponent-{maa['tag_name']}-android-arm64.tar.gz")
     bundled = {'mower':mower_state, 'maa':{'tag':maa['tag_name'], 'asset':maa_asset}}
     gradle = (ROOT/'android/app/build.gradle.kts').read_text()
