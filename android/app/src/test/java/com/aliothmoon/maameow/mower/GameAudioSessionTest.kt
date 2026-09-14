@@ -81,8 +81,8 @@ class GameAudioSessionTest {
         assertEquals("allow", modes.packageMode)
         assertEquals("ignore", modes.uidMode)
         assertTrue(modes.blocked)
-        assertEquals(GameAudioModes("default", "deny"), GameAudioModes.parse("Uid mode: PLAY_AUDIO: deny"))
-        assertEquals(GameAudioModes("default", null), GameAudioModes.parse("No operations."))
+        assertEquals(GameAudioModes("allow", "deny"), GameAudioModes.parse("Uid mode: PLAY_AUDIO: deny"))
+        assertEquals(GameAudioModes("allow", null), GameAudioModes.parse("No operations."))
         assertThrows(IllegalStateException::class.java) { GameAudioModes.parse("permission denied") }
     }
 
@@ -92,13 +92,13 @@ class GameAudioSessionTest {
                 var modes = GameAudioModes(pkg, uid)
                 val writes = mutableListOf<Boolean>()
                 repairGameAudio({ modes }) { mode, isUid ->
-                    assertEquals("default", mode)
+                    assertEquals("allow", mode)
                     writes.add(isUid)
                     modes = if (isUid) modes.copy(uidMode = mode) else modes.copy(packageMode = mode)
                 }
                 assertFalse(modes.blocked)
-                assertEquals(uid in setOf("ignore", "deny"), true in writes)
-                assertEquals(pkg in setOf("ignore", "deny"), false in writes)
+                assertEquals(uid != null && uid != "allow", true in writes)
+                assertEquals(pkg != "allow", false in writes)
             }
         }
     }
@@ -109,6 +109,37 @@ class GameAudioSessionTest {
         }
         assertThrows(IllegalStateException::class.java) {
             repairGameAudio({ GameAudioModes("allow", "deny") }) { _, _ -> }
+        }
+        assertThrows(IllegalStateException::class.java) {
+            repairGameAudio({ GameAudioModes("default", null) }) { _, _ -> }
+        }
+    }
+
+    @Test fun actualSamsungUnsetModeRestoresToAllowAfterMute() {
+        var output = "No operations.\nDefault mode: allow\n"
+        val writes = mutableListOf<String>()
+        val session = GameAudioSession({ GameAudioModes.parse(output).packageMode }, { _, mode ->
+            writes.add(mode)
+            output = if (mode == "allow") "No operations.\nDefault mode: allow\n" else "PLAY_AUDIO: $mode"
+        })
+        session.set("game", "ignore")
+        session.restoreAll()
+        assertEquals(listOf("ignore", "allow"), writes)
+        assertFalse(GameAudioModes.parse(output).blocked)
+    }
+
+    @Test fun explicitDefaultIsNotConfusedWithOperationDefault() {
+        assertTrue(GameAudioModes.parse("PLAY_AUDIO: default").blocked)
+        assertTrue(GameAudioModes.parse("No operations.\nDefault mode: ignore").blocked)
+        assertEquals("default", GameAudioModes.parse("PLAY_AUDIO: default\nDefault mode: allow").packageMode)
+    }
+
+    @Test fun migrateLegacyLedgerWithoutChangingNewExplicitDefaults() {
+        assertEquals("allow", restoredGameAudioMode("default"))
+        assertEquals("default", restoredGameAudioMode("v2:default"))
+        for (mode in listOf("allow", "ignore", "deny", "foreground")) {
+            assertEquals(mode, restoredGameAudioMode(mode))
+            assertEquals(mode, restoredGameAudioMode("v2:$mode"))
         }
     }
 }

@@ -38,28 +38,39 @@ class GameAudioSession(
 }
 
 data class GameAudioModes(val packageMode: String, val uidMode: String?) {
-    val blocked get() = packageMode in blockedModes || uidMode in blockedModes
+    // AudioFlinger requires MODE_ALLOWED. Explicit MODE_DEFAULT is not the
+    // operation's default (PLAY_AUDIO's unset mode is MODE_ALLOWED).
+    val blocked get() = packageMode != "allow" || (uidMode != null && uidMode != "allow")
 
     companion object {
-        private val blockedModes = setOf("ignore", "deny")
         fun parse(output: String): GameAudioModes {
             val modes = "(allow|ignore|deny|default|foreground)"
             val uid = Regex("(?m)^\\s*Uid mode:\\s*PLAY_AUDIO:\\s*$modes\\b")
                 .find(output)?.groupValues?.get(1)
             val pkg = Regex("(?m)^\\s*PLAY_AUDIO:\\s*$modes\\b")
                 .find(output)?.groupValues?.get(1)
+            val unset = Regex("(?m)^\\s*Default mode:\\s*$modes\\b")
+                .find(output)?.groupValues?.get(1)
             check(pkg != null || uid != null || output.contains("No operations")) {
                 "无法识别系统声音权限状态"
             }
-            return GameAudioModes(pkg ?: "default", uid)
+            return GameAudioModes(pkg ?: unset ?: "allow", uid)
         }
     }
+}
+
+// Older ledgers stored "default" for an absent PLAY_AUDIO entry. Restoring that
+// literal value mutes native game audio; migrate only this legacy recovery value.
+fun restoredGameAudioMode(recorded: String) = when {
+    recorded.startsWith("v2:") -> recorded.removePrefix("v2:")
+    recorded == "default" -> "allow"
+    else -> recorded
 }
 
 /** 仅用于用户主动恢复；自动退出不能重置其他程序或用户设置的静音。 */
 fun repairGameAudio(read: () -> GameAudioModes, write: (String, Boolean) -> Unit) {
     val before = read()
-    if (before.uidMode in setOf("ignore", "deny")) write("default", true)
-    if (before.packageMode in setOf("ignore", "deny")) write("default", false)
+    if (before.uidMode != null && before.uidMode != "allow") write("allow", true)
+    if (before.packageMode != "allow") write("allow", false)
     check(!read().blocked) { "游戏仍被系统声音权限静音" }
 }

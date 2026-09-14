@@ -22,9 +22,10 @@ class GameAudioRecovery(context: Context) {
         for ((pkg, value) in ledger.all) {
             try {
                 val current = call(service, "audio_get", pkg).getString("mode")
+                val target = restoredGameAudioMode(value as String)
                 if (current == "ignore") {
-                    val restored = call(service, "audio_set", pkg, value as String)
-                    check(restored.getString("mode") == value) { "游戏声音恢复未生效，可在设置页重试" }
+                    val restored = call(service, "audio_set", pkg, target)
+                    check(restored.getString("mode") == target) { "游戏声音恢复未生效，可在设置页重试" }
                 }
                 check(ledger.edit().remove(pkg).commit()) { "声音恢复记录保存失败" }
             } catch (error: Exception) { failure = error }
@@ -36,7 +37,7 @@ class GameAudioRecovery(context: Context) {
         if (!ledger.contains(pkg)) {
             val mode = call(service, "audio_get", pkg).getString("mode")
             if (mode == "ignore") return
-            check(ledger.edit().putString(pkg, mode).commit()) { "无法保存声音恢复记录" }
+            check(ledger.edit().putString(pkg, "v2:$mode").commit()) { "无法保存声音恢复记录" }
         }
         check(call(service, "audio_set", pkg, "ignore").getString("mode") == "ignore") { "游戏静音未生效" }
     }
