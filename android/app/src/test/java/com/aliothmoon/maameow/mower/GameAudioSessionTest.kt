@@ -10,7 +10,7 @@ class GameAudioSessionTest {
         repeat(3) { session.set("official", "ignore") }
         session.set("bilibili", "ignore")
         session.restoreAll()
-        assertEquals(mapOf("official" to "allow", "bilibili" to "default"), modes)
+        assertEquals(mapOf("official" to "allow", "bilibili" to "allow"), modes)
         session.restoreAll()
         assertEquals("allow", modes["official"])
     }
@@ -134,12 +134,21 @@ class GameAudioSessionTest {
         assertEquals("default", GameAudioModes.parse("PLAY_AUDIO: default\nDefault mode: allow").packageMode)
     }
 
-    @Test fun migrateLegacyLedgerWithoutChangingNewExplicitDefaults() {
+    @Test fun bothLegacyAndV2DefaultResidueRestoreToAllow() {
         assertEquals("allow", restoredGameAudioMode("default"))
-        assertEquals("default", restoredGameAudioMode("v2:default"))
+        assertEquals("allow", restoredGameAudioMode("v2:default"))
         for (mode in listOf("allow", "ignore", "deny", "foreground")) {
             assertEquals(mode, restoredGameAudioMode(mode))
             assertEquals(mode, restoredGameAudioMode("v2:$mode"))
         }
     }
+    @Test fun residualDefaultBeforeMuteDoesNotReturnAfterOwnerDeath() {
+        var mode = "default"
+        val session = GameAudioSession({ mode }, { _, value -> mode = value })
+        repeat(3) { session.set("game", "ignore") }
+        session.restoreAll()
+        assertEquals("allow", mode)
+        assertFalse(GameAudioModes(mode, null).blocked)
+    }
+
 }

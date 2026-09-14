@@ -8,4 +8,6 @@
 
 本地验证覆盖重复静音、应用退出后的原值恢复、外部设置保留、部分失败重试、UID 与包级权限解析及手动恢复后的实际状态校验。尚需连接手机验证真实强退、重新打开游戏及实际声音播放。
 
-2026-09-14 实机补充：三星返回 `No operations.\nDefault mode: allow` 时，原解析器误记为 `default`；显式写入 `default` 后 AudioFlinger 仍将游戏音轨标为 muted。现在区分未设置时的默认允许与显式 MODE_DEFAULT，手动恢复使用 allow，正常退出恢复实际原值。旧持久记录中的歧义 default 迁移为 allow，新记录带 v2 标记以保留用户明确设置的原值。实机仅修改游戏 PLAY_AUDIO 为 allow 后，两条游戏音轨立即变为 not muted，用户确认声音恢复；媒体音量未修改。
+2026-09-14 实机补充：三星返回 `No operations.\nDefault mode: allow` 时，原解析器误记为 `default`；显式写入 `default` 后 AudioFlinger 仍将游戏音轨标为 muted。现在区分未设置时的默认允许与显式 MODE_DEFAULT，手动恢复使用 allow，正常退出恢复实际原值。旧持久记录中的歧义 default 迁移为 allow，新记录带 v2 标记。实机仅修改游戏 PLAY_AUDIO 为 allow 后，两条游戏音轨立即变为 not muted，用户确认声音恢复；媒体音量未修改。
+
+再次强退后静音的遗漏：后台 session 仍可能把旧版残留的显式 default 当作原值，退出又恢复到静音。现将后台进程、应用持久记录（包括 v2）捕获到的 default 一并归一为 PLAY_AUDIO 实际默认值 allow；明确的 deny/ignore 和后续外部修改继续保留。新增重复静音后主进程死亡恢复的回归测试。

@@ -9,7 +9,7 @@ class GameAudioSession(
 
     @Synchronized fun set(packageName: String, mode: String): String {
         if (mode == "ignore" && packageName !in originals) {
-            val original = read(packageName)
+            val original = restoredGameAudioMode(read(packageName))
             if (original != "ignore") originals[packageName] = original
         }
         write(packageName, mode)
@@ -59,12 +59,12 @@ data class GameAudioModes(val packageMode: String, val uidMode: String?) {
     }
 }
 
-// Older ledgers stored "default" for an absent PLAY_AUDIO entry. Restoring that
-// literal value mutes native game audio; migrate only this legacy recovery value.
-fun restoredGameAudioMode(recorded: String) = when {
-    recorded.startsWith("v2:") -> recorded.removePrefix("v2:")
-    recorded == "default" -> "allow"
-    else -> recorded
+// An earlier release wrote literal MODE_DEFAULT to PLAY_AUDIO. Treat that
+// residue as the operation's actual default (allow), including v2 ledgers and
+// values captured by the remote process; otherwise owner death re-applies mute.
+fun restoredGameAudioMode(recorded: String): String {
+    val mode = recorded.removePrefix("v2:")
+    return if (mode == "default") "allow" else mode
 }
 
 /** 仅用于用户主动恢复；自动退出不能重置其他程序或用户设置的静音。 */

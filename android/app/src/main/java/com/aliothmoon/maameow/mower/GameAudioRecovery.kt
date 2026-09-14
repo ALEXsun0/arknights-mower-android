@@ -23,7 +23,7 @@ class GameAudioRecovery(context: Context) {
             try {
                 val current = call(service, "audio_get", pkg).getString("mode")
                 val target = restoredGameAudioMode(value as String)
-                if (current == "ignore") {
+                if (current == "ignore" || (current == "default" && target == "allow")) {
                     val restored = call(service, "audio_set", pkg, target)
                     check(restored.getString("mode") == target) { "游戏声音恢复未生效，可在设置页重试" }
                 }
@@ -35,7 +35,7 @@ class GameAudioRecovery(context: Context) {
 
     fun mute(service: RemoteService, pkg: String) {
         if (!ledger.contains(pkg)) {
-            val mode = call(service, "audio_get", pkg).getString("mode")
+            val mode = restoredGameAudioMode(call(service, "audio_get", pkg).getString("mode"))
             if (mode == "ignore") return
             check(ledger.edit().putString(pkg, "v2:$mode").commit()) { "无法保存声音恢复记录" }
         }
