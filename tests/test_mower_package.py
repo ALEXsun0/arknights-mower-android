@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import os
 import sys
@@ -83,6 +84,50 @@ class MowerPackageTests(unittest.TestCase):
         self.assertTrue(failed.exists())
         mower_package.mark_ready()
         self.assertTrue(first.exists());self.assertFalse(failed.exists())
+
+    def pack_runtime(self, *, minimum=29, python='3.13', corrupt=False):
+        original = self.pack()
+        with zipfile.ZipFile(original) as z:
+            files = {name:z.read(name) for name in z.namelist()}
+        payload = b'compressed runtime fixture; extraction is tested by the native installer'
+        meta = json.loads(files['mower-android.json'])
+        meta.update(format=2, min_apk=minimum, python=python,
+                    runtime={'file':'python-runtime.zip.xz', 'sha256':hashlib.sha256(payload).hexdigest(), 'unpacked_size':1024})
+        files['mower-android.json'] = json.dumps(meta)
+        files['python-runtime.zip.xz'] = payload + (b'corrupt' if corrupt else b'')
+        with zipfile.ZipFile(original, 'w') as z:
+            for name, contents in files.items(): z.writestr(name, contents)
+        return original
+
+    def test_runtime_update_requires_new_host_and_verified_payload(self):
+        with patch.dict(os.environ, {'MOWER_APK_CODE':'28'}):
+            with self.assertRaisesRegex(ValueError, '最低版本代码 29'):
+                mower_package.install(self.pack_runtime())
+        with patch.dict(os.environ, {'MOWER_APK_CODE':'29'}):
+            meta = mower_package.inspect(self.pack_runtime())
+            self.assertEqual(meta['python'], '3.13')
+            mower_package.install(self.pack_runtime())
+            previous = mower_package.state()
+            self.assertTrue((mower_package.folder()/previous['id']/'python-runtime.zip.xz').is_file())
+            with self.assertRaisesRegex(ValueError, '校验失败'):
+                mower_package.install(self.pack_runtime(corrupt=True))
+            self.assertEqual(mower_package.state(), previous)
+            with self.assertRaisesRegex(ValueError, '最低版本代码 30'):
+                mower_package.inspect(self.pack_runtime(minimum=30))
+
+    def test_native_selection_does_not_roll_back_the_current_boot(self):
+        mower_package.install(self.pack())
+        ident = mower_package.state()['id']
+        mower_package.save({**mower_package.state(), 'booting':True})
+        with patch.dict(os.environ, {'MOWER_SOURCE_SELECTED':'1', 'MOWER_ACTIVE_ID':ident}):
+            source = mower_package.select_source(self.root/'bundled')
+            self.assertEqual(source, mower_package.folder()/ident/'mower')
+            self.assertTrue(mower_package.state()['booting'])
+            mower_package.mark_ready()
+            self.assertNotIn('pending', mower_package.state())
+        with patch.dict(os.environ, {'MOWER_SOURCE_SELECTED':'1', 'MOWER_ACTIVE_ID':''}):
+            self.assertEqual(mower_package.select_source(self.root/'bundled'), self.root/'bundled')
+            self.assertNotIn('MOWER_ACTIVE_ID', os.environ)
 
     def test_manual_downgrade_requires_confirmation(self):
         from werkzeug.datastructures import FileStorage

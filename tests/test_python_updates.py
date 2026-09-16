@@ -59,6 +59,37 @@ class OnlinePythonTests(unittest.TestCase):
             result=updates.install();self.assertEqual(result['version'],'1.0.1')
             self.assertFalse(python_package.info()['bundled'])
             self.assertFalse(updates.info()['latest']['available'])
+    def test_cached_availability_tracks_manual_import_and_reset(self):
+        updates.save({'latest': {'sha256': 'a'*64, 'compatible': True, 'available': False}})
+        self.assertTrue(updates.info()['latest']['available'])
+        with patch.object(python_package, 'info', return_value={'sha256': 'a'*64}):
+            self.assertFalse(updates.info()['latest']['available'])
+        updates.save({'latest': {'sha256': 'a'*64, 'compatible': False, 'available': True}})
+        self.assertFalse(updates.info()['latest']['available'])
+
+    def test_android_maa_info_advertises_combined_check_without_network(self):
+        app = Flask(__name__)
+        @app.get('/maa-update/info')
+        def maa_info():
+            return {'ok': True, 'latest': {'tag': 'v6.18.0'}}
+        updates.register_routes(app)
+        with patch.object(updates, 'check') as check:
+            result = app.test_client().get('/maa-update/info').json
+            check.assert_not_called()
+        self.assertEqual(result['latest'], {'tag': 'v6.18.0'})
+        self.assertEqual(result['component_updates'][0]['endpoint'], '/android/python-update')
+        self.assertTrue(result['component_updates'][0]['combined_check'])
+
+    def test_auth_failure_does_not_advertise_components(self):
+        app = Flask(__name__)
+        @app.get('/maa-update/info')
+        def maa_info():
+            return {'ok': False}, 401
+        updates.register_routes(app)
+        result = app.test_client().get('/maa-update/info')
+        self.assertEqual(result.status_code, 401)
+        self.assertNotIn('component_updates', result.json)
+
     def test_webui_route_supports_lan_with_update_header(self):
         app=Flask(__name__);updates.register_routes(app);client=app.test_client()
         self.assertEqual(client.post('/android/python-update',json={'auto_check':False}).status_code,403)

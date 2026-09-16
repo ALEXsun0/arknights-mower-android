@@ -105,8 +105,18 @@ class MowerService : Service() {
                 val apkGeneration = "${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}:${packageManager.getPackageInfo(packageName, 0).lastUpdateTime}"
                 val bundled = BundledComponents(filesDir, apkGeneration)
                 installRuntime(bundled)
+                val bundledRoot = File(filesDir, "rootfs")
+                startupStage("正在检查 Mower 更新环境")
+                val selected = UpdatedPythonRuntime(dataDirectory, bundledRoot, apkGeneration).select(
+                    com.aliothmoon.maameow.BuildConfig.VERSION_CODE
+                ) { label, percent ->
+                    scope.ensureActive()
+                    installProgress = RuntimeInstallProgress(label, percent)
+                    message = "$label $percent%"
+                }
+                installProgress = null
                 startupStage("正在检查 Python 网络设置")
-                runtimeNetwork = RuntimeNetwork(this@MowerService, File(filesDir, "rootfs"))
+                runtimeNetwork = RuntimeNetwork(this@MowerService, selected.root)
                 startupReport += runtimeNetwork!!.start()
                 startupStage("正在准备 MAA 组件")
                 if (bundled.prepareMaa { assets.open(it) }) startupReport += "已切换到此 APK 内置 MAA，首次正常任务后清理旧核心备份"
@@ -140,7 +150,7 @@ class MowerService : Service() {
                     catch (failure: Exception) { ensureActive(); AndroidSystemSettings.lastAction = "后台监测暂不可用，请检查服务连接" }
                     delay(5000)
                 } }
-                val root = File(filesDir, "rootfs")
+                val root = selected.root
                 val data = File(filesDir, "mower-data").apply { mkdirs() }
                 File(data, "runtime-python.pid").delete()
                 val native = File(applicationInfo.nativeLibraryDir)
@@ -149,9 +159,10 @@ class MowerService : Service() {
                 talloc.delete()
                 Os.symlink(File(native, "libtalloc.so").path, talloc.path)
                 val args = listOf(File(native, "libproot.so").path, "--kill-on-exit", "-0", "-r", root.path,
-                    "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${data.path}:/mower-data", "-w", "/mower",
+                    "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${data.path}:/mower-data",
+                    "-b", "${selected.program.path}:/mower", "-b", "${bundledRoot.path}/mower/mower_android:/mower/mower_android", "-w", "/mower",
                     "/usr/bin/env", "-i", "HOME=/mower-data", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TZ=${java.util.TimeZone.getDefault().id}",
-                    "MOWER_ANDROID=1", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
+                    "MOWER_ANDROID=1", "MOWER_SOURCE_SELECTED=1", "MOWER_ACTIVE_ID=${selected.id.orEmpty()}", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
                     "MOWER_BRIDGE_TOKEN=$bridgeToken", "MOWER_WEB_TOKEN=$webToken", "MOWER_WEB_PORT=$webPort",
                     "OPENBLAS_NUM_THREADS=2", "OMP_NUM_THREADS=2", "PYTHONUNBUFFERED=1", "/usr/local/bin/python", "-m", "mower_android.launcher")
                 val builder = ProcessBuilder(args).redirectErrorStream(true)
@@ -188,9 +199,9 @@ class MowerService : Service() {
                     }.getOrDefault(false)
                     if (ready) {
                         installProgress = null
-                        val verifiedRuntime = StartupChecks.commitRuntime(root)
+                        val verifiedRuntime = StartupChecks.commitRuntime(bundledRoot)
                         scope.launch {
-                            runCatching { StartupChecks.cleanupRuntime(root, verifiedRuntime) }.onFailure {
+                            runCatching { StartupChecks.cleanupRuntime(bundledRoot, verifiedRuntime) }.onFailure {
                                 android.util.Log.w("Mower", "旧运行环境暂未清理，下次启动后重试", it)
                             }
                         }

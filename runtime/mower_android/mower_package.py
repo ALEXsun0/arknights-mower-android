@@ -1,10 +1,11 @@
-"""Versioned Mower application updates; the APK owns Python and host adapters."""
+"""Transactional Mower updates, optionally including their Python runtime."""
 import hashlib
 import json
 import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import zipfile
 import functools
@@ -51,27 +52,44 @@ def valid_id(value):
     return isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) is not None
 
 
-def inspect(package):
+def inspect(package, *, apk_code=None):
     with zipfile.ZipFile(package) as z:
         entries = z.infolist()
         names = {i.filename for i in entries}
-        if len(names) != len(entries) or len(entries) > 30000 or sum(i.file_size for i in entries) > 512*1024**2:
+        if len(names) != len(entries) or len(entries) > 30000 or sum(i.file_size for i in entries) > 1024*1024**2:
             raise ValueError('Mower 更新包文件重复或超过大小限制')
         if not REQUIRED.issubset(names) or 'mower-android.json' not in names:
             raise ValueError('请选择主仓库的 Android Mower 更新包')
         if z.getinfo('mower-android.json').file_size > 65536: raise ValueError('更新清单过大')
         meta = json.loads(z.read('mower-android.json'))
-        if not isinstance(meta, dict) or (meta.get('kind'), meta.get('format'), meta.get('platform'), meta.get('arch')) != ('mower-android', 1, 'android', 'arm64'):
+        if not isinstance(meta, dict) or (meta.get('kind'), meta.get('platform'), meta.get('arch')) != ('mower-android', 'android', 'arm64') or meta.get('format') not in (1, 2):
             raise ValueError('Mower 更新包格式不兼容')
-        if meta.get('runtime_api') != RUNTIME_API or meta.get('python') != '3.12':
+        if meta.get('runtime_api') != RUNTIME_API or (meta['format'] == 1 and meta.get('python') != '3.12'):
             raise ValueError('此 Mower 需要新的宿主运行环境，请先更新 APK')
+        if meta['format'] == 2:
+            runtime = meta.get('runtime')
+            minimum = meta.get('min_apk')
+            if (type(minimum) is not int or minimum < 29 or
+                    not re.fullmatch(r'3\.\d+', str(meta.get('python', ''))) or
+                    not isinstance(runtime, dict) or runtime.get('file') != 'python-runtime.zip.xz' or
+                    not valid_id(runtime.get('sha256')) or type(runtime.get('unpacked_size')) is not int or
+                    not 0 < runtime['unpacked_size'] <= 2 * 1024**3):
+                raise ValueError('Python 运行环境清单无效')
+            host = int(os.environ.get('MOWER_APK_CODE', '0')) if apk_code is None else apk_code
+            if host < minimum:
+                raise ValueError(f'此更新包包含 Python 运行环境，请先更新 Android APK（最低版本代码 {minimum}）')
+            if runtime['file'] not in names:
+                raise ValueError('更新包缺少 Python 运行环境')
+            with z.open(runtime['file']) as stream:
+                if hashlib.file_digest(stream, 'sha256').hexdigest() != runtime['sha256']:
+                    raise ValueError('Python 运行环境校验失败')
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-alpha\.\d+)?', str(meta.get('version', ''))) or not re.fullmatch(r'[a-f0-9]{40}', str(meta.get('revision', ''))):
             raise ValueError('Mower 版本清单无效')
         for entry in entries:
             name = entry.filename; parts = PurePosixPath(name).parts
             if name.startswith('/') or '\\' in name or any(p in ('..', '.') for p in name.split('/')) or stat.S_ISLNK(entry.external_attr >> 16):
                 raise ValueError('Mower 更新包包含非法路径')
-            if name != 'mower-android.json':
+            if name != 'mower-android.json' and not (meta['format'] == 2 and name == 'python-runtime.zip.xz'):
                 if len(parts) < 2 or parts[0] != 'mower' or parts[1] not in {'arknights_mower','ui','server.py','LICENSE','CHANGELOG.md','logo.png','requirements.txt'}:
                     raise ValueError('更新包不能覆盖宿主或用户文件')
                 if parts[1] == 'ui' and (len(parts) < 3 or parts[2] != 'dist'):
@@ -80,7 +98,7 @@ def inspect(package):
         version_source = z.read('mower/arknights_mower/__init__.py').decode()
         if f'__version__ = "{meta["version"]}"' not in version_source: raise ValueError('程序版本与清单不一致')
         for entry in entries:
-            if entry.filename.endswith('.py'):
+            if entry.filename.endswith('.py') and meta['python'] == f'{sys.version_info.major}.{sys.version_info.minor}':
                 compile(z.read(entry), entry.filename, 'exec')
         return meta
 
@@ -98,11 +116,21 @@ def install(package):
     old = state()
     previous = os.environ.get('MOWER_ACTIVE_ID') or (old.get('id') if not old.get('pending') else old.get('previous'))
     save({'id':ident, 'version':meta['version'], 'previous':previous, 'pending':True})
-    return {**meta, 'message':'Mower 更新已准备完成，停止并重新启动手机服务后生效；APK 和 MAA 保持不变。'}
+    return {**meta, 'message':'Mower 更新已准备完成，停止并重新启动手机服务后生效；配套 Python 环境将自动解压，配置和 MAA 保留。' if meta['format'] == 2 else 'Mower 更新已准备完成，停止并重新启动手机服务后生效。'}
 
 
 @serialized
 def select_source(bundled):
+    # New hosts choose the program AND interpreter before starting Python.
+    # Do not treat their freshly written booting marker as a previous failure.
+    if os.environ.get('MOWER_SOURCE_SELECTED') == '1':
+        ident = os.environ.get('MOWER_ACTIVE_ID')
+        if ident:
+            if not valid_id(ident):
+                raise ValueError('原生启动器选择的 Mower 版本无效')
+            return folder()/ident/'mower'
+        os.environ.pop('MOWER_ACTIVE_ID', None)
+        return bundled
     current = state()
     generation = os.environ.get('MOWER_APK_GENERATION')
     if generation and current.get('apk_generation') != generation:

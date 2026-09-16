@@ -65,7 +65,10 @@ def plan(publish=False, force=False):
     dependencies = None
     if mower_state['source'] == 'release':
         package = download(mower_state['asset'], ROOT/'artifacts/upstream-mower.zip')
-        with zipfile.ZipFile(package) as archive: dependencies = archive.read('mower/requirements.txt')
+        with zipfile.ZipFile(package) as archive:
+            manifest = json.loads(archive.read('mower-android.json'))
+            # Dependencies now travel with Mower; they no longer require an APK update.
+            dependencies = b'<mower-managed-runtime>' if manifest.get('format') == 2 else archive.read('mower/requirements.txt')
     host_sha = host_digest(ROOT, dependencies)
     same_host = previous.get('apk', {}).get('host_sha256') == host_sha
     host_code = previous['apk'].get('host_version_code', previous['apk']['version_code']) if same_host else code
@@ -99,11 +102,13 @@ def apply(metadata_only=False):
     mower = data['bundled']['mower']
     upstream = json.loads((ROOT/'UPSTREAM.json').read_text())
     upstream['maa'].update(asset=item['name'],sha256=lock['sha256'])
+    upstream_runtime = ROOT/'artifacts/upstream-python-runtime.zip.xz'
+    upstream_runtime.unlink(missing_ok=True)
     if mower['source'] == 'release':
         package = download(mower['asset'], ROOT/'artifacts/upstream-mower.zip')
         sys.path.insert(0,str(ROOT/'runtime'))
         from mower_android.mower_package import inspect
-        meta = inspect(package)
+        meta = inspect(package, apk_code=data['version_code'])
         with zipfile.ZipFile(package) as archive:
             if not archive.read('mower/CHANGELOG.md').strip(): raise ValueError('Mower release CHANGELOG.md is empty')
         if meta['version'] != mower['tag'].removeprefix('v'): raise ValueError('Mower release version mismatch')
@@ -112,6 +117,10 @@ def apply(metadata_only=False):
         shutil.rmtree(runtime/'arknights_mower')
         shutil.rmtree(runtime/'ui/dist', ignore_errors=True)
         with zipfile.ZipFile(package) as archive:
+            if meta['format'] == 2:
+                upstream_runtime.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(meta['runtime']['file']) as src, upstream_runtime.open('wb') as dst:
+                    shutil.copyfileobj(src, dst, 1024*1024)
             for entry in archive.infolist():
                 if not entry.filename.startswith('mower/') or entry.is_dir(): continue
                 target = runtime/entry.filename.removeprefix('mower/')
