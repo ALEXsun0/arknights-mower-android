@@ -134,6 +134,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android build tools
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.13113456' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
@@ -196,7 +198,7 @@ jobs:
           PY
           python3 scripts/package_android_release.py
           cd artifacts
-          sha256sum mower-android-arm64.apk > mower-android-arm64.apk.sha256
+          for apk in arknights-mower-android-v*-arm64.apk; do sha256sum "$apk" > "$apk.sha256"; done
       - name: Remove signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/mower-debug.keystore"
@@ -204,8 +206,8 @@ jobs:
         with:
           name: mower-android-arm64-${{ github.sha }}
           path: |
-            artifacts/mower-android-arm64.apk
-            artifacts/mower-android-arm64.apk.sha256
+            artifacts/arknights-mower-android-v*-arm64.apk
+            artifacts/arknights-mower-android-v*-arm64.apk.sha256
             artifacts/android-release.json
             artifacts/distribution.json
             artifacts/mower-maa-python-*.zip

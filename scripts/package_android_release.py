@@ -30,6 +30,7 @@ def main():
     output_meta=json.loads((ROOT/'android/app/build/outputs/apk/release/output-metadata.json').read_text())['elements'][0]
     if (output_meta['versionCode'], output_meta['versionName']) != (code,version):
         raise ValueError('APK version differs from the release plan; rebuild first')
+    apk = apk.rename(output / f'arknights-mower-android-v{version}-arm64.apk')
     metadata = {
         'format': 1, 'runtime_api': RUNTIME_API,
         'apk': {'name':apk.name, 'version':version, 'version_code':code, 'host_sha256':plan['host_sha256'], 'host_version_code':plan['host_version_code'], 'host_update':plan['host_update']},
