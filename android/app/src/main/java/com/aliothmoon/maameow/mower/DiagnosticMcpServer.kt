@@ -21,15 +21,20 @@ internal class DiagnosticMcpServer(
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(2))
     @Volatile private var closed = false
+    private var acceptThread: Thread? = null
+    @Synchronized
     fun start() {
-        Thread({
+        check(!closed) { "Diagnostic server is closed" }
+        if (acceptThread != null) return
+        acceptThread = Thread({
             while (!closed) {
                 val socket = try { listener.accept() } catch (_: Exception) { break }
                 clients.add(socket)
                 try { workers.execute { try { serve(socket) } finally { clients.remove(socket); socket.close() } } }
                 catch (_: Exception) { clients.remove(socket); socket.close() }
             }
-        }, "mower-diagnostic-mcp").apply { isDaemon = true; start() }
+        }, "mower-diagnostic-mcp").apply { isDaemon = true }
+        acceptThread!!.start()
     }
     private fun serve(socket: Socket) {
         try {
@@ -88,11 +93,14 @@ internal class DiagnosticMcpServer(
             write(data); flush()
         }
     }
-    override fun close() {
+    @Synchronized override fun close() {
         closed = true
         listener.close()
         clients.forEach { runCatching { it.close() } }
         workers.shutdownNow()
+        // Linux may defer releasing the listening fd until blocked accept() exits.
+        // Also let a socket accepted concurrently reach the rejected-worker cleanup.
+        if (Thread.currentThread() != acceptThread) acceptThread?.join(1000)
     }
 }
 

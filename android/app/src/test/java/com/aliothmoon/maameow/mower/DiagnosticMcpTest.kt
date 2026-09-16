@@ -71,13 +71,19 @@ class DiagnosticMcpTest {
         }
     }
     @Test fun stopClosesListeningPortAndExistingClients() {
-        val server = DiagnosticMcpServer("secret", protocol()::handle); server.start()
-        val port = server.port
-        val client = Socket("127.0.0.1", port)
-        // Complete one request to ensure the accept loop has started.
-        assertEquals(200, http(server).first)
-        server.close()
-        assertTrue(runCatching { Socket("127.0.0.1", port).close() }.isFailure)
-        client.use { it.soTimeout = 1000; assertEquals(-1, it.getInputStream().read()) }
+        repeat(25) {
+            DiagnosticMcpServer("secret", protocol()::handle).use { server ->
+                server.start()
+                val port = server.port
+                Socket("127.0.0.1", port).use { client ->
+                    // Complete one request to ensure the accept loop has started.
+                    assertEquals(200, http(server).first)
+                    server.close()
+                    assertTrue(runCatching { Socket("127.0.0.1", port).close() }.isFailure)
+                    client.soTimeout = 1000
+                    assertEquals(-1, client.getInputStream().read())
+                }
+            }
+        }
     }
 }
