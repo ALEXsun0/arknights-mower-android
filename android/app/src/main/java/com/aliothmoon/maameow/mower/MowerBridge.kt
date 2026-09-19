@@ -286,7 +286,9 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                 .put("on_display", s.isAppAlive(packageName) == 1 && s.isAppOnVirtualDisplay(packageName))
             "launch", "exit_game" -> {
                 if (method == "launch" && settings.enabled("wake_on_launch")) wake(s, settings.enabled("dismiss_keyguard"))
-                check(s.mowerGame(packageName, method == "launch")) { "游戏启动或关闭失败" }
+                check(s.mowerGame(packageName, method == "launch")) {
+                    if (method == "launch") "游戏启动后未进入后台显示器" else "游戏关闭后进程仍在运行"
+                }
                 expectedGameRunning = method == "launch"
                 nextGameProbe = 0L
                 if (method == "launch") applyAudio(s) else restoreAudio(s)

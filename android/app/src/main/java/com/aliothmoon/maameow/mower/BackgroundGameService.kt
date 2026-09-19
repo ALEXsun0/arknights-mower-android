@@ -180,7 +180,14 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     override fun mowerGame(packageName: String, launch: Boolean): Boolean {
         require(allowed(packageName))
-        if (!launch) return command("/system/bin/am", "force-stop", packageName).first == 0
+        if (!launch) {
+            val (code, output) = command("/system/bin/am", "force-stop", packageName)
+            val stopped = GameStateConfirmation.await(GameStateConfirmation.EXIT_TIMEOUT_MS) {
+                isAppAlive(packageName) == 0
+            }
+            if (!stopped) android.util.Log.w("Mower", "游戏关闭确认超时：am=$code ${output.trim()}")
+            return stopped
+        }
         val id = display()
         check(VirtualDisplayManager.isDisplayValid()) { "后台显示器已失效，请重新启动服务" }
         check(VirtualDisplayManager.getDisplayState() == android.view.Display.STATE_ON) {
@@ -193,8 +200,7 @@ class BackgroundGameService : RemoteService.Stub() {
             val existing = activities.firstOrNull { it.present && it.rootTaskId != null && it.displayId != id }
             if (existing != null) {
                 command("/system/bin/am", "display", "move-stack", existing.rootTaskId.toString(), id.toString())
-                Thread.sleep(250)
-                if (gameActivities(packageName).any { it.displayId == id && it.resumed }) return true
+                if (GameStateConfirmation.await(1_500L) { gameResumedOnDisplay(packageName, id) }) return true
             }
         }
         val resolved = command("/system/bin/cmd", "package", "resolve-activity", "--brief", packageName).second
@@ -202,9 +208,11 @@ class BackgroundGameService : RemoteService.Stub() {
         val args = mutableListOf("/system/bin/am", "start", "--display", display().toString())
         args.addAll(listOf("-f", "0x10800000", "-n", resolved))
         val (code, output) = command(*args.toTypedArray())
-        if (code != 0 || output.contains("Error:")) return false
-        repeat(8) { if (gameActivities(packageName).any { it.displayId == id && it.resumed }) return true; Thread.sleep(250) }
-        return false
+        val resumed = GameStateConfirmation.await(GameStateConfirmation.LAUNCH_TIMEOUT_MS) {
+            gameResumedOnDisplay(packageName, id)
+        }
+        if (!resumed) android.util.Log.w("Mower", "游戏启动确认超时：am=$code ${output.trim()}")
+        return resumed
     }
     override fun isAppAlive(packageName: String): Int {
         require(allowed(packageName)); return if (command("/system/bin/pidof", packageName).first == 0) 1 else 0
@@ -217,4 +225,6 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     private fun gameActivities(packageName: String): List<GameActivityState> =
         GameActivityState.parse(command("/system/bin/dumpsys", "activity", "activities").second, packageName)
+    private fun gameResumedOnDisplay(packageName: String, displayId: Int): Boolean =
+        gameActivities(packageName).any { it.displayId == displayId && it.resumed }
 }
