@@ -86,7 +86,7 @@ class MowerRuntimeMonitor(private val context: Context) {
                     java.io.File(context.filesDir, "python.log").appendText("\n${java.time.Instant.now()} $message\n")
                 }
                 externalAlert("low_fps")
-                MowerNotifications.event(context, "后台游戏持续低帧率（约 ${it.medianFps.toInt()} FPS），请检查省电设置、设备温度或尝试 720p。", false)
+                MowerNotifications.event(context, "后台游戏持续低帧率（约 ${it.medianFps.toInt()} FPS），请检查省电设置或设备温度。", false)
             }
             if (settings.enabled("screen_saver") && !MowerVisibility.visible && !MowerService.previewing) {
                 runCatching { MowerScreenSaver.show(context, settings.enabled("hardware_screen_off")) }

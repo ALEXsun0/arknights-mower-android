@@ -35,14 +35,12 @@ class BackgroundGameService : RemoteService.Stub() {
         org.json.JSONObject().put("ok", true).put("result", maa.call(org.json.JSONObject(request), VirtualDisplayManager.getDisplayId())).toString()
     } catch (e: Exception) { org.json.JSONObject().put("ok", false).put("error", e.message).toString() }
 
-    private var fullscreen = false
     private var width = 1920
     private var height = 1080
     /** Fixed operations only: never expose an arbitrary shell command to the WebUI. */
     @Synchronized override fun systemRpc(request: String): String = try {
         val p = org.json.JSONObject(request)
         val result: Any = when (p.getString("action")) {
-            "display_options" -> { fullscreen = p.getBoolean("fullscreen"); true }
             "wake" -> { check(com.aliothmoon.maameow.remote.internal.WakeUnlockController.wakeScreen()) { "无法唤醒屏幕" }; true }
             "sleep" -> com.aliothmoon.maameow.remote.internal.WakeUnlockController.lockAndSleep()
             "screen_power" -> {
@@ -142,7 +140,7 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     override fun setVirtualDisplayMode(mode: Int) = mode == 2
     override fun setVirtualDisplayResolution(width: Int, height: Int, dpi: Int) {
-        require((width == 1920 && height == 1080) || (width == 1280 && height == 720)); this.width = width; this.height = height; VirtualDisplayManager.setResolution(width, height, dpi)
+        require(width == 1920 && height == 1080); this.width = width; this.height = height; VirtualDisplayManager.setResolution(width, height, dpi)
     }
     override fun startVirtualDisplay() = VirtualDisplayManager.start()
     @Synchronized override fun stopVirtualDisplay() {
@@ -202,7 +200,6 @@ class BackgroundGameService : RemoteService.Stub() {
         val resolved = command("/system/bin/cmd", "package", "resolve-activity", "--brief", packageName).second
             .lineSequence().map { it.trim() }.lastOrNull { it.startsWith("$packageName/") } ?: return false
         val args = mutableListOf("/system/bin/am", "start", "--display", display().toString())
-        if (fullscreen) args.addAll(listOf("--windowingMode", "1"))
         args.addAll(listOf("-f", "0x10800000", "-n", resolved))
         val (code, output) = command(*args.toTypedArray())
         if (code != 0 || output.contains("Error:")) return false

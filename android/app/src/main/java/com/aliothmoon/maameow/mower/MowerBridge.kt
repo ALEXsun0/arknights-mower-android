@@ -140,10 +140,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         prepared = false
         restoreAudio(current)
         recoveredBinder = current.asBinder()
-        system(current, "display_options", JSONObject().put("fullscreen", settings.enabled("force_fullscreen")))
         check(current.setVirtualDisplayMode(2))
-        if (settings.enabled("resolution_720p")) current.setVirtualDisplayResolution(1280, 720, 160)
-        else current.setVirtualDisplayResolution(1920, 1080, 320)
+        current.setVirtualDisplayResolution(1920, 1080, 320)
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
         val component = java.io.File(context.filesDir, "mower-data/maa-component.zip")
@@ -235,7 +233,6 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             systemError = null
             try {
                 RemoteServiceManager.getInstanceOrNull()?.let {
-                    system(it, "display_options", JSONObject().put("fullscreen", settings.enabled("force_fullscreen")))
                     if (prepared && it.asBinder() == serviceBinder) applyAudio(it)
                     else if (!settings.enabled("mute_game")) restoreAudio(it)
                 } ?: run { systemError = "已保存；Shizuku 连接恢复后应用游戏设置" }
