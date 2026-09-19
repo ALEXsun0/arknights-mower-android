@@ -133,14 +133,12 @@ class MowerSettingsActivity : Activity() {
         group("后台游戏", listOf(
             Triple("mute_game", "自动静音游戏", "关闭明日方舟声音，不改变手机媒体音量；关闭后恢复原声音权限。"),
             Triple("preview_sound", "查看游戏时恢复声音", "打开游戏画面时恢复声音，返回后继续按静音设置运行。"),
-            Triple("force_fullscreen", "后台游戏强制全屏", "在下一次启动游戏时应用，识别画面保持 1920 × 1080。"),
             Triple("recover_game", "自动移回后台", "每 5 秒检查游戏位置，意外回到主屏时尝试移回后台。")
         ))
         group("预览与监测", listOf(
             Triple("external_device_alerts", "通过 Mower 发送设备异常通知", "复用 Mower 已配置的邮件通知与等级；未启用邮件时不会发送。"),
             Triple("auto_pip", "离开游戏画面时进入画中画", "在系统小窗继续查看后台游戏；小窗内不转发触摸。"),
             Triple("show_touch", "显示触控位置", "在游戏画面显示手动与自动操作的触点。"),
-            Triple("resolution_720p", "后台游戏使用 720p", "下次连接生效；Mower 截图转换为 1080p。默认 1080p 识别更清晰。"),
             Triple("fps_monitor", "监测后台游戏帧率", "优先使用系统帧率回调，旧系统使用合成帧计数。"),
             Triple("low_fps_alert", "低帧率提醒", "持续低帧率时每轮提醒一次，静止画面不按掉线处理。"),
             Triple("disconnect_stop", "游戏无法恢复时停止任务", "工作期间优先按保活设置恢复游戏；恢复失败或后台连接断开时停止 Mower 与 MAA 并通知。")

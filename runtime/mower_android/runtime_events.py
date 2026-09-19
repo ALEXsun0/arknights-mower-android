@@ -5,7 +5,7 @@ import time
 MESSAGES = {
     'game_exit': '后台游戏意外退出，Mower 已停止任务，请检查后手动启动。',
     'backend_exit': '后台服务连接中断，Mower 已停止任务，请恢复连接后手动启动。',
-    'low_fps': '后台游戏持续低帧率，请检查省电设置、温度或尝试 720p。',
+    'low_fps': '后台游戏持续低帧率，请检查省电设置或设备温度。',
 }
 _lock = threading.Lock()
 _last = {}

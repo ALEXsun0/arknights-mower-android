@@ -1,4 +1,4 @@
-"""Native settings and automatic discovery for the independently hot-loaded adapter."""
+"""WebUI discovery for the independently hot-loaded Android MAA adapter."""
 import hashlib
 import json
 import os
@@ -33,7 +33,18 @@ def save(value):
 
 def info():
     data=state()
-    return {'ok':True,'installed':python_package.info(),'auto_check':data.get('auto_check',True),'latest':data.get('latest',{})}
+    installed = python_package.info()
+    latest = dict(data.get('latest', {}))
+    if latest:
+        # Manual import/reset can change the active adapter after the last check.
+        latest['available'] = bool(latest.get('compatible') and latest.get('sha256') != installed.get('sha256'))
+    return {'ok':True,'installed':installed,'auto_check':data.get('auto_check',True),'latest':latest}
+
+
+def component_info():
+    return {'label': 'MAA Python 兼容接口', 'endpoint': '/android/python-update',
+            'check': True, 'combined_check': True,
+            'hint': '与 MAA 一起检查，仅接口内容变化时提示更新。现有任务保持原接口，新实例使用新接口；手动导入请使用软件更新中的拖拽入口。'}
 
 
 def fetch(item, limit):
@@ -98,6 +109,18 @@ def install():
 
 def register_routes(app):
     from flask import request,abort
+
+    @app.after_request
+    def attach_maa_components(response):
+        # The Android launcher registers this provider after its authentication hook.
+        # Desktop servers never import/register this extension.
+        if request.path == '/maa-update/info' and response.status_code == 200 and response.is_json:
+            data = response.get_json()
+            if isinstance(data, dict) and data.get('ok'):
+                data['component_updates'] = [component_info()]
+                response.set_data(app.json.dumps(data))
+        return response
+
     @app.route('/android/python-update',methods=['GET','POST'])
     def route():
         if request.method=='GET': return info()

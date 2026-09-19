@@ -9,6 +9,10 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
@@ -37,9 +41,13 @@ class MowerActivity : Activity() {
     private var appliedTheme = false
     private lateinit var dot: TextView
     private lateinit var toggle: Button
+    private lateinit var webReload: Button
     private lateinit var web: WebView
+    private lateinit var webHost: FrameLayout
     private lateinit var landing: View
-    private var loaded: String? = null
+    private val webRecovery = WebUiLoadRecovery()
+    private var webTimeoutTask: Runnable? = null
+    private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
     private val refreshLoop = VisibleUiRefresh(
         schedule = { callback, delay -> handler.postDelayed(callback, delay) },
@@ -63,8 +71,7 @@ class MowerActivity : Activity() {
         val toggleLabel = if (MowerService.active) "停止服务" else "启动服务"
         if (toggle.text.toString() != toggleLabel) toggle.text = toggleLabel
         dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
-        if (url != null && url != loaded) { loaded = url; web.loadUrl(url) }
-        if (url == null && loaded != null) { loaded = null; web.loadUrl("about:blank") }
+        executeWebCommand(webRecovery.updateTarget(url))
         landing.visibility = if (url == null) View.VISIBLE else View.GONE
         web.visibility = if (url == null) View.GONE else View.VISIBLE
     }
@@ -116,6 +123,10 @@ class MowerActivity : Activity() {
         statusRow.addView(dot)
         status = label("尚未启动", 12f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), 0); maxLines = 3 }
         statusRow.addView(status, LinearLayout.LayoutParams(0, -2, 1f))
+        webReload = action("重载 WebUI") { executeWebCommand(webRecovery.manualRetry()) }.apply {
+            visibility = View.GONE
+        }
+        statusRow.addView(webReload, LinearLayout.LayoutParams(-2, dp(40)).apply { marginEnd = dp(10) })
         statusRow.addView(label("本机运行  ·  无需电脑常驻", 11f, MowerStyle.muted))
         layout.addView(statusRow)
         installBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -128,63 +139,21 @@ class MowerActivity : Activity() {
         permissionAction = action("权限与后台运行") { startActivity(Intent(this, MowerSettingsActivity::class.java)) }
         permissionRow.addView(permissionAction, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(12) })
         layout.addView(permissionRow)
-        val content = FrameLayout(this).apply {
+        webHost = FrameLayout(this).apply {
             background = surface(MowerStyle.paper, 10); clipToOutline = true; elevation = dp(1).toFloat()
         }
-        web = object : WebView(this) {
-            override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
-                val connection = super.onCreateInputConnection(outAttrs)
-                outAttrs.imeOptions = outAttrs.imeOptions or
-                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
-                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
-                return connection
-            }
-        }.apply {
-            setBackgroundColor(MowerStyle.paper)
-            settings.javaScriptEnabled = true; settings.domStorageEnabled = true
-            settings.useWideViewPort = true
-            settings.allowFileAccess = false; settings.allowContentAccess = false
-            webChromeClient = object : android.webkit.WebChromeClient() {
-                override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
-                    fileSelection?.onReceiveValue(null); fileSelection = callback
-                    return try {
-                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 7002)
-                        true
-                    } catch (_: Exception) { fileSelection?.onReceiveValue(null); fileSelection = null; true }
-                }
-            }
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView, url: String?) {
-                    // Chromium can retain the landscape layout width when a focused
-                    // input rotates back to portrait. Keep the mobile viewport at
-                    // its normal minimum scale; Mower's own UI scale still applies.
-                    view.evaluateJavascript("""
-                        (() => {
-                            const viewport = document.querySelector('meta[name="viewport"]');
-                            if (viewport && !/minimum-scale\s*=/.test(viewport.content))
-                                viewport.content += ', minimum-scale=1';
-                        })();
-                    """.trimIndent(), null)
-                }
-
-                override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean {
-                    val uri = request?.url ?: return true
-                    val endpoint = MowerService.url ?: return true
-                    return uri.scheme != "http" || uri.host != "127.0.0.1" || uri.port != android.net.Uri.parse(endpoint).port
-                }
-            }
-        }
-        content.addView(web, FrameLayout.LayoutParams(-1, -1))
+        web = createWebView()
+        webHost.addView(web, FrameLayout.LayoutParams(-1, -1))
         landing = welcome()
-        content.addView(landing, FrameLayout.LayoutParams(-1, -1))
-        layout.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
+        webHost.addView(landing, FrameLayout.LayoutParams(-1, -1))
+        layout.addView(webHost, LinearLayout.LayoutParams(-1, 0, 1f))
         layout.setOnApplyWindowInsetsListener { _, insets ->
             val safe = MowerStyle.safeInsets(insets)
             val left = safe.left
             val right = safe.right
             layout.setPadding(0, safe.top + dp(8), 0, insets.systemWindowInsetBottom)
             barScroll.setPadding(left + dp(16), 0, right + dp(16), 0)
-            content.setPadding(left, 0, right, 0)
+            webHost.setPadding(left, 0, right, 0)
             statusRow.setPadding(left + dp(18), dp(8), right + dp(16), dp(8))
             permissionRow.setPadding(left + dp(18), 0, right + dp(16), dp(6))
             (installBar.layoutParams as LinearLayout.LayoutParams).apply {
@@ -198,11 +167,132 @@ class MowerActivity : Activity() {
         setContentView(layout); layout.requestApplyInsets()
     }
 
+    private fun createWebView(): WebView = object : WebView(this) {
+        override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+            val connection = super.onCreateInputConnection(outAttrs)
+            outAttrs.imeOptions = outAttrs.imeOptions or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
+            return connection
+        }
+    }.apply {
+        setBackgroundColor(MowerStyle.paper)
+        settings.javaScriptEnabled = true; settings.domStorageEnabled = true
+        settings.useWideViewPort = true
+        settings.allowFileAccess = false; settings.allowContentAccess = false
+        webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
+                fileSelection?.onReceiveValue(null); fileSelection = callback
+                return try {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 7002)
+                    true
+                } catch (_: Exception) { fileSelection?.onReceiveValue(null); fileSelection = null; true }
+            }
+        }
+        webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String?) {
+                executeWebCommand(webRecovery.pageFinished(url))
+                // Chromium can retain the landscape layout width when a focused
+                // input rotates back to portrait. Keep the mobile viewport at
+                // its normal minimum scale; Mower's own UI scale still applies.
+                view.evaluateJavascript("""
+                    (() => {
+                        const viewport = document.querySelector('meta[name="viewport"]');
+                        if (viewport && !/minimum-scale\s*=/.test(viewport.content))
+                            viewport.content += ', minimum-scale=1';
+                    })();
+                """.trimIndent(), null)
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if (request.isForMainFrame) executeWebCommand(webRecovery.mainFrameFailed(
+                    request.url.toString(), "${error.errorCode}: ${error.description}",
+                ))
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (request.isForMainFrame) executeWebCommand(webRecovery.mainFrameFailed(
+                    request.url.toString(), "HTTP ${response.statusCode}",
+                ))
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                val reason = if (detail.didCrash()) "WebView 渲染进程崩溃" else "WebView 渲染进程已退出"
+                val command = webRecovery.rendererGone(reason)
+                cancelWebTasks()
+                if (web === view) {
+                    webHost.removeView(view)
+                    view.destroy()
+                    web = createWebView().also {
+                        it.visibility = if (MowerService.url == null) View.GONE else View.VISIBLE
+                        webHost.addView(it, 0, FrameLayout.LayoutParams(-1, -1))
+                    }
+                }
+                executeWebCommand(command)
+                return true
+            }
+
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val uri = request?.url ?: return true
+                val endpoint = MowerService.url ?: return true
+                return uri.scheme != "http" || uri.host != "127.0.0.1" || uri.port != android.net.Uri.parse(endpoint).port
+            }
+        }
+    }
+
+    private fun executeWebCommand(command: WebUiLoadRecovery.Command) {
+        when (command) {
+            WebUiLoadRecovery.Command.None -> Unit
+            WebUiLoadRecovery.Command.Blank -> {
+                cancelWebTasks()
+                webReload.visibility = View.GONE
+                web.loadUrl("about:blank")
+            }
+            WebUiLoadRecovery.Command.Loaded -> {
+                cancelWebTasks()
+                webReload.visibility = View.GONE
+                android.util.Log.i("Mower", "WebUI 加载成功")
+            }
+            is WebUiLoadRecovery.Command.Load -> {
+                cancelWebTasks()
+                webReload.visibility = View.GONE
+                android.util.Log.i("Mower", "正在加载 WebUI")
+                web.loadUrl(command.url)
+                val timeout = Runnable {
+                    val next = webRecovery.timedOut(command.requestId)
+                    if (next != WebUiLoadRecovery.Command.None) web.stopLoading()
+                    executeWebCommand(next)
+                }
+                webTimeoutTask = timeout
+                handler.postDelayed(timeout, command.timeoutMs)
+            }
+            is WebUiLoadRecovery.Command.RetryAfter -> {
+                cancelWebTasks()
+                android.util.Log.w("Mower", "WebUI 加载失败：${command.reason}；${command.delayMs}ms 后重试")
+                val retry = Runnable { executeWebCommand(webRecovery.runRetry(command.requestId)) }
+                webRetryTask = retry
+                handler.postDelayed(retry, command.delayMs)
+            }
+            is WebUiLoadRecovery.Command.ManualRetry -> {
+                cancelWebTasks()
+                android.util.Log.e("Mower", "WebUI 连续加载失败：${command.reason}")
+                webReload.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun cancelWebTasks() {
+        webTimeoutTask?.let(handler::removeCallbacks)
+        webRetryTask?.let(handler::removeCallbacks)
+        webTimeoutTask = null
+        webRetryTask = null
+    }
+
     override fun onResume() {
         super.onResume(); uiResumed = true; AndroidSystemSettings.foreground = this; refreshPermissions()
         val dark = getSharedPreferences("appearance", 0).getBoolean("dark", false)
         MowerStyle.dark = dark; MowerStyle.applyTheme(layout); chrome(); web.setBackgroundColor(MowerStyle.paper)
-        if (dark != appliedTheme && loaded != null) web.reload()
+        if (dark != appliedTheme && MowerService.url != null) executeWebCommand(webRecovery.manualRetry())
         appliedTheme = dark
         web.onResume(); web.resumeTimers(); refreshLoop.start()
     }
@@ -355,6 +445,6 @@ class MowerActivity : Activity() {
     }
 
     override fun onDestroy() {
-        refreshLoop.stop(); scope.cancel(); web.destroy(); super.onDestroy()
+        refreshLoop.stop(); cancelWebTasks(); scope.cancel(); web.destroy(); super.onDestroy()
     }
 }

@@ -1,5 +1,6 @@
 """Create a versioned, hashed Android runtime from the built ARM64 image."""
 import argparse
+import contextlib
 import hashlib
 import json
 import lzma
@@ -18,7 +19,13 @@ archive = ROOT / 'artifacts/runtime-rootfs.tar'
 parser = argparse.ArgumentParser()
 parser.add_argument('--reuse-rootfs', action='store_true', help='Reuse the local dependency archive when the runtime Docker image has not changed')
 args = parser.parse_args()
-if args.reuse_rootfs:
+official_runtime = ROOT / 'artifacts/upstream-python-runtime.zip.xz'
+if official_runtime.is_file():
+    # Reuse exactly the interpreter and dependencies shipped by the Mower release.
+    base_zip = ROOT / 'artifacts/upstream-runtime.zip'
+    with lzma.open(official_runtime, 'rb') as source, base_zip.open('wb') as dest:
+        shutil.copyfileobj(source, dest, 1024*1024)
+elif args.reuse_rootfs:
     if not archive.is_file():
         parser.error('No cached dependency archive; run without --reuse-rootfs first')
 else:
@@ -31,23 +38,36 @@ else:
 links = {}
 output = assets / 'python-runtime.zip.xz'
 uncompressed = ROOT / 'artifacts/python-runtime-stored.zip'
-with tarfile.open(archive) as tar, zipfile.ZipFile(uncompressed, 'w', compression=zipfile.ZIP_STORED) as zip:
-    for member in tar:
-        name = member.name.lstrip('./')
-        if not name or name in ('etc/hosts', 'etc/resolv.conf') or name.startswith(('dev/', 'proc/', 'sys/', 'usr/share/man/')):
-            continue
-        if any(part in ('__pycache__', 'tests', 'test', '.pytest_cache') for part in Path(name).parts) or name.endswith(('.pyc', '.pyo')):
-            continue
-        if name.startswith('usr/local/include/') or name.endswith('/ddddocr/common.onnx'):
-            continue
-        if name.startswith('usr/share/doc/') and not name.endswith('/copyright'):
-            continue
-        if member.issym():
-            links[name] = member.linkname
-        elif member.islnk():
-            links[name] = posixpath.relpath(member.linkname, posixpath.dirname(name))
-        elif member.isfile():
-            zip.writestr(name, tar.extractfile(member).read())
+with contextlib.ExitStack() as stack:
+    zip = stack.enter_context(zipfile.ZipFile(uncompressed, 'w', compression=zipfile.ZIP_STORED))
+    if official_runtime.is_file():
+        base = stack.enter_context(zipfile.ZipFile(base_zip))
+        links = json.loads(base.read('.symlinks.json'))
+        for info in base.infolist():
+            if info.filename in ('.symlinks.json', 'etc/resolv.conf', 'etc/hosts', 'mower-data/', 'dev/', 'proc/', 'sys/', 'tmp/', 'root/', 'mower/'):
+                continue
+            if info.filename == 'mower' or info.filename.startswith(('mower/', 'mower-data/')):
+                raise ValueError('Upstream Python runtime must not contain host or application files')
+            with base.open(info) as source, zip.open(info, 'w') as dest:
+                shutil.copyfileobj(source, dest, 1024*1024)
+    else:
+        tar = stack.enter_context(tarfile.open(archive))
+        for member in tar:
+            name = member.name.lstrip('./')
+            if not name or name in ('etc/hosts', 'etc/resolv.conf') or name.startswith(('dev/', 'proc/', 'sys/', 'usr/share/man/')):
+                continue
+            if any(part in ('__pycache__', 'tests', 'test', '.pytest_cache') for part in Path(name).parts) or name.endswith(('.pyc', '.pyo')):
+                continue
+            if name.startswith('usr/local/include/') or name.endswith('/ddddocr/common.onnx'):
+                continue
+            if name.startswith('usr/share/doc/') and not name.endswith('/copyright'):
+                continue
+            if member.issym():
+                links[name] = member.linkname
+            elif member.islnk():
+                links[name] = posixpath.relpath(member.linkname, posixpath.dirname(name))
+            elif member.isfile():
+                zip.writestr(name, tar.extractfile(member).read())
     # Android shares the host network, not Docker's DNS resolver.
     zip.writestr('etc/resolv.conf', 'nameserver 223.5.5.5\nnameserver 1.1.1.1\n')
     zip.writestr('etc/hosts', '127.0.0.1 localhost\n::1 localhost\n')
@@ -77,6 +97,7 @@ try:
 finally:
     compressed.unlink(missing_ok=True)
 uncompressed.unlink()
+if official_runtime.is_file(): base_zip.unlink()
 with output.open('rb') as source:
     digest = hashlib.file_digest(source, 'sha256').hexdigest()
 (assets / 'python-runtime.sha256').write_text(digest + '\n')

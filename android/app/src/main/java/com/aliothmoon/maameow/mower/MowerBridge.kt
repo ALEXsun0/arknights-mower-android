@@ -140,10 +140,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         prepared = false
         restoreAudio(current)
         recoveredBinder = current.asBinder()
-        system(current, "display_options", JSONObject().put("fullscreen", settings.enabled("force_fullscreen")))
         check(current.setVirtualDisplayMode(2))
-        if (settings.enabled("resolution_720p")) current.setVirtualDisplayResolution(1280, 720, 160)
-        else current.setVirtualDisplayResolution(1920, 1080, 320)
+        current.setVirtualDisplayResolution(1920, 1080, 320)
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
         val component = java.io.File(context.filesDir, "mower-data/maa-component.zip")
@@ -235,7 +233,6 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             systemError = null
             try {
                 RemoteServiceManager.getInstanceOrNull()?.let {
-                    system(it, "display_options", JSONObject().put("fullscreen", settings.enabled("force_fullscreen")))
                     if (prepared && it.asBinder() == serviceBinder) applyAudio(it)
                     else if (!settings.enabled("mute_game")) restoreAudio(it)
                 } ?: run { systemError = "已保存；Shizuku 连接恢复后应用游戏设置" }
@@ -289,7 +286,9 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                 .put("on_display", s.isAppAlive(packageName) == 1 && s.isAppOnVirtualDisplay(packageName))
             "launch", "exit_game" -> {
                 if (method == "launch" && settings.enabled("wake_on_launch")) wake(s, settings.enabled("dismiss_keyguard"))
-                check(s.mowerGame(packageName, method == "launch")) { "游戏启动或关闭失败" }
+                check(s.mowerGame(packageName, method == "launch")) {
+                    if (method == "launch") "游戏启动后未进入后台显示器" else "游戏关闭后进程仍在运行"
+                }
                 expectedGameRunning = method == "launch"
                 nextGameProbe = 0L
                 if (method == "launch") applyAudio(s) else restoreAudio(s)

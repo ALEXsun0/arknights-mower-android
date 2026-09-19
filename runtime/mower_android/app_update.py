@@ -59,9 +59,7 @@ def info():
             'manual_label': '点击或拖入 Mower、MAA 核心或兼容 Python 更新包',
             'manual_hint': 'Mower 使用主仓库 Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
             'install_label': '导入并安装', 'python': python_package.info(),
-            'component_updates': [{'label':'MAA Python 兼容接口','endpoint':'/android/python-update','check':True,
-                                  'hint':'仅接口内容变化时提示更新；现有任务保持原接口，新实例使用新接口。可在下方拖入兼容 ZIP。'},
-                                 {'label':'内置 Mower 恢复','endpoint':'/android/mower-recovery','check':False,
+            'component_updates': [{'label':'内置 Mower 恢复','endpoint':'/android/mower-recovery','check':False,
                                   'hint':'恢复 APK 内置 Mower，停止并重新启动服务后生效。配置和 MAA 不受影响。'}]}
 
 

@@ -91,7 +91,7 @@ class SnapshotTests(unittest.TestCase):
 
 
 class OfficialMowerReleaseTests(unittest.TestCase):
-    def test_official_archive_is_preferred_and_applied_with_its_dependencies(self):
+    def test_official_archive_is_preferred_and_applied_with_its_dependencies(self, format=1):
         import prepare_distribution as prepare
         import shutil
         import zipfile
@@ -103,6 +103,9 @@ class OfficialMowerReleaseTests(unittest.TestCase):
             tag=baseline['mower']['tag']
             version=tag.removeprefix('v')
             meta={'kind':'mower-android','format':1,'platform':'android','arch':'arm64','runtime_api':1,'python':'3.12','version':version,'revision':'a'*40}
+            payload = b'official compressed runtime fixture'
+            if format == 2:
+                meta.update(format=2, min_apk=29, runtime={'file':'python-runtime.zip.xz', 'sha256':hashlib.sha256(payload).hexdigest(), 'unpacked_size':1024})
             archive=root/'official.zip'
             with zipfile.ZipFile(archive,'w') as z:
                 for name,data in {
@@ -113,6 +116,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                     'mower/requirements.txt':'Flask==3.0.3\n',
                     'mower/CHANGELOG.md':'new release notes',
                 }.items():z.writestr(name,data)
+                if format == 2: z.writestr('python-runtime.zip.xz', payload)
             def item(name):return {'name':name,'digest':'sha256:'+'b'*64,'size':10,'browser_download_url':'https://github.com/example/archive'}
             mower={'tag_name':tag,'published_at':'2026-09-15T00:00:00Z','assets':[item(f'arknights-mower_{version}_android_arm64.zip')]}
             maa={'tag_name':'v6.18.0-beta.1','published_at':'2026-09-15T00:00:00Z','assets':[item('MAAComponent-v6.18.0-beta.1-android-arm64.tar.gz')]}
@@ -123,8 +127,11 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                 plan=prepare.plan(publish=True)
                 self.assertTrue(plan['publish'])
                 self.assertEqual(plan['bundled']['mower']['source'],'release')
-                fingerprint.assert_called_once_with(root,b'Flask==3.0.3\n')
+                fingerprint.assert_called_once_with(root,b'<mower-managed-runtime>' if format == 2 else b'Flask==3.0.3\n')
                 prepare.apply()
+                runtime = root/'artifacts/upstream-python-runtime.zip.xz'
+                if format == 2: self.assertEqual(runtime.read_bytes(), payload)
+                else: self.assertFalse(runtime.exists())
                 self.assertFalse(old.exists())
                 self.assertEqual((root/'runtime/requirements.in').read_text(),'Flask==3.0.3\n')
                 self.assertEqual((root/'runtime/ui/dist/index.html').read_text(),'<html>official UI</html>')
@@ -134,5 +141,8 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                 mower['tag_name']='v4.2.0-alpha.1';mower['assets']=[]
                 with self.assertRaisesRegex(ValueError,'has not published'):
                     prepare.plan(publish=True)
+
+    def test_full_runtime_is_reused_without_changing_the_host_fingerprint(self):
+        self.test_official_archive_is_preferred_and_applied_with_its_dependencies(format=2)
 
 if __name__=='__main__': unittest.main()
