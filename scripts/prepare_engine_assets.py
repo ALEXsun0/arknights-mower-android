@@ -1,34 +1,23 @@
-"""Fetch pinned PRoot assets; verify all downloads before extraction."""
+"""Verify and extract the vendored PRoot packages."""
 import hashlib
 import io
 import json
 import tarfile
-import urllib.request
-import zipfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-cache = root / 'artifacts'
-cache.mkdir(exist_ok=True)
 lock = json.loads(Path(__file__).with_name('engine-assets.lock.json').read_text())
+packages = root / 'scripts/termux-packages'
 native = root / 'android/app/src/main/jniLibs/arm64-v8a'
 native.mkdir(parents=True, exist_ok=True)
 
 
-def download(url, digest):
-    target = cache / url.rsplit('/', 1)[1]
-    if not target.exists():
-        with urllib.request.urlopen(url, timeout=90) as response:
-            target.write_bytes(response.read())
-    data = target.read_bytes()
-    if hashlib.sha256(data).hexdigest() != digest:
-        raise ValueError(f'Checksum mismatch: {target}; remove it and retry')
-    return data
-
-
 names = {'proot': 'libproot.so', 'loader': 'libproot-loader.so', 'libtalloc.so.2.4.3': 'libtalloc.so', 'libandroid-shmem.so': 'libandroid-shmem.so'}
 for package in lock['termux']:
-    raw = download('https://packages.termux.dev/apt/termux-main/' + package['Filename'], package['SHA256'])
+    source = packages / Path(package['Filename']).name
+    raw = source.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != package['SHA256']:
+        raise ValueError(f'Checksum mismatch: {source}')
     offset = 8
     while offset < len(raw):
         header = raw[offset:offset+60]

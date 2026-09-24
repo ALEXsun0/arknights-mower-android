@@ -12,6 +12,7 @@ def host_digest(root, requirements=None):
             if directory=='runtime/mower_android' and (p.name=='maa_adapter.py' or p.suffix!='.py'): continue
             files.append(p)
     files += [root/p for p in ('android/build.gradle.kts','android/app/build.gradle.kts','android/hidden-api/build.gradle.kts','scripts/runtime.Dockerfile','scripts/engine-assets.lock.json','runtime/requirements.in')]
+    files += list((root/'scripts/termux-packages').glob('*.deb'))
     digest=hashlib.sha256()
     for p in sorted(set(files)):
         data=p.read_bytes()
