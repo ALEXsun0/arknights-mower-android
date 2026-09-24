@@ -1,21 +1,46 @@
 import hashlib
+import io
 import json
 import re
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from prepare_distribution import adapter_metadata
-from release_common import latest_beta
+from release_common import download, latest_beta
 from package_maa_python import build
 from host_fingerprint import host_digest
 from publish_distribution import compatibility
 
 class ReleaseAutomationTests(unittest.TestCase):
+    def test_asset_download_retries_server_errors_but_not_missing_assets(self):
+        payload = b'verified release asset'
+        item = {'browser_download_url':'https://github.com/example/release.zip',
+                'digest':'sha256:'+hashlib.sha256(payload).hexdigest(), 'size':len(payload)}
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp)/'release.zip'
+            server_error = urllib.error.HTTPError(item['browser_download_url'], 500, 'server error', {}, None)
+            with patch('release_common.urllib.request.urlopen', side_effect=[server_error, io.BytesIO(payload)]) as open_url, \
+                 patch('release_common.time.sleep') as sleep:
+                self.assertEqual(download(item, target).read_bytes(), payload)
+                self.assertEqual(open_url.call_count, 2)
+                sleep.assert_called_once_with(2)
+            server_error.close()
+            self.assertFalse((Path(temp)/'release.zip.part').exists())
+            target.unlink()
+            missing = urllib.error.HTTPError(item['browser_download_url'], 404, 'not found', {}, None)
+            with patch('release_common.urllib.request.urlopen', side_effect=missing) as open_url, \
+                 patch('release_common.time.sleep') as sleep:
+                with self.assertRaises(urllib.error.HTTPError): download(item, target)
+                open_url.assert_called_once()
+                sleep.assert_not_called()
+            missing.close()
+
     def test_latest_beta_includes_newer_stable_and_ignores_old_calendar_version(self):
         releases=[{'tag_name':tag,'published_at':at,'draft':False} for tag,at in [
             ('2025.2.1','2025-02-01T00:00:00Z'),('v4.1.6-alpha.5','2026-09-09T00:00:00Z'),

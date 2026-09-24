@@ -1,9 +1,13 @@
 """Shared release selection and verified transport for distribution CI."""
 from datetime import datetime
 import hashlib
+import http.client
 import json
 import os
 import re
+import sys
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -58,14 +62,23 @@ def download(item, target, limit=768*1024**2):
     url = item['browser_download_url']
     if not url.startswith('https://github.com/'): raise ValueError('Unexpected asset origin')
     temporary = target.with_suffix(target.suffix+'.part')
-    try:
-        total = 0; sha = hashlib.sha256()
-        with urllib.request.urlopen(url, timeout=90) as response, temporary.open('wb') as output:
-            while chunk := response.read(256*1024):
-                total += len(chunk)
-                if total > limit: raise ValueError('Asset exceeds size limit')
-                output.write(chunk); sha.update(chunk)
-        if total != item['size'] or sha.hexdigest() != digest: raise ValueError('Asset digest/size mismatch')
-        temporary.replace(target)
-    finally: temporary.unlink(missing_ok=True)
-    return target
+    for attempt in range(5):
+        try:
+            total = 0; sha = hashlib.sha256()
+            with urllib.request.urlopen(url, timeout=90) as response, temporary.open('wb') as output:
+                while chunk := response.read(256*1024):
+                    total += len(chunk)
+                    if total > limit: raise ValueError('Asset exceeds size limit')
+                    output.write(chunk); sha.update(chunk)
+            if total != item['size'] or sha.hexdigest() != digest: raise ValueError('Asset digest/size mismatch')
+            temporary.replace(target)
+            return target
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code != 429 and exc.code < 500:
+                raise
+            if attempt == 4: raise
+            delay = 2 ** (attempt + 1)
+            print(f'Asset download failed ({exc}); retrying in {delay}s', file=sys.stderr)
+            time.sleep(delay)
+        finally:
+            temporary.unlink(missing_ok=True)

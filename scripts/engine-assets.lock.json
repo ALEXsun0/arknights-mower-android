@@ -8,9 +8,9 @@
     },
     {
       "Package": "proot",
-      "Version": "5.1.107.92",
-      "Filename": "pool/main/p/proot/proot_5.1.107.92_aarch64.deb",
-      "SHA256": "1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9"
+      "Version": "5.1.107.94",
+      "Filename": "pool/main/p/proot/proot_5.1.107.94_aarch64.deb",
+      "SHA256": "b6fa26884d162f5234b0aba9f8a98971aad793706099464f7bd7eb1e21d63935"
     },
     {
       "Package": "libandroid-shmem",
