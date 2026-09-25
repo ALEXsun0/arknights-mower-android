@@ -12,9 +12,10 @@ from pathlib import Path
 
 import requests
 from mower_android.bridge import Bridge
-from mower_android import python_package, mower_package
+from mower_android import python_package, mower_package, mower_ota
 
 REPO = 'ArkMowers/arknights-mower'
+OTA_REPO = 'ArkMowers/MowerRelease'
 MAX_UPLOAD = 768 * 1024**2
 _lock = threading.Lock()
 _plans = {}
@@ -67,6 +68,54 @@ def status():
     return {**_job, 'last_check': _last_check}
 
 
+def choose_ota_asset(target, current, full_size):
+    active = mower_package.state()
+    base_id = active.get('id')
+    if (not mower_package.valid_id(base_id) or active.get('pending') or
+            active.get('version') != current or
+            not (mower_package.folder()/base_id/'mower-android.json').is_file()):
+        return None
+    name = f"arknights-mower-ota_{current.removeprefix('v')}_to_{target.removeprefix('v')}_android_arm64.zip"
+    try:
+        response = requests.get(f'https://api.github.com/repos/{OTA_REPO}/releases/tags/{target}', timeout=10)
+        response.raise_for_status()
+        release = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(release, dict) or release.get('draft') or release.get('tag_name') != target:
+        return None
+    asset = next((item for item in release.get('assets', []) if item.get('name') == name), None)
+    if (not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '') or
+            not isinstance(asset.get('size'), int) or not 0 < asset['size'] < full_size or
+            not (asset.get('browser_download_url') or '').startswith(
+                f'https://github.com/{OTA_REPO}/releases/download/{target}/')):
+        return None
+    return {'asset': asset, 'base_id': base_id, 'from_version': current}
+
+
+def download_asset(asset, label):
+    global _job
+    digest = asset['digest'][7:]
+    path = folder()/(digest+'.zip')
+    size = 0; sha = hashlib.sha256()
+    try:
+        with requests.get(asset['browser_download_url'], stream=True, timeout=(15, 60)) as response:
+            response.raise_for_status()
+            with path.open('wb') as out:
+                for chunk in response.iter_content(256*1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD: raise ValueError('安装包超过大小限制')
+                    out.write(chunk); sha.update(chunk)
+                    _job.update(progress=min(99, size*100//max(1, asset['size'])),
+                                current=size, total=asset['size'], message=f'正在下载 {label}')
+        if size != asset['size'] or sha.hexdigest() != digest:
+            raise ValueError(f'{label} 更新包 SHA256 或大小不一致')
+        return path
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def check(channel):
     global _last_check
     from arknights_mower.utils.software_update import choose_release, version_key
@@ -88,8 +137,11 @@ def check(channel):
     if not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or ''):
         raise ValueError('此发行版缺少可校验的 Android Mower 更新包')
     ident = uuid.uuid4().hex
-    _plans[ident] = {'asset': asset, 'version': release['tag_name']}
     from arknights_mower import __version__ as current
+    _plans[ident] = {'asset': asset, 'version': release['tag_name']}
+    if version_key(release['tag_name']) > version_key(current):
+        ota = choose_ota_asset(release['tag_name'], current, asset['size'])
+        if ota: _plans[ident]['ota'] = ota
     _last_check = {'ok': True, 'check_id': ident, 'channel': channel, 'checked_at': time.time(),
         'version': release['tag_name'], 'available': version_key(release['tag_name']) > version_key(current),
         'downgrade': False, 'url': release['html_url'], 'notes': release.get('body', ''),
@@ -162,26 +214,38 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
             'message': '正在准备更新包', 'cancellable': False}
     def run():
         path = plan.get('path')
+        reconstructed = None
         try:
+            result = None
             if 'asset' in plan:
-                asset = plan['asset']; digest = asset['digest'][7:]; path = folder()/(digest+'.zip')
-                size = 0; sha = hashlib.sha256()
-                with requests.get(asset['browser_download_url'], stream=True, timeout=(15, 60)) as response:
-                    response.raise_for_status()
-                    with path.open('wb') as out:
-                        for chunk in response.iter_content(256*1024):
-                            size += len(chunk)
-                            if size > MAX_UPLOAD: raise ValueError('安装包超过大小限制')
-                            out.write(chunk); sha.update(chunk)
-                            _job.update(progress=min(99, size*100//max(1, asset['size'])), current=size, total=asset['size'], message='正在下载 Mower')
-                if size != asset['size'] or sha.hexdigest() != digest: raise ValueError('Mower 更新包 SHA256 或大小不一致')
-                plan.update(kind='mower', sha256=digest)
-            with path.open('rb') as stream: actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-            if actual != plan['sha256']: raise ValueError('更新包内容已改变，请重新导入')
-            if plan['kind'] == 'mower':
+                if 'ota' in plan:
+                    try:
+                        ota = plan['ota']
+                        active = mower_package.state()
+                        if active.get('id') != ota['base_id'] or active.get('pending'):
+                            raise ValueError('本地 Mower 版本已改变')
+                        path = download_asset(ota['asset'], 'Mower OTA')
+                        reconstructed = folder()/(uuid.uuid4().hex+'.reconstructed.zip')
+                        mower_ota.reconstruct(
+                            path, mower_package.folder()/ota['base_id'], reconstructed,
+                            from_version=ota['from_version'], to_version=plan['version'])
+                        result = mower_package.install(reconstructed)
+                    except Exception as exc:
+                        _job.update(message=f'OTA 不可用（{exc}），改用完整 Mower 包')
+                        if path is not None: path.unlink(missing_ok=True)
+                        path = None
+                        if reconstructed is not None: reconstructed.unlink(missing_ok=True)
+                        reconstructed = None
+                if result is None:
+                    path = download_asset(plan['asset'], 'Mower')
+                    plan.update(kind='mower', sha256=plan['asset']['digest'][7:])
+            if result is None:
+                with path.open('rb') as stream: actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+                if actual != plan['sha256']: raise ValueError('更新包内容已改变，请重新导入')
+            if result is None and plan['kind'] == 'mower':
                 result = mower_package.install(path)
-            elif plan['kind'] == 'python': result = python_package.install(path)
-            else:
+            elif result is None and plan['kind'] == 'python': result = python_package.install(path)
+            elif result is None:
                 import server
                 from mower_android.managed import import_component
                 with server.maa_maintenance_lock:
@@ -192,6 +256,7 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
         except Exception as exc: _job.update(status='failed', message=str(exc))
         finally:
             if path is not None and plan.get('kind') != 'apk': path.unlink(missing_ok=True)
+            if reconstructed is not None: reconstructed.unlink(missing_ok=True)
             _lock.release()
     threading.Thread(target=run, daemon=True).start()
     return dict(_job)
