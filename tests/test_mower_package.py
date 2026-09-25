@@ -142,9 +142,11 @@ class MowerPackageTests(unittest.TestCase):
         self.assertEqual(mower_package.state()['version'],'4.2.0')
 
     def test_shared_update_selects_upstream_mower_zip_not_apk(self):
-        asset={'name':'arknights-mower_4.2.0_android_arm64.zip','digest':'sha256:'+'a'*64,'size':10}
+        asset={'name':'arknights-mower_4.2.0_android_arm64.zip','digest':'sha256:'+'a'*64,'size':10,
+               'browser_download_url':'https://github.com/ArkMowers/arknights-mower/releases/download/v4.2.0/arknights-mower_4.2.0_android_arm64.zip'}
         reply=Mock(); reply.json.return_value={'tag_name':'v4.2.0','draft':False,'prerelease':False,'published_at':'2026-09-11T00:00:00Z','assets':[{'name':'mower-android-arm64.apk'},asset],'html_url':'https://github.com/ArkMowers/arknights-mower/releases/tag/v4.2.0'}
-        with patch.object(app_update.requests,'get',return_value=reply) as get:
+        with patch.object(app_update, 'release_index', return_value=None), \
+             patch.object(app_update.requests,'get',return_value=reply) as get:
             result=app_update.check('stable')
         self.assertIn('/repos/ArkMowers/arknights-mower/',get.call_args.args[0])
         self.assertEqual(app_update._plans[result['check_id']]['asset'],asset)
