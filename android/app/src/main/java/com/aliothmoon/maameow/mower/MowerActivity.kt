@@ -63,8 +63,9 @@ class MowerActivity : Activity() {
     private var webTimeoutTask: Runnable? = null
     private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
-    private var pendingGalleryImage: ByteArray? = null
-    private val galleryBridge = object {
+    private data class PendingSave(val bytes: ByteArray, val name: String, val mime: String, val gallery: Boolean)
+    private val pendingSaves = mutableListOf<PendingSave>()
+    private val downloadBridge = object {
         @JavascriptInterface
         fun saveImageToGallery(dataUrl: String) {
             val prefix = "data:image/jpeg;base64,"
@@ -72,9 +73,8 @@ class MowerActivity : Activity() {
                 runOnUiThread { galleryMessage("排班图片格式无效") }
                 return
             }
-            val bytes = try {
-                Base64.decode(dataUrl.substring(prefix.length), Base64.DEFAULT)
-            } catch (_: IllegalArgumentException) {
+            val bytes = decodeDownload(dataUrl.substring(prefix.length))
+            if (bytes == null) {
                 runOnUiThread { galleryMessage("排班图片解码失败") }
                 return
             }
@@ -84,20 +84,54 @@ class MowerActivity : Activity() {
                 runOnUiThread { galleryMessage("排班图片格式无效") }
                 return
             }
-            runOnUiThread { saveGalleryImage(bytes) }
+            val name = "Mower-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.jpg"
+            runOnUiThread { saveFile(PendingSave(bytes, name, "image/jpeg", true)) }
         }
 
         @JavascriptInterface
-        fun galleryDownloadFailed() {
-            runOnUiThread { galleryMessage("排班图片下载失败") }
+        fun saveToDownloads(dataUrl: String, requestedName: String) {
+            val marker = ";base64,"
+            val split = dataUrl.indexOf(marker)
+            val name = requestedName.substringAfterLast('/').substringAfterLast('\\')
+                .replace(Regex("[^\\p{L}\\p{N}._() -]"), "_").trim().take(120)
+            if (!dataUrl.startsWith("data:") || split < 5 || dataUrl.length > 28_000_000 ||
+                name.isBlank() || name == "." || name == ".."
+            ) {
+                runOnUiThread { galleryMessage("下载文件格式或名称无效") }
+                return
+            }
+            val bytes = decodeDownload(dataUrl.substring(split + marker.length))
+            if (bytes == null || bytes.isEmpty() || bytes.size > 20_000_000) {
+                runOnUiThread { galleryMessage("下载文件解码失败或超过 20 MB") }
+                return
+            }
+            val mime = when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
+                "json" -> "application/json"
+                "zip" -> "application/zip"
+                else -> dataUrl.substring(5, split).takeIf {
+                    it.matches(Regex("[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+"))
+                } ?: "application/octet-stream"
+            }
+            runOnUiThread { saveFile(PendingSave(bytes, name, mime, false)) }
+        }
+
+        @JavascriptInterface
+        fun downloadFailed() {
+            runOnUiThread { galleryMessage("文件下载失败") }
         }
     }
 
-    private fun installGalleryDownloadHook(view: WebView) {
+    private fun decodeDownload(encoded: String): ByteArray? = try {
+        Base64.decode(encoded, Base64.DEFAULT)
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
+    private fun installDownloadHook(view: WebView) {
         view.evaluateJavascript("""
             (() => {
-                if (window.__mowerGalleryDownloadHook) return;
-                window.__mowerGalleryDownloadHook = true;
+                if (window.__mowerDownloadHook) return;
+                window.__mowerDownloadHook = true;
                 const pending = new Map();
                 const revoke = URL.revokeObjectURL.bind(URL);
                 URL.revokeObjectURL = (url) => {
@@ -105,7 +139,7 @@ class MowerActivity : Activity() {
                 };
                 document.addEventListener('click', (event) => {
                     const link = event.target.closest?.('a[download]');
-                    if (!link || link.download !== 'plan.jpg' || !link.href.startsWith('blob:')) return;
+                    if (!link || !link.download || !link.href.startsWith('blob:')) return;
                     event.preventDefault();
                     const url = link.href;
                     const read = fetch(url)
@@ -117,10 +151,14 @@ class MowerActivity : Activity() {
                             const reader = new FileReader();
                             reader.onload = () => resolve(reader.result);
                             reader.onerror = reject;
-                            reader.readAsDataURL(new Blob([blob], { type: 'image/jpeg' }));
+                            reader.readAsDataURL(link.download === 'plan.jpg'
+                                ? new Blob([blob], { type: 'image/jpeg' }) : blob);
                         }))
-                        .then((dataUrl) => window.MowerAndroid.saveImageToGallery(dataUrl))
-                        .catch(() => window.MowerAndroid.galleryDownloadFailed());
+                        .then((dataUrl) => {
+                            if (link.download === 'plan.jpg') window.MowerAndroid.saveImageToGallery(dataUrl);
+                            else window.MowerAndroid.saveToDownloads(dataUrl, link.download);
+                        })
+                        .catch(() => window.MowerAndroid.downloadFailed());
                     pending.set(url, read);
                     read.then(() => {
                         pending.delete(url);
@@ -135,51 +173,60 @@ class MowerActivity : Activity() {
         Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     }
 
-    private fun saveGalleryImage(bytes: ByteArray) {
+    private fun saveFile(file: PendingSave) {
         if (Build.VERSION.SDK_INT < 29 &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
         ) {
-            pendingGalleryImage = bytes
-            requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 7003)
+            val requestNeeded = pendingSaves.isEmpty()
+            pendingSaves.add(file)
+            if (requestNeeded) requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 7003)
             return
         }
-        val name = "Mower-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.jpg"
+        val directoryName = if (file.gallery) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOWNLOADS
+        val relativePath = "$directoryName/Mower"
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, name)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Mower")
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, file.mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
-                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: error("无法创建相册图片")
+                val collection = if (file.gallery) MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                val uri = contentResolver.insert(collection, values) ?: error("无法创建文件")
                 try {
-                    contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                        ?: error("无法写入相册图片")
+                    contentResolver.openOutputStream(uri)?.use { it.write(file.bytes) }
+                        ?: error("无法写入文件")
                     check(contentResolver.update(uri, ContentValues().apply {
-                        put(MediaStore.Images.Media.IS_PENDING, 0)
-                    }, null, null) == 1) { "无法完成相册图片保存" }
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }, null, null) == 1) { "无法完成文件保存" }
                 } catch (error: Exception) {
                     contentResolver.delete(uri, null, null)
                     throw error
                 }
             } else {
-                val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Mower")
-                check(directory.isDirectory || directory.mkdirs()) { "无法创建相册文件夹" }
-                val file = File(directory, name)
+                val directory = File(Environment.getExternalStoragePublicDirectory(directoryName), "Mower")
+                check(directory.isDirectory || directory.mkdirs()) { "无法创建保存文件夹" }
+                var destination = File(directory, file.name)
+                if (destination.exists()) {
+                    val stem = file.name.substringBeforeLast('.', file.name)
+                    val extension = file.name.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+                    var index = 1
+                    do { destination = File(directory, "$stem ($index)$extension"); index++ } while (destination.exists())
+                }
                 try {
-                    FileOutputStream(file).use { it.write(bytes) }
-                    MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/jpeg"), null)
+                    FileOutputStream(destination).use { it.write(file.bytes) }
+                    MediaScannerConnection.scanFile(this, arrayOf(destination.absolutePath), arrayOf(file.mime), null)
                 } catch (error: Exception) {
-                    file.delete()
+                    destination.delete()
                     throw error
                 }
             }
-            galleryMessage("排班图片已保存到相册 Pictures/Mower")
+            galleryMessage(if (file.gallery) "排班图片已保存到相册 Pictures/Mower" else "文件已保存到 Download/Mower")
         } catch (error: Exception) {
-            android.util.Log.e("Mower", "排班图片保存到相册失败", error)
-            galleryMessage("排班图片保存失败：${error.message ?: "请检查存储空间"}")
+            android.util.Log.e("Mower", "WebUI 文件保存失败", error)
+            galleryMessage("文件保存失败：${error.message ?: "请检查存储空间"}")
         }
     }
     private val refreshLoop = VisibleUiRefresh(
@@ -313,7 +360,7 @@ class MowerActivity : Activity() {
         settings.javaScriptEnabled = true; settings.domStorageEnabled = true
         settings.useWideViewPort = true
         settings.allowFileAccess = false; settings.allowContentAccess = false
-        addJavascriptInterface(galleryBridge, "MowerAndroid")
+        addJavascriptInterface(downloadBridge, "MowerAndroid")
         webChromeClient = object : android.webkit.WebChromeClient() {
             override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
                 fileSelection?.onReceiveValue(null); fileSelection = callback
@@ -326,7 +373,7 @@ class MowerActivity : Activity() {
         webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String?) {
                 executeWebCommand(webRecovery.pageFinished(url))
-                if (url?.startsWith(MowerService.url ?: "\u0000") == true) installGalleryDownloadHook(view)
+                if (url?.startsWith(MowerService.url ?: "\u0000") == true) installDownloadHook(view)
                 // Chromium can retain the landscape layout width when a focused
                 // input rotates back to portrait. Keep the mobile viewport at
                 // its normal minimum scale; Mower's own UI scale still applies.
@@ -474,12 +521,12 @@ class MowerActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != 7003) return
-        val bytes = pendingGalleryImage
-        pendingGalleryImage = null
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && bytes != null) {
-            saveGalleryImage(bytes)
+        val files = pendingSaves.toList()
+        pendingSaves.clear()
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            files.forEach(::saveFile)
         } else {
-            galleryMessage("需要存储权限才能将排班图片保存到相册")
+            galleryMessage("需要存储权限才能保存文件")
         }
     }
 
