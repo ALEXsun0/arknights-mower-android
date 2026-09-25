@@ -1,8 +1,8 @@
 # Android 更新包接口
 
-APK 由本仓库构建发布。共享 WebUI 的软件更新检查 `ArkMowers/arknights-mower` 的 Android Mower 包，支持正式和公测渠道，不运行 Git/npm。APK 与 Mower 版本独立；需要更新宿主时从原生「APK 版本与更新」检查并进入本仓库 Release，使用 Android 安装器覆盖安装，保留原签名和用户数据。
+APK 由本仓库构建发布。共享 WebUI 的软件更新检查 `ArkMowers/MowerRelease` 镜像的 Android Mower 包，支持正式和公测渠道，不运行 Git/npm。APK 与 Mower 版本独立；需要更新宿主时从原生「APK 版本与更新」检查并进入本仓库 Release，使用 Android 安装器覆盖安装，保留原签名和用户数据。
 
-WebUI 的 **Mower 软件更新** 会查询 [MowerRelease](https://github.com/ArkMowers/MowerRelease) 中是否存在当前在线安装版本直达目标版本的 Android ARM64 OTA 包。宿主只在当前 Mower 目录由已安装的完整包保留、版本和目录记录一致时使用差异包；以现有目录重建完整目标包，逐文件校验 SHA-256，再走原有安装、启动失败回退流程。APK 内置的首次版本或任何起点不匹配、下载／校验失败的情况使用主仓库完整 Android 包。`python-runtime.zip.xz` 摘要不变时复用旧文件，变化时差异包可携带完整新文件；差异包过大则发行侧不发布。此流程不更新 APK、MAA 核心或 MAA Python 接口。
+WebUI 的 **Mower 软件更新** 从 [MowerRelease](https://github.com/ArkMowers/MowerRelease) 的渠道索引读取完整 Android 包与当前版本直达目标版本的 Android ARM64 OTA 包。宿主只在当前 Mower 目录由已安装的完整包保留、版本和目录记录一致时使用差异包；以现有目录重建完整目标包，逐文件校验 SHA-256，再走原有安装、启动失败回退流程。APK 内置的首次版本或任何起点不匹配、下载／校验失败的情况使用同一 MowerRelease 的完整 Android 包。`python-runtime.zip.xz` 摘要不变时复用旧文件，变化时差异包可携带完整新文件；差异包过大则发行侧不发布。此流程不更新 APK、MAA 核心或 MAA Python 接口。
 
 Mower 包包含根清单 `mower-android.json` 和 `mower/` 程序目录。宿主验证 `runtime_api=1`、Python 3.12、Android ARM64、版本和归档路径，将程序保存到独立目录，原子切换激活记录。停止并重启服务生效；未能正常显示 WebUI 的启动在下次启动回退。可通过 WebUI「内置 Mower 恢复」清除激活记录。包不覆盖 `mower_android`、Python 依赖、MAA 或用户配置；不兼容环境需要新版 APK。
 

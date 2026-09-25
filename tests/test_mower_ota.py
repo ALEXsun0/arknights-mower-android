@@ -2,6 +2,7 @@ import hashlib
 import json
 import sys
 import tempfile
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -12,6 +13,45 @@ from mower_android import app_update, mower_ota
 
 
 class MowerOtaTests(unittest.TestCase):
+    def test_beta_check_reads_full_and_ota_from_one_mower_release_index(self):
+        target = 'v4.1.6-alpha.8'
+        full_name = 'arknights-mower_4.1.6-alpha.8_android_arm64.zip'
+        ota_name = 'arknights-mower-ota_4.1.6-alpha.7_to_4.1.6-alpha.8_android_arm64.zip'
+        base_url = f'https://github.com/{app_update.OTA_REPO}/releases/download/{target}/'
+        index = {
+            'schema': 1, 'version': target,
+            'source_release': f'https://github.com/{app_update.REPO}/releases/tag/{target}',
+            'notes': 'Release notes',
+            'full_assets': [{'name': full_name, 'size': 200,
+                             'digest': 'sha256:' + 'a'*64, 'url': base_url + full_name}],
+            'ota_assets': [{'name': ota_name, 'size': 100,
+                            'digest': 'sha256:' + 'b'*64, 'url': base_url + ota_name}],
+        }
+        response = Mock()
+        response.json.return_value = index
+        ident = 'b'*64
+        folder = self.root / 'mower-programs'
+        (folder / ident).mkdir(parents=True)
+        (folder / ident / 'mower-android.json').write_text('{}')
+        package = types.ModuleType('arknights_mower')
+        package.__version__ = '4.1.6-alpha.7'
+        utils = types.ModuleType('arknights_mower.utils')
+        software = types.ModuleType('arknights_mower.utils.software_update')
+        software.version_key = lambda value: int(value.rsplit('.', 1)[1])
+        software.choose_release = Mock()
+        with (patch.dict(sys.modules, {'arknights_mower': package,
+                                       'arknights_mower.utils': utils,
+                                       'arknights_mower.utils.software_update': software}),
+              patch.object(app_update.mower_package, 'folder', return_value=folder),
+              patch.object(app_update.mower_package, 'state', return_value={
+                  'id': ident, 'version': '4.1.6-alpha.7'}),
+              patch.object(app_update.requests, 'get', return_value=response) as get):
+            result = app_update.check('beta')
+        get.assert_called_once_with(f'{app_update.OTA_INDEX_URL}/beta.json', timeout=30)
+        plan = app_update._plans.pop(result['check_id'])
+        self.assertEqual(plan['asset']['browser_download_url'], base_url + full_name)
+        self.assertEqual(plan['ota']['asset']['browser_download_url'], base_url + ota_name)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

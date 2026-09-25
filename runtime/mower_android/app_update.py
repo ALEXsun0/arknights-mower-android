@@ -16,6 +16,7 @@ from mower_android import python_package, mower_package, mower_ota
 
 REPO = 'ArkMowers/arknights-mower'
 OTA_REPO = 'ArkMowers/MowerRelease'
+OTA_INDEX_URL = f'https://raw.githubusercontent.com/{OTA_REPO}/main/version'
 MAX_UPLOAD = 768 * 1024**2
 _lock = threading.Lock()
 _plans = {}
@@ -56,9 +57,9 @@ def info():
             'capabilities': {'auto_update': False, 'silent_restart': False},
             'channels': [{'label': '正式版', 'value': 'stable', 'description': '最新正式 Release'},
                          {'label': '公测版', 'value': 'beta', 'description': '最新公测 Release'}],
-            'releases_url': f'https://github.com/{REPO}/releases', 'last_check': _last_check,
+            'releases_url': f'https://github.com/{OTA_REPO}/releases', 'last_check': _last_check,
             'manual_label': '点击或拖入 Mower、MAA 核心或兼容 Python 更新包',
-            'manual_hint': 'Mower 使用主仓库 Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
+            'manual_hint': 'Mower 使用 MowerRelease Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
             'install_label': '导入并安装', 'python': python_package.info(),
             'component_updates': [{'label':'内置 Mower 恢复','endpoint':'/android/mower-recovery','check':False,
                                   'hint':'恢复 APK 内置 Mower，停止并重新启动服务后生效。配置和 MAA 不受影响。'}]}
@@ -68,7 +69,19 @@ def status():
     return {**_job, 'last_check': _last_check}
 
 
-def choose_ota_asset(target, current, full_size):
+def release_index(channel):
+    response = requests.get(f'{OTA_INDEX_URL}/{channel}.json', timeout=30)
+    response.raise_for_status()
+    index = response.json()
+    if (not isinstance(index, dict) or index.get('schema') != 1 or
+            not isinstance(index.get('version'), str) or
+            not isinstance(index.get('full_assets'), list) or
+            not isinstance(index.get('ota_assets'), list)):
+        raise ValueError('MowerRelease 版本索引格式错误')
+    return index
+
+
+def choose_ota_asset(target, current, full_size, release=None):
     active = mower_package.state()
     base_id = active.get('id')
     if (not mower_package.valid_id(base_id) or active.get('pending') or
@@ -76,21 +89,23 @@ def choose_ota_asset(target, current, full_size):
             not (mower_package.folder()/base_id/'mower-android.json').is_file()):
         return None
     name = f"arknights-mower-ota_{current.removeprefix('v')}_to_{target.removeprefix('v')}_android_arm64.zip"
-    try:
-        response = requests.get(f'https://api.github.com/repos/{OTA_REPO}/releases/tags/{target}', timeout=10)
-        response.raise_for_status()
-        release = response.json()
-    except (requests.RequestException, ValueError):
+    if release is None:
+        try:
+            response = requests.get(f'https://api.github.com/repos/{OTA_REPO}/releases/tags/{target}', timeout=10)
+            response.raise_for_status()
+            release = response.json()
+        except (requests.RequestException, ValueError):
+            return None
+    if not isinstance(release, dict) or release.get('draft') or (release.get('version') or release.get('tag_name')) != target:
         return None
-    if not isinstance(release, dict) or release.get('draft') or release.get('tag_name') != target:
-        return None
-    asset = next((item for item in release.get('assets', []) if item.get('name') == name), None)
+    asset = next((item for item in release.get('ota_assets', release.get('assets', [])) if item.get('name') == name), None)
     if (not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '') or
             not isinstance(asset.get('size'), int) or not 0 < asset['size'] < full_size or
-            not (asset.get('browser_download_url') or '').startswith(
+            not (asset.get('url') or asset.get('browser_download_url') or '').startswith(
                 f'https://github.com/{OTA_REPO}/releases/download/{target}/')):
         return None
-    return {'asset': asset, 'base_id': base_id, 'from_version': current}
+    return {'asset': {**asset, 'browser_download_url': asset.get('url') or asset.get('browser_download_url')},
+            'base_id': base_id, 'from_version': current}
 
 
 def download_asset(asset, label):
@@ -120,27 +135,35 @@ def check(channel):
     global _last_check
     from arknights_mower.utils.software_update import choose_release, version_key
     if channel not in ('stable', 'beta'): raise ValueError('Release 安装版仅支持正式版和公测版')
-    endpoint = f'https://api.github.com/repos/{REPO}/releases'
-    if channel == 'stable':
-        response = requests.get(endpoint+'/latest', timeout=30); response.raise_for_status(); releases = [response.json()]
+    try:
+        index = release_index(channel)
+    except (requests.RequestException, ValueError) as error:
+        if channel != 'stable':
+            raise ValueError('MowerRelease 版本索引暂时不可用，请稍后重试') from error
+        index = None  # The current stable Latest has no installable package or index.
+    if index is not None:
+        release = {'tag_name': index['version'], 'html_url': index['source_release'],
+                   'body': index.get('notes') or '',
+                   'assets': [{**item, 'browser_download_url': item.get('url')} for item in index['full_assets']]}
     else:
-        releases = []
-        for page in range(1, 101):
-            response = requests.get(endpoint, params={'per_page': 100, 'page': page}, timeout=30); response.raise_for_status()
-            batch = response.json(); releases.extend(batch)
-            if len(batch) < 100: break
-    releases = [r for r in releases if not re.search(r'dev|nightly|snapshot', r.get('tag_name', ''), re.I)]
-    releases = [r for r in releases if any(a['name'] == f"arknights-mower_{r['tag_name'].removeprefix('v')}_android_arm64.zip" for a in r.get('assets', []))]
-    if not releases: raise ValueError('主仓库尚未发布此渠道的 Android Mower 更新包，当前版本可继续使用')
-    release = choose_release(releases, channel)
+        endpoint = f'https://api.github.com/repos/{REPO}/releases'
+        response = requests.get(endpoint+'/latest', timeout=30)
+        response.raise_for_status()
+        releases = [response.json()]
+        releases = [r for r in releases if not re.search(r'dev|nightly|snapshot', r.get('tag_name', ''), re.I)]
+        releases = [r for r in releases if any(a['name'] == f"arknights-mower_{r['tag_name'].removeprefix('v')}_android_arm64.zip" for a in r.get('assets', []))]
+        if not releases: raise ValueError('主仓库尚未发布此渠道的 Android Mower 更新包，当前版本可继续使用')
+        release = choose_release(releases, channel)
     asset = next((a for a in release['assets'] if a['name'] == f"arknights-mower_{release['tag_name'].removeprefix('v')}_android_arm64.zip"), None)
-    if not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or ''):
+    if (not asset or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '') or
+            not (asset.get('browser_download_url') or '').startswith(
+                f"https://github.com/{OTA_REPO if index is not None else REPO}/releases/download/")):
         raise ValueError('此发行版缺少可校验的 Android Mower 更新包')
     ident = uuid.uuid4().hex
     from arknights_mower import __version__ as current
     _plans[ident] = {'asset': asset, 'version': release['tag_name']}
     if version_key(release['tag_name']) > version_key(current):
-        ota = choose_ota_asset(release['tag_name'], current, asset['size'])
+        ota = choose_ota_asset(release['tag_name'], current, asset['size'], release=index)
         if ota: _plans[ident]['ota'] = ota
     _last_check = {'ok': True, 'check_id': ident, 'channel': channel, 'checked_at': time.time(),
         'version': release['tag_name'], 'available': version_key(release['tag_name']) > version_key(current),
