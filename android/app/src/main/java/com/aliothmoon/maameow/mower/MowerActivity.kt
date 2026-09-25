@@ -2,13 +2,22 @@ package com.aliothmoon.maameow.mower
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -25,6 +34,11 @@ import com.aliothmoon.maameow.mower.MowerStyle.label
 import com.aliothmoon.maameow.mower.MowerStyle.surface
 import com.aliothmoon.maameow.mower.MowerStyle.iconSurface
 import kotlinx.coroutines.*
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MowerActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
@@ -49,6 +63,125 @@ class MowerActivity : Activity() {
     private var webTimeoutTask: Runnable? = null
     private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+    private var pendingGalleryImage: ByteArray? = null
+    private val galleryBridge = object {
+        @JavascriptInterface
+        fun saveImageToGallery(dataUrl: String) {
+            val prefix = "data:image/jpeg;base64,"
+            if (!dataUrl.startsWith(prefix) || dataUrl.length > 28_000_000) {
+                runOnUiThread { galleryMessage("排班图片格式无效") }
+                return
+            }
+            val bytes = try {
+                Base64.decode(dataUrl.substring(prefix.length), Base64.DEFAULT)
+            } catch (_: IllegalArgumentException) {
+                runOnUiThread { galleryMessage("排班图片解码失败") }
+                return
+            }
+            if (bytes.size < 4 || bytes.size > 20_000_000 ||
+                bytes[0] != 0xff.toByte() || bytes[1] != 0xd8.toByte()
+            ) {
+                runOnUiThread { galleryMessage("排班图片格式无效") }
+                return
+            }
+            runOnUiThread { saveGalleryImage(bytes) }
+        }
+
+        @JavascriptInterface
+        fun galleryDownloadFailed() {
+            runOnUiThread { galleryMessage("排班图片下载失败") }
+        }
+    }
+
+    private fun installGalleryDownloadHook(view: WebView) {
+        view.evaluateJavascript("""
+            (() => {
+                if (window.__mowerGalleryDownloadHook) return;
+                window.__mowerGalleryDownloadHook = true;
+                const pending = new Map();
+                const revoke = URL.revokeObjectURL.bind(URL);
+                URL.revokeObjectURL = (url) => {
+                    if (!pending.has(url)) revoke(url);
+                };
+                document.addEventListener('click', (event) => {
+                    const link = event.target.closest?.('a[download]');
+                    if (!link || link.download !== 'plan.jpg' || !link.href.startsWith('blob:')) return;
+                    event.preventDefault();
+                    const url = link.href;
+                    const read = fetch(url)
+                        .then((response) => {
+                            if (!response.ok) throw new Error('download failed');
+                            return response.blob();
+                        })
+                        .then((blob) => new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(new Blob([blob], { type: 'image/jpeg' }));
+                        }))
+                        .then((dataUrl) => window.MowerAndroid.saveImageToGallery(dataUrl))
+                        .catch(() => window.MowerAndroid.galleryDownloadFailed());
+                    pending.set(url, read);
+                    read.then(() => {
+                        pending.delete(url);
+                        revoke(url);
+                    });
+                }, true);
+            })();
+        """.trimIndent(), null)
+    }
+
+    private fun galleryMessage(text: String) {
+        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+    }
+
+    private fun saveGalleryImage(bytes: ByteArray) {
+        if (Build.VERSION.SDK_INT < 29 &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingGalleryImage = bytes
+            requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 7003)
+            return
+        }
+        val name = "Mower-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.jpg"
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Mower")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: error("无法创建相册图片")
+                try {
+                    contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                        ?: error("无法写入相册图片")
+                    check(contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.Images.Media.IS_PENDING, 0)
+                    }, null, null) == 1) { "无法完成相册图片保存" }
+                } catch (error: Exception) {
+                    contentResolver.delete(uri, null, null)
+                    throw error
+                }
+            } else {
+                val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Mower")
+                check(directory.isDirectory || directory.mkdirs()) { "无法创建相册文件夹" }
+                val file = File(directory, name)
+                try {
+                    FileOutputStream(file).use { it.write(bytes) }
+                    MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/jpeg"), null)
+                } catch (error: Exception) {
+                    file.delete()
+                    throw error
+                }
+            }
+            galleryMessage("排班图片已保存到相册 Pictures/Mower")
+        } catch (error: Exception) {
+            android.util.Log.e("Mower", "排班图片保存到相册失败", error)
+            galleryMessage("排班图片保存失败：${error.message ?: "请检查存储空间"}")
+        }
+    }
     private val refreshLoop = VisibleUiRefresh(
         schedule = { callback, delay -> handler.postDelayed(callback, delay) },
         cancel = { handler.removeCallbacks(it) },
@@ -180,6 +313,7 @@ class MowerActivity : Activity() {
         settings.javaScriptEnabled = true; settings.domStorageEnabled = true
         settings.useWideViewPort = true
         settings.allowFileAccess = false; settings.allowContentAccess = false
+        addJavascriptInterface(galleryBridge, "MowerAndroid")
         webChromeClient = object : android.webkit.WebChromeClient() {
             override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
                 fileSelection?.onReceiveValue(null); fileSelection = callback
@@ -192,6 +326,7 @@ class MowerActivity : Activity() {
         webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String?) {
                 executeWebCommand(webRecovery.pageFinished(url))
+                if (url?.startsWith(MowerService.url ?: "\u0000") == true) installGalleryDownloadHook(view)
                 // Chromium can retain the landscape layout width when a focused
                 // input rotates back to portrait. Keep the mobile viewport at
                 // its normal minimum scale; Mower's own UI scale still applies.
@@ -333,6 +468,18 @@ class MowerActivity : Activity() {
         if (requestCode == 7002) {
             fileSelection?.onReceiveValue(if (resultCode == RESULT_OK) data?.data?.let { arrayOf(it) } else null)
             fileSelection = null
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 7003) return
+        val bytes = pendingGalleryImage
+        pendingGalleryImage = null
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && bytes != null) {
+            saveGalleryImage(bytes)
+        } else {
+            galleryMessage("需要存储权限才能将排班图片保存到相册")
         }
     }
 
