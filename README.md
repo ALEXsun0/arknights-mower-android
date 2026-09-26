@@ -115,11 +115,12 @@ bash scripts/build.sh
 
 ### Android 独立发行与导入
 
-Android APK 由本仓库 CI 构建，WebUI 只提供正式版、公测版；普通发行包隐藏仓库与源码版本管理，与其他平台共用 Release 更新页面，仍不接受开发版更新。
+Android APK 由本仓库 CI 构建。WebUI 的内置 Mower 更新支持正式版、公测版和开发版；开发版读取 MowerRelease 每日构建索引。普通发行包隐藏仓库与源码版本管理，APK 更新仍由原生设置管理。
 
 「Mower 设置 → 软件更新」支持选择文件或全局拖拽：
 
 - 主仓库 `arknights-mower_版本_android_arm64.zip`：校验兼容协议，独立保存版本并在重启服务后切换；启动失败可回退，WebUI 软件更新页可恢复内置 Mower。APK 更新请使用原生「软件设置 → APK 版本与更新」。
+- MowerRelease `arknights-mower-ota_起点_to_目标_android_arm64.zip`：从当前已安装的内置 Mower 重建目标版本，校验失败不切换版本；也可离线手动导入。Python 运行时按内部文件生成差异包，变化的运行时文件随 Mower 一起更新。在线 OTA 不适用或失败时改用完整包。
 - 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，完成资源模型转换后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
 - 本仓库生成的 `mower-maa-python-版本.zip`：更新 Android 兼容 MAA Python 接口，校验协议、最低 APK 版本、完整性与接口结构；当前实例不变，新实例使用新接口，失败时回退内置接口。官方 ctypes Python 包不能直接用于 Android 桥接。
 

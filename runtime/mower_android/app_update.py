@@ -17,11 +17,22 @@ from mower_android import python_package, mower_package, mower_ota
 REPO = 'ArkMowers/arknights-mower'
 OTA_REPO = 'ArkMowers/MowerRelease'
 OTA_INDEX_URL = f'https://raw.githubusercontent.com/{OTA_REPO}/main/version'
+NIGHTLY_RE = re.compile(r'v\d+\.\d+\.\d+-alpha\.\d+\.g[0-9a-f]{8}\Z')
+VERSION_RE = re.compile(r'v?(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+)(?:\.g([0-9a-f]{8}))?)?\Z')
 MAX_UPLOAD = 768 * 1024**2
 _lock = threading.Lock()
 _plans = {}
 _job = {'ok': True, 'status': 'idle'}
 _last_check = {}
+
+
+def version_key(value):
+    match = VERSION_RE.fullmatch(value.split('+', 1)[0] if isinstance(value, str) else '')
+    if not match:
+        raise ValueError(f'无法识别版本号：{value}')
+    major, minor, patch, stage, number, revision = match.groups()
+    return (int(major), int(minor), int(patch),
+            {'alpha': 0, 'beta': 1, 'rc': 2, None: 3}[stage], int(number or 0), bool(revision))
 
 
 def folder():
@@ -33,13 +44,13 @@ def folder():
 def prefs():
     try: data = json.loads((folder()/'settings.json').read_text())
     except (OSError, ValueError): data = {}
-    return {'channel': data.get('channel') if data.get('channel') in ('stable', 'beta') else 'beta',
+    return {'channel': data.get('channel') if data.get('channel') in ('stable', 'beta', 'dev') else 'beta',
             'auto_check': bool(data.get('auto_check')), 'auto_update': False, 'background': False}
 
 
 def save_settings(data):
-    if not isinstance(data, dict) or set(data) - set(prefs()) or data.get('channel') not in ('stable', 'beta'):
-        raise ValueError('Release 安装版仅支持正式版和公测版')
+    if not isinstance(data, dict) or set(data) - set(prefs()) or data.get('channel') not in ('stable', 'beta', 'dev'):
+        raise ValueError('请选择正式版、公测版或开发版')
     if any(type(data.get(k, False)) is not bool for k in ('auto_check', 'auto_update', 'background')):
         raise ValueError('设置格式错误')
     if data.get('auto_update') or data.get('background'):
@@ -54,12 +65,13 @@ def info():
     return {'ok': True, 'deployment': 'release', 'platform': 'android', 'version': __version__,
             'settings': prefs(), 'blockers': [], 'instances': [{'name': '本机', 'running': True}],
             'force_supported': False, 'manual_supported': True, 'source_remotes': [],
-            'capabilities': {'auto_update': False, 'silent_restart': False},
+            'capabilities': {'auto_update': False, 'silent_restart': False, 'dev_update': True},
             'channels': [{'label': '正式版', 'value': 'stable', 'description': '最新正式 Release'},
-                         {'label': '公测版', 'value': 'beta', 'description': '最新公测 Release'}],
+                         {'label': '公测版', 'value': 'beta', 'description': '最新公测 Release'},
+                         {'label': '开发版', 'value': 'dev', 'description': 'alpha 分支每日构建的 Android Mower；APK 和 MAA 保持不变。'}],
             'releases_url': f'https://github.com/{OTA_REPO}/releases', 'last_check': _last_check,
-            'manual_label': '点击或拖入 Mower、MAA 核心或兼容 Python 更新包',
-            'manual_hint': 'Mower 使用 MowerRelease Android 更新包；MAA 使用官方 Android ARM64 包，Python 使用本发行兼容包。',
+            'manual_label': '点击或拖入 Mower 完整包、OTA 差异包、MAA 核心或兼容 Python 更新包',
+            'manual_hint': 'OTA 差异包须从当前 Android Mower 版本出发；导入和校验无需连接 GitHub。',
             'install_label': '导入并安装', 'python': python_package.info(),
             'component_updates': [{'label':'内置 Mower 恢复','endpoint':'/android/mower-recovery','check':False,
                                   'hint':'恢复 APK 内置 Mower，停止并重新启动服务后生效。配置和 MAA 不受影响。'}]}
@@ -76,8 +88,11 @@ def release_index(channel):
     if (not isinstance(index, dict) or index.get('schema') != 1 or
             not isinstance(index.get('version'), str) or
             not isinstance(index.get('full_assets'), list) or
-            not isinstance(index.get('ota_assets'), list)):
+            not isinstance(index.get('ota_assets'), list) or
+            any(not isinstance(item, dict) for item in index['full_assets'] + index['ota_assets'])):
         raise ValueError('MowerRelease 版本索引格式错误')
+    if channel == 'dev' and not NIGHTLY_RE.fullmatch(index['version']):
+        raise ValueError('开发版索引缺少有效 Nightly 版本')
     return index
 
 
@@ -133,8 +148,8 @@ def download_asset(asset, label):
 
 def check(channel):
     global _last_check
-    from arknights_mower.utils.software_update import choose_release, version_key
-    if channel not in ('stable', 'beta'): raise ValueError('Release 安装版仅支持正式版和公测版')
+    from arknights_mower.utils.software_update import choose_release
+    if channel not in ('stable', 'beta', 'dev'): raise ValueError('请选择正式版、公测版或开发版')
     try:
         index = release_index(channel)
     except (requests.RequestException, ValueError) as error:
@@ -162,11 +177,16 @@ def check(channel):
     ident = uuid.uuid4().hex
     from arknights_mower import __version__ as current
     _plans[ident] = {'asset': asset, 'version': release['tag_name']}
-    if version_key(release['tag_name']) > version_key(current):
+    target_version = release['tag_name'].removeprefix('v')
+    current_version = current.split('+', 1)[0].removeprefix('v')
+    available = (version_key(target_version) > version_key(current_version) or
+                 channel == 'dev' and version_key(target_version) == version_key(current_version)
+                 and target_version != current_version)
+    if available:
         ota = choose_ota_asset(release['tag_name'], current, asset['size'], release=index)
         if ota: _plans[ident]['ota'] = ota
     _last_check = {'ok': True, 'check_id': ident, 'channel': channel, 'checked_at': time.time(),
-        'version': release['tag_name'], 'available': version_key(release['tag_name']) > version_key(current),
+        'version': release['tag_name'], 'available': available,
         'downgrade': False, 'url': release['html_url'], 'notes': release.get('body', ''),
         'confirm_title': '确认下载安装？', 'confirm_message': '下载并校验 Mower 更新包，停止并重启手机服务后生效。APK 和 MAA 保持不变。'}
     return _last_check
@@ -205,12 +225,33 @@ def inspect_upload(upload):
             elif 'mower-android.json' in names:
                 meta = mower_package.inspect(target)
                 from arknights_mower import __version__
-                from arknights_mower.utils.software_update import version_key
                 downgrade = version_key(meta['version']) < version_key(__version__)
                 kind, version = 'mower', meta['version']
                 message = '更新内置 Mower；停止并重新启动手机服务后生效，APK 和 MAA 保持不变。'
+            elif 'ota.json' in names:
+                with zipfile.ZipFile(target) as archive:
+                    if archive.getinfo('ota.json').file_size > 16 * 1024**2:
+                        raise ValueError('OTA 清单过大')
+                    meta = json.loads(archive.read('ota.json'))
+                from arknights_mower import __version__
+                active = mower_package.state()
+                base_id = active.get('id')
+                if (not isinstance(meta, dict) or meta.get('kind') != 'mower-ota' or
+                        meta.get('format') not in (1, 2) or meta.get('platform') != 'android' or
+                        meta.get('arch') != 'arm64' or not isinstance(meta.get('to'), str) or
+                        not VERSION_RE.fullmatch(meta['to']) or
+                        meta.get('from') != __version__.split('+', 1)[0].removeprefix('v') or
+                        not mower_package.valid_id(base_id) or active.get('pending') or
+                        active.get('version') != __version__ or
+                        not (mower_package.folder()/base_id/'mower-android.json').is_file()):
+                    raise ValueError('OTA 差异包起点、平台或当前 Mower 安装不匹配')
+                downgrade = version_key(meta['to']) < version_key(__version__)
+                kind, version = 'mower-ota', 'v' + meta['to']
+                message = '从本地 OTA 差异包重建 Mower，校验失败时保留当前版本；无需连接 GitHub。'
             else: raise ValueError('请选择 Android Mower 更新包、官方 MAA 核心或兼容 Python 包')
         _plans[ident] = {'path': target, 'sha256': digest, 'filename': upload.filename, 'kind': kind, 'version': version, 'downgrade': downgrade}
+        if kind == 'mower-ota':
+            _plans[ident].update(base_id=base_id, from_version=meta['from'])
         return {'ok': True, 'manual': True, 'check_id': ident, 'version': version, 'downgrade': downgrade,
                 'confirm_title': '确认导入更新包？', 'confirm_message': message}
     except Exception:
@@ -240,6 +281,18 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
         reconstructed = None
         try:
             result = None
+            if plan.get('kind') == 'mower-ota':
+                active = mower_package.state()
+                if active.get('id') != plan['base_id'] or active.get('pending'):
+                    raise ValueError('本地 Mower 版本已改变，请重新导入 OTA')
+                with path.open('rb') as stream:
+                    if hashlib.file_digest(stream, 'sha256').hexdigest() != plan['sha256']:
+                        raise ValueError('OTA 内容已改变，请重新导入')
+                reconstructed = folder()/(uuid.uuid4().hex+'.reconstructed.zip')
+                mower_ota.reconstruct(path, mower_package.folder()/plan['base_id'],
+                                      reconstructed, from_version=plan['from_version'],
+                                      to_version=plan['version'])
+                result = mower_package.install(reconstructed)
             if 'asset' in plan:
                 if 'ota' in plan:
                     try:
