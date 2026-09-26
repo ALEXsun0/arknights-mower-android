@@ -89,12 +89,16 @@ class AndroidDevice:
             raise RuntimeError('后台画面不是 1920×1080，请重新启动后台游戏')
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        from arknights_mower.utils.log import save_screenshot
+        from arknights_mower.utils.log import logger, save_screenshot
         save_screenshot(png)
         config.screenshot_time = datetime.now()
         elapsed = (time.monotonic() - started) * 1000
         config.screenshot_avg = elapsed if config.screenshot_avg is None else config.screenshot_avg * .9 + elapsed * .1
-        config.screenshot_count += 1
+        if config.screenshot_count >= 100:
+            config.screenshot_count = 0
+            logger.info(f'截图用时{elapsed:.0f}ms 平均用时{config.screenshot_avg:.0f}ms')
+        else:
+            config.screenshot_count += 1
         return png, rgb, gray
 
     def tap(self, point):
