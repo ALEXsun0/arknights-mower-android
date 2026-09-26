@@ -138,6 +138,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                     'mower/server.py':'# official server',
                     'mower/arknights_mower/__init__.py':f'__version__ = "{version}"',
                     'mower/ui/dist/index.html':'<html>official UI</html>',
+                    'mower/ui/src/pages/basement_skill/skill.json':'{"name":"official"}',
                     'mower/requirements.txt':'Flask==3.0.3\n',
                     'mower/CHANGELOG.md':'new release notes',
                 }.items():z.writestr(name,data)
@@ -160,6 +161,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertEqual((root/'runtime/requirements.in').read_text(),'Flask==3.0.3\n')
                 self.assertEqual((root/'runtime/ui/dist/index.html').read_text(),'<html>official UI</html>')
+                self.assertEqual((root/'runtime/ui/src/pages/basement_skill/skill.json').read_text(),'{"name":"official"}')
                 self.assertEqual(config.read_text(),'keep configuration')
                 self.assertTrue((root/'runtime/mower_android/maa_adapter.py').is_file())
                 self.assertEqual(json.loads((root/'UPSTREAM.json').read_text())['mower']['commit'],'a'*40)
