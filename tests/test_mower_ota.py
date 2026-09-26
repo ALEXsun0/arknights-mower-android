@@ -1,4 +1,6 @@
 import hashlib
+import io
+import lzma
 import json
 import sys
 import tempfile
@@ -8,8 +10,10 @@ import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from werkzeug.datastructures import FileStorage
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
-from mower_android import app_update, mower_ota
+from mower_android import app_update, mower_ota, mower_package
 
 
 class MowerOtaTests(unittest.TestCase):
@@ -164,6 +168,147 @@ class MowerOtaTests(unittest.TestCase):
         self.assertEqual(app_update.status()['status'], 'succeeded')
         self.assertFalse((self.root / 'ota.zip').exists())
         self.assertFalse((self.root / 'full.zip').exists())
+
+
+    @staticmethod
+    def runtime(data):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            archive.writestr('usr/', b'')
+            archive.writestr('usr/local/bin/python3.12', b'python binary')
+            archive.writestr('usr/lib/changed.so', data)
+            archive.writestr('.symlinks.json', b'{}')
+        return lzma.compress(output.getvalue(), preset=6)
+
+
+    def test_rebuilds_changed_python_runtime_from_inner_files(self):
+        old_runtime = self.runtime(b'old dependency')
+        official_runtime = self.runtime(b'new dependency')
+        (self.base / 'python-runtime.zip.xz').write_bytes(old_runtime)
+        old_zip = zipfile.ZipFile(io.BytesIO(lzma.decompress(old_runtime)))
+        target_zip = zipfile.ZipFile(io.BytesIO(lzma.decompress(official_runtime)))
+
+        def item(data):
+            return {'type': 'file', 'sha256': hashlib.sha256(data).hexdigest(), 'mode': 0o644}
+
+        files = {
+            'mower-android.json': None,
+            'python-runtime.zip.xz': item(official_runtime),
+            'mower/server.py': item(b"print('new code')"),
+            'mower/arknights_mower/__init__.py': item(b'__version__ = "4.1.6-alpha.8"'),
+            'mower/ui/dist/index.html': item(b'ui'),
+            'mower/requirements.txt': item(b'requirements'),
+        }
+        meta = {
+            'kind': 'mower-android', 'format': 2, 'min_apk': 29,
+            'version': '4.1.6-alpha.8', 'revision': 'a'*40, 'runtime_api': 1,
+            'python': '3.12', 'platform': 'android', 'arch': 'arm64',
+            'runtime': {'file': 'python-runtime.zip.xz',
+                        'sha256': hashlib.sha256(official_runtime).hexdigest(),
+                        'unpacked_size': sum(i.file_size for i in target_zip.infolist())},
+        }
+        official_meta = json.dumps(meta).encode()
+        files['mower-android.json'] = item(official_meta)
+        runtime_files = {}
+        for entry in target_zip.infolist():
+            if entry.is_dir():
+                runtime_files[entry.filename] = {'type': 'dir', 'mode': 0o644}
+            else:
+                data = target_zip.read(entry)
+                runtime_files[entry.filename] = {**item(data), 'size': len(data)}
+        manifest = {
+            'kind': 'mower-ota', 'format': 2, 'from': '4.1.6-alpha.7',
+            'to': '4.1.6-alpha.8', 'platform': 'android', 'arch': 'arm64',
+            'files': files,
+            'changed': [name for name in files if name != 'python-runtime.zip.xz'],
+            'runtime': {'files': runtime_files, 'changed': ['usr/lib/changed.so']},
+        }
+        delta = self.root / 'runtime-ota.zip'
+        with zipfile.ZipFile(delta, 'w') as archive:
+            archive.writestr('ota.json', json.dumps(manifest))
+            for name in manifest['changed']:
+                payload = official_meta if name == 'mower-android.json' else (
+                    b"print('new code')" if name == 'mower/server.py' else
+                    b'__version__ = "4.1.6-alpha.8"' if name.endswith('__init__.py') else
+                    b'ui' if name.endswith('index.html') else b'requirements')
+                archive.writestr('payload/' + name, payload)
+            archive.writestr('runtime/usr/lib/changed.so', b'new dependency')
+        complete = self.root / 'rebuilt.zip'
+        mower_ota.reconstruct(delta, self.base, complete,
+                              from_version='4.1.6-alpha.7', to_version='v4.1.6-alpha.8')
+        with zipfile.ZipFile(complete) as archive:
+            rebuilt_runtime = archive.read('python-runtime.zip.xz')
+            rebuilt_meta = json.loads(archive.read('mower-android.json'))
+        self.assertEqual(rebuilt_meta['runtime']['sha256'], hashlib.sha256(rebuilt_runtime).hexdigest())
+        with zipfile.ZipFile(io.BytesIO(lzma.decompress(rebuilt_runtime))) as runtime:
+            self.assertEqual(runtime.read('usr/lib/changed.so'), b'new dependency')
+            self.assertEqual(runtime.read('usr/local/bin/python3.12'), old_zip.read('usr/local/bin/python3.12'))
+        self.assertEqual(mower_package.inspect(complete, apk_code=29)['version'], '4.1.6-alpha.8')
+        (self.base / 'python-runtime.zip.xz').write_bytes(b'corrupted')
+        failed = self.root / 'failed.zip'
+        with self.assertRaises((ValueError, lzma.LZMAError)):
+            mower_ota.reconstruct(delta, self.base, failed,
+                                  from_version='4.1.6-alpha.7', to_version='v4.1.6-alpha.8')
+        self.assertFalse(failed.exists())
+
+
+    def test_development_channel_uses_one_index_for_full_and_ota(self):
+        import arknights_mower
+        tag = 'v4.1.6-alpha.9.g40ac54e4'
+        current = '4.1.6-alpha.9'
+        full_name = f'arknights-mower_{tag[1:]}_android_arm64.zip'
+        ota_name = f'arknights-mower-ota_{current}_to_{tag[1:]}_android_arm64.zip'
+        asset_url = f'https://github.com/{app_update.OTA_REPO}/releases/download/{tag}/'
+        index = {
+            'schema': 1, 'version': tag,
+            'source_release': f'https://github.com/{app_update.OTA_REPO}/releases/tag/{tag}',
+            'full_assets': [{'name': full_name, 'size': 1000, 'digest': 'sha256:'+'a'*64,
+                             'url': asset_url + full_name}],
+            'ota_assets': [{'name': ota_name, 'size': 100, 'digest': 'sha256:'+'b'*64,
+                            'url': asset_url + ota_name}],
+        }
+        response = Mock()
+        response.json.return_value = index
+        ident = 'b' * 64
+        base = self.root / 'programs'
+        (base / ident).mkdir(parents=True)
+        (base / ident / 'mower-android.json').write_text('{}')
+        with (patch.object(arknights_mower, '__version__', current),
+              patch.object(app_update.requests, 'get', return_value=response) as request,
+              patch.object(app_update.mower_package, 'folder', return_value=base),
+              patch.object(app_update.mower_package, 'state', return_value={
+                  'id': ident, 'version': current, 'pending': False})):
+            result = app_update.check('dev')
+        self.assertTrue(result['available'])
+        self.assertEqual(result['version'], tag)
+        self.assertEqual(app_update._plans[result['check_id']]['ota']['asset']['name'], ota_name)
+        self.assertEqual([call.args[0] for call in request.call_args_list], [f'{app_update.OTA_INDEX_URL}/dev.json'])
+        app_update._plans.pop(result['check_id'], None)
+
+
+    def test_manual_ota_reconstructs_offline(self):
+        import arknights_mower
+        ident = 'b' * 64
+        programs = self.root / 'programs'
+        (programs / ident).mkdir(parents=True)
+        (programs / ident / 'mower-android.json').write_text('{}')
+        delta = self.delta()
+        upload = FileStorage(stream=io.BytesIO(delta.read_bytes()), filename='renamed.bin')
+        with (patch.object(arknights_mower, '__version__', '4.1.6-alpha.7'),
+              patch.object(app_update, 'folder', return_value=self.root),
+              patch.object(app_update.mower_package, 'folder', return_value=programs),
+              patch.object(app_update.mower_package, 'state', return_value={
+                  'id': ident, 'version': '4.1.6-alpha.7', 'pending': False}),
+              patch.object(app_update, 'download_asset', side_effect=AssertionError('offline')),
+              patch.object(app_update.mower_ota, 'reconstruct') as reconstruct,
+              patch.object(app_update.mower_package, 'install', return_value={'message': 'ready'}) as install,
+              patch.object(app_update.threading, 'Thread', side_effect=lambda *, target, daemon: Mock(start=target))):
+            preview = app_update.inspect_upload(upload)
+            self.assertEqual(preview['version'], 'v4.1.6-alpha.8')
+            app_update.submit(preview['check_id'])
+        reconstruct.assert_called_once()
+        install.assert_called_once()
+        self.assertEqual(app_update.status()['status'], 'succeeded')
 
 
 if __name__ == '__main__':

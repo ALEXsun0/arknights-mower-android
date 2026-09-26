@@ -83,7 +83,7 @@ def inspect(package, *, apk_code=None):
             with z.open(runtime['file']) as stream:
                 if hashlib.file_digest(stream, 'sha256').hexdigest() != runtime['sha256']:
                     raise ValueError('Python 运行环境校验失败')
-        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-alpha\.\d+)?', str(meta.get('version', ''))) or not re.fullmatch(r'[a-f0-9]{40}', str(meta.get('revision', ''))):
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-alpha\.\d+(?:\.g[0-9a-f]{8})?)?', str(meta.get('version', ''))) or not re.fullmatch(r'[a-f0-9]{40}', str(meta.get('revision', ''))):
             raise ValueError('Mower 版本清单无效')
         for entry in entries:
             name = entry.filename; parts = PurePosixPath(name).parts

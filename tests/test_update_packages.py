@@ -53,8 +53,9 @@ class DistributionPolicyTests(unittest.TestCase):
         app=Flask(__name__);app.extensions['software_update_provider']=app_update
         app.register_blueprint(software_update_bp);self.client=app.test_client()
         self.headers={'X-Mower-Update':'1'}
-    def test_release_rejects_dev_channel(self):
-        self.assertEqual(self.client.post('/software-update/settings',json={'channel':'dev'},headers=self.headers).status_code,400)
+    def test_release_accepts_dev_channel(self):
+        self.assertEqual(self.client.post('/software-update/settings',json={'channel':'dev'},headers=self.headers).status_code,200)
+        self.assertEqual(app_update.prefs()['channel'],'dev')
     def test_release_rejects_repository_and_silent_install(self):
         self.assertEqual(self.client.post('/software-update/settings',json={'channel':'beta','repository':'owner/repo'},headers=self.headers).status_code,400)
         self.assertEqual(self.client.post('/software-update/settings',json={'channel':'beta','auto_update':True},headers=self.headers).status_code,400)
@@ -85,7 +86,8 @@ class DistributionPolicyTests(unittest.TestCase):
         bridge.return_value.call.return_value={'apk_version':'0.1.0-alpha.1'}
         data=self.client.get('/software-update/info').json
         self.assertEqual(data['deployment'],'release')
-        self.assertEqual([c['value'] for c in data['channels']],['stable','beta'])
+        self.assertEqual([c['value'] for c in data['channels']],['stable','beta','dev'])
+        self.assertTrue(data['capabilities']['dev_update'])
         self.assertFalse(data['capabilities']['silent_restart'])
 
 if __name__=='__main__':unittest.main()
