@@ -92,8 +92,11 @@ def inspect(package, *, apk_code=None):
             if name != 'mower-android.json' and not (meta['format'] == 2 and name == 'python-runtime.zip.xz'):
                 if len(parts) < 2 or parts[0] != 'mower' or parts[1] not in {'arknights_mower','ui','server.py','LICENSE','CHANGELOG.md','logo.png','requirements.txt'}:
                     raise ValueError('更新包不能覆盖宿主或用户文件')
-                if parts[1] == 'ui' and (len(parts) < 3 or parts[2] != 'dist'):
-                    raise ValueError('更新包仅允许已构建的 WebUI')
+                if parts[1] == 'ui' and not (
+                    name.startswith('mower/ui/dist/') or
+                    name == 'mower/ui/src/pages/basement_skill/skill.json'
+                ):
+                    raise ValueError('更新包仅允许已构建的 WebUI 与基建技能数据')
             if entry.flag_bits & 1: raise ValueError('不支持加密的更新包')
         version_source = z.read('mower/arknights_mower/__init__.py').decode()
         if f'__version__ = "{meta["version"]}"' not in version_source: raise ValueError('程序版本与清单不一致')

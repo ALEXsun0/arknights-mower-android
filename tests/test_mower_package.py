@@ -44,6 +44,13 @@ class MowerPackageTests(unittest.TestCase):
                 self.assertEqual(mower_package.state(),previous)
         self.assertFalse((self.root.parent/'outside').exists())
 
+    def test_official_archive_allows_only_bundled_basement_skill_data_outside_dist(self):
+        mower_package.inspect(self.pack(extra='mower/ui/src/pages/basement_skill/skill.json'))
+        for path in ('mower/ui/src/pages/basement_skill/buffer.json',
+                     'mower/ui/src/main.js', 'mower/ui/package.json'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'WebUI'):
+                mower_package.inspect(self.pack(extra=path))
+
     def test_successful_launch_keeps_updated_mower_and_failed_launch_rolls_back(self):
         bundled=self.root/'bundled'
         mower_package.install(self.pack())
