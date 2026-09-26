@@ -54,6 +54,18 @@ class GameRecoveryTests(unittest.TestCase):
             self.device.screencap()
         self.device.bridge.call.assert_not_called()
 
+    def test_capture_time_is_logged_when_counter_reaches_desktop_threshold(self):
+        config.screenshot_count = 100
+        with patch('arknights_mower.utils.log.logger.info') as info:
+            self.device.screencap()
+        self.assertEqual(config.screenshot_count, 0)
+        self.assertIsNotNone(config.screenshot_avg)
+        info.assert_called_once()
+        self.assertRegex(
+            info.call_args.args[0],
+            r'^截图用时\d+ms 平均用时\d+ms$',
+        )
+
     def test_stop_during_capture_interval_does_not_relaunch(self):
         config.conf.screenshot_interval = 500
         config.screenshot_time = datetime.now()
