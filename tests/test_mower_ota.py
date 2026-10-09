@@ -26,7 +26,7 @@ class MowerOtaTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 mower_ota._runtime_name(name)
 
-    def test_beta_check_reads_full_and_ota_from_one_mower_release_index(self):
+    def test_beta_check_keeps_full_and_ota_in_the_selected_release_index(self):
         target = 'v4.1.6-alpha.8'
         full_name = 'arknights-mower_4.1.6-alpha.8_android_arm64.zip'
         ota_name = 'arknights-mower-ota_4.1.6-alpha.7_to_4.1.6-alpha.8_android_arm64.zip'
@@ -60,7 +60,8 @@ class MowerOtaTests(unittest.TestCase):
                   'id': ident, 'version': '4.1.6-alpha.7'}),
               patch.object(app_update.requests, 'get', return_value=response) as get):
             result = app_update.check('beta')
-        get.assert_called_once_with(f'{app_update.OTA_INDEX_URL}/beta.json', timeout=30)
+        self.assertEqual([call.args[0] for call in get.call_args_list],
+                         [f'{app_update.OTA_INDEX_URL}/{channel}.json' for channel in ('beta', 'stable')])
         plan = app_update._plans.pop(result['check_id'])
         self.assertEqual(plan['asset']['browser_download_url'], base_url + full_name)
         self.assertEqual(plan['ota']['asset']['browser_download_url'], base_url + ota_name)
@@ -261,7 +262,7 @@ class MowerOtaTests(unittest.TestCase):
         self.assertFalse(failed.exists())
 
 
-    def test_development_channel_uses_one_index_for_full_and_ota(self):
+    def test_development_channel_keeps_full_and_ota_in_the_selected_release_index(self):
         import arknights_mower
         tag = 'v4.1.6-alpha.9.g40ac54e4'
         current = '4.1.6-alpha.9'
@@ -291,7 +292,7 @@ class MowerOtaTests(unittest.TestCase):
         self.assertTrue(result['available'])
         self.assertEqual(result['version'], tag)
         self.assertEqual(app_update._plans[result['check_id']]['ota']['asset']['name'], ota_name)
-        self.assertEqual([call.args[0] for call in request.call_args_list], [f'{app_update.OTA_INDEX_URL}/dev.json'])
+        self.assertEqual([call.args[0] for call in request.call_args_list], [f'{app_update.OTA_INDEX_URL}/{channel}.json' for channel in ('dev', 'beta', 'stable')])
         app_update._plans.pop(result['check_id'], None)
 
 
