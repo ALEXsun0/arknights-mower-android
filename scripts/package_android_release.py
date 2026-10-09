@@ -32,7 +32,7 @@ def main():
         raise ValueError('APK version differs from the release plan; rebuild first')
     apk = apk.rename(output / f'arknights-mower-android-v{version}-arm64.apk')
     metadata = {
-        'format': 1, 'runtime_api': RUNTIME_API,
+        'format': 1, 'runtime_api': RUNTIME_API, 'channel': plan.get('channel', 'beta'),
         'apk': {'name':apk.name, 'version':version, 'version_code':code, 'host_sha256':plan['host_sha256'], 'host_version_code':plan['host_version_code'], 'host_update':plan['host_update']},
         'maa_python': {'name':adapters[0].name, **{k:adapter[k] for k in ('version','sha256','min_apk','bridge_protocol','compatibility')}},
         'bundled': json.loads((output/'distribution.json').read_text())['bundled'],

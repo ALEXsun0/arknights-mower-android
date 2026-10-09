@@ -47,6 +47,22 @@ def latest_beta(items):
     return max(candidates, key=lambda r: (datetime.fromisoformat(r['published_at']), version_key(r['tag_name'])))
 
 
+def nightly_release():
+    index = get_json('https://raw.githubusercontent.com/ArkMowers/MowerRelease/main/version/dev.json')
+    tag = index.get('version', '')
+    if index.get('schema') != 1 or not re.fullmatch(r'v\d+\.\d+\.\d+-alpha\.\d+\.g[0-9a-f]{8}', tag):
+        raise ValueError('Development channel does not identify a published Nightly')
+    release = get_json(f'https://api.github.com/repos/ArkMowers/MowerRelease/releases/tags/{tag}')
+    if release.get('draft') or release.get('tag_name') != tag:
+        raise ValueError('Nightly release is unavailable')
+    return release
+
+
+def android_version_key(tag):
+    # Development distributions share the monotonic APK version/code sequence.
+    return version_key(re.sub(r'-dev\.\d+$', '', tag))
+
+
 def asset(release, name):
     item = next((a for a in release.get('assets', []) if a['name'] == name), None)
     if not item: raise ValueError(f"{release['tag_name']} has not published {name} yet")

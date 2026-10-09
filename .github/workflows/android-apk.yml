@@ -3,8 +3,13 @@ name: Android APK
 on:
   workflow_dispatch:
     inputs:
+      mower_channel:
+        description: 'Bundled Mower channel (dev publishes only when manually requested)'
+        type: choice
+        options: [beta, dev]
+        default: beta
       publish:
-        description: 'Build and publish a complete release using the latest beta-channel components'
+        description: 'Build and publish a complete release using the selected Mower channel and latest beta-channel MAA'
         type: boolean
         default: false
   schedule:
@@ -31,7 +36,7 @@ concurrency:
 
 jobs:
   snapshot:
-    name: Resolve upstream beta releases
+    name: Resolve pinned upstream components
     runs-on: ubuntu-24.04
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
@@ -45,8 +50,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PUBLISH: ${{ inputs.publish || false }}
+          MOWER_CHANNEL: ${{ inputs.mower_channel || 'beta' }}
         run: |
-          args=()
+          args=(--mower-channel "$MOWER_CHANNEL")
           if [[ "$EVENT" == schedule || "$EVENT" == repository_dispatch || "$PUBLISH" == true ]]; then args+=(--publish); fi
           if [[ "$PUBLISH" == true ]]; then args+=(--force); fi
           python3 scripts/prepare_distribution.py plan "${args[@]}"

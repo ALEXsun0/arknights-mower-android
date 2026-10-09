@@ -9,7 +9,7 @@ import sys
 import zipfile
 from pathlib import Path
 from host_fingerprint import host_digest
-from release_common import ANDROID_REPO, MOWER_REPO, MAA_REPO, releases, latest_beta, asset, download, version_key
+from release_common import ANDROID_REPO, MOWER_REPO, MAA_REPO, releases, latest_beta, asset, download, version_key, nightly_release, android_version_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,12 +24,16 @@ def adapter_metadata(code, baseline, previous, tag, mower, maa):
             'compatibility':{'since_android':tag,'mower_from':mower,'maa_from':maa,'until_android':None}}
 
 
-def plan(publish=False, force=False):
+def plan(publish=False, force=False, mower_channel='beta'):
+    if mower_channel not in ('beta', 'dev'):
+        raise ValueError('Unknown Mower channel')
+    if mower_channel == 'dev' and os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
+        raise ValueError('Development APKs require a manual workflow_dispatch')
     baseline = json.loads((ROOT/'scripts/bundled-release.json').read_text())
-    mower = latest_beta(releases(MOWER_REPO))
+    mower = nightly_release() if mower_channel == 'dev' else latest_beta(releases(MOWER_REPO))
     maa = latest_beta(releases(MAA_REPO))
-    android = [r for r in releases(ANDROID_REPO) if not r.get('draft') and version_key(r['tag_name'])]
-    previous = {}; previous_release = max(android, key=lambda r: version_key(r['tag_name'])) if android else None
+    android = [r for r in releases(ANDROID_REPO) if not r.get('draft') and android_version_key(r['tag_name'])]
+    previous = {}; previous_release = max(android, key=lambda r: (android_version_key(r['tag_name']), r.get('published_at', ''))) if android else None
     if previous_release:
         descriptor = asset(previous_release, 'android-release.json')
         previous = json.loads(download(descriptor, ROOT/'artifacts/previous-release.json', 1024**2).read_text())
@@ -38,6 +42,7 @@ def plan(publish=False, force=False):
     if any(a['name'] == mower_asset_name for a in mower.get('assets', [])):
         component = asset(mower, mower_asset_name)
         mower_state = {'tag':mower['tag_name'], 'source':'release', 'asset':component}
+        if mower_channel == 'dev': mower_state['repository'] = 'ArkMowers/MowerRelease'
     elif mower['tag_name'] == baseline['mower']['tag'] and baseline['mower']['source'] == 'bundled':
         # The old alpha.5 predates official Android archives. Only that configured
         # bootstrap snapshot may fall back; a new incomplete release must retry.
@@ -48,12 +53,13 @@ def plan(publish=False, force=False):
     bundled = {'mower':mower_state, 'maa':{'tag':maa['tag_name'], 'asset':maa_asset}}
     gradle = (ROOT/'android/app/build.gradle.kts').read_text()
     source_version = re.search(r'versionName = "([^"]+)"', gradle)[1]
-    previous_version = previous.get('apk', {}).get('version', '0.0.0')
+    previous_version = previous.get('apk', {}).get('version', '0.0.0').split('-dev.')[0]
     if version_key(source_version) <= version_key(previous_version):
         major, minor, patch = map(int, previous_version.split('.'))
         version = f'{major}.{minor}.{patch+1}'
     else: version = source_version
     code = max(int(re.search(r'versionCode = (\d+)', gradle)[1]), previous.get('apk', {}).get('version_code', 0)+1)
+    if mower_channel == 'dev': version += f'-dev.{code}'
     meta = json.loads((ROOT/'runtime/mower_android/maa-python.json').read_text())
     old_adapter = previous.get('maa_python', {})
     if 'sha256' not in old_adapter: old_adapter = None
@@ -72,7 +78,7 @@ def plan(publish=False, force=False):
     host_sha = host_digest(ROOT, dependencies)
     same_host = previous.get('apk', {}).get('host_sha256') == host_sha
     host_code = previous['apk'].get('host_version_code', previous['apk']['version_code']) if same_host else code
-    result = {'host_sha256':host_sha, 'host_update':not same_host, 'host_version_code':host_code, 'format':1, 'tag':'v'+version, 'version':version, 'version_code':code,
+    result = {'host_sha256':host_sha, 'host_update':not same_host, 'host_version_code':host_code, 'format':1, 'channel':mower_channel, 'tag':'v'+version, 'version':version, 'version_code':code,
               'publish':publish and (force or changed), 'changed':changed, 'bundled':bundled, 'adapter':adapter}
     output = ROOT/'artifacts/distribution.json'; output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(result, indent=2)+'\n')
@@ -126,13 +132,14 @@ def apply(metadata_only=False):
                 target = runtime/entry.filename.removeprefix('mower/')
                 target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(archive.read(entry))
         shutil.copy2(runtime/'requirements.txt', runtime/'requirements.in')
-        upstream['mower'] = {'url':f'https://github.com/{MOWER_REPO}','commit':meta['revision'],'release':mower['tag'],'source':'official Android release package'}
+        upstream['mower'] = {'url':f'https://github.com/{mower.get("repository", MOWER_REPO)}','commit':meta['revision'],'release':mower['tag'],'source':'official Android release package'}
     (ROOT/'UPSTREAM.json').write_text(json.dumps(upstream,indent=2)+'\n')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('action',choices=['plan','apply'])
     parser.add_argument('--publish',action='store_true'); parser.add_argument('--force',action='store_true')
+    parser.add_argument('--mower-channel', choices=['beta', 'dev'], default='beta')
     parser.add_argument('--metadata-only',action='store_true'); args=parser.parse_args()
-    if args.action == 'plan': plan(args.publish,args.force)
+    if args.action == 'plan': plan(args.publish,args.force,args.mower_channel)
     else: apply(args.metadata_only)

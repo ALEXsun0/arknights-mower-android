@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -82,7 +83,7 @@ class ReleaseAutomationTests(unittest.TestCase):
 
 
 class SnapshotTests(unittest.TestCase):
-    def test_resource_only_snapshot_and_unchanged_snapshot(self):
+    def test_resource_only_snapshot_and_unchanged_snapshot(self, previous_version="0.2.0", previous_code=15):
         import prepare_distribution as prepare
         import shutil
         with tempfile.TemporaryDirectory() as temp:
@@ -93,7 +94,7 @@ class SnapshotTests(unittest.TestCase):
             gradle.write_text(re.sub(r'versionCode = \d+', 'versionCode = 15', gradle.read_text()))
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
             adapter=json.loads((root/'runtime/mower_android/maa-python.json').read_text())
-            previous={'apk':{'version':'0.2.0','version_code':15,'host_sha256':'a'*64,'host_version_code':15},'maa_python':adapter,'bundled':baseline}
+            previous={'apk':{'version':previous_version,'version_code':previous_code,'host_sha256':'a'*64,'host_version_code':15},'maa_python':adapter,'bundled':baseline}
             previous_file=root/'previous.json';previous_file.write_text(json.dumps(previous))
             def asset(name): return {'name':name,'digest':'sha256:'+'b'*64,'size':10,'browser_download_url':'https://github.com/example/release.zip'}
             def release(tag,assets): return {'tag_name':tag,'published_at':'2026-09-11T00:00:00Z','assets':assets}
@@ -108,15 +109,20 @@ class SnapshotTests(unittest.TestCase):
                 changed=prepare.plan(publish=True)
                 self.assertTrue(changed['publish']);self.assertFalse(changed['host_update'])
                 self.assertEqual(changed['host_version_code'],15)
-                self.assertEqual(changed['version_code'],16)
+                self.assertEqual(changed['version_code'],previous_code+1)
+                if '-dev.' in previous_version: self.assertEqual(changed['version'], '0.2.19')
                 self.assertEqual(changed['adapter']['sha256'],adapter['sha256'])
                 self.assertFalse((root/'android/app/src/main/assets').exists())
                 prepare.apply(metadata_only=True)
                 self.assertTrue((root/'android/app/src/main/assets/host-build.json').is_file())
 
 
+    def test_beta_continues_after_a_development_release(self):
+        self.test_resource_only_snapshot_and_unchanged_snapshot(previous_version='0.2.18-dev.34', previous_code=34)
+
+
 class OfficialMowerReleaseTests(unittest.TestCase):
-    def test_official_archive_is_preferred_and_applied_with_its_dependencies(self, format=1):
+    def test_official_archive_is_preferred_and_applied_with_its_dependencies(self, format=1, channel="beta"):
         import prepare_distribution as prepare
         import shutil
         import zipfile
@@ -125,7 +131,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
             for name in ['scripts/bundled-release.json','android/app/build.gradle.kts','runtime/mower_android/maa-python.json','runtime/mower_android/maa_adapter.py','UPSTREAM.json']:
                 target=root/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
-            tag=baseline['mower']['tag']
+            tag=baseline['mower']['tag'] + ('.g12345678' if channel == 'dev' else '')
             version=tag.removeprefix('v')
             meta={'kind':'mower-android','format':1,'platform':'android','arch':'arm64','runtime_api':1,'python':'3.12','version':version,'revision':'a'*40}
             payload = b'official compressed runtime fixture'
@@ -148,8 +154,10 @@ class OfficialMowerReleaseTests(unittest.TestCase):
             responses={prepare.MOWER_REPO:[mower],prepare.MAA_REPO:[maa],prepare.ANDROID_REPO:[]}
             old=root/'runtime/arknights_mower/old.py';old.parent.mkdir(parents=True);old.write_text('# obsolete')
             config=root/'runtime/mower-data/conf.yml';config.parent.mkdir();config.write_text('keep configuration')
-            with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo:responses[repo]),patch.object(prepare,'download',return_value=archive),patch.object(prepare,'host_digest',return_value='a'*64) as fingerprint:
-                plan=prepare.plan(publish=True)
+            with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo:responses[repo]),patch.object(prepare,'nightly_release',return_value=mower),patch.dict(os.environ, {'GITHUB_EVENT_NAME':'workflow_dispatch'}),patch.object(prepare,'download',return_value=archive),patch.object(prepare,'host_digest',return_value='a'*64) as fingerprint:
+                plan=prepare.plan(publish=True, mower_channel=channel)
+                self.assertEqual(plan['channel'], channel)
+                self.assertEqual('-dev.' in plan['version'], channel == 'dev')
                 self.assertTrue(plan['publish'])
                 self.assertEqual(plan['bundled']['mower']['source'],'release')
                 fingerprint.assert_called_once_with(root,b'<mower-managed-runtime>' if format == 2 else b'Flask==3.0.3\n')
@@ -165,9 +173,56 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                 self.assertEqual(json.loads((root/'UPSTREAM.json').read_text())['mower']['commit'],'a'*40)
                 mower['tag_name']='v4.2.0-alpha.1';mower['assets']=[]
                 with self.assertRaisesRegex(ValueError,'has not published'):
-                    prepare.plan(publish=True)
+                    prepare.plan(publish=True, mower_channel=channel)
+
+    def test_nightly_runtime_is_pinned_and_reused(self):
+        self.test_official_archive_is_preferred_and_applied_with_its_dependencies(format=2, channel='dev')
 
     def test_full_runtime_is_reused_without_changing_the_host_fingerprint(self):
         self.test_official_archive_is_preferred_and_applied_with_its_dependencies(format=2)
 
-if __name__=='__main__': unittest.main()
+
+
+class DevelopmentReleaseTests(unittest.TestCase):
+    def test_automatic_events_cannot_resolve_or_publish_development(self):
+        from prepare_distribution import plan
+        for event in ('push', 'schedule', 'repository_dispatch', 'workflow_call', ''):
+            with self.subTest(event=event), patch.dict(os.environ, {'GITHUB_EVENT_NAME':event}):
+                with self.assertRaisesRegex(ValueError, 'manual workflow_dispatch'):
+                    plan(publish=True, force=True, mower_channel='dev')
+
+    def test_nightly_selection_uses_the_dev_index_and_rejects_beta_or_draft(self):
+        from release_common import nightly_release
+        tag = 'v4.1.6-alpha.11.g12345678'
+        release = {'tag_name':tag, 'draft':False}
+        with patch('release_common.get_json', side_effect=[{'schema':1, 'version':tag}, release]) as request:
+            self.assertEqual(nightly_release(), release)
+            self.assertEqual(request.call_args.args[0], f'https://api.github.com/repos/ArkMowers/MowerRelease/releases/tags/{tag}')
+        with patch('release_common.get_json', return_value={'schema':1, 'version':'v4.1.6-alpha.11'}):
+            with self.assertRaisesRegex(ValueError, 'published Nightly'): nightly_release()
+        with patch('release_common.get_json', side_effect=[{'schema':1, 'version':tag}, {**release, 'draft':True}]):
+            with self.assertRaisesRegex(ValueError, 'unavailable'): nightly_release()
+
+    def test_beta_allocates_after_development_apk(self):
+        from release_common import android_version_key, latest_beta
+        self.assertGreater(android_version_key('v0.2.18-dev.34'), android_version_key('v0.2.17'))
+        beta = {'tag_name':'v0.2.17', 'published_at':'2026-10-09T00:00:00Z'}
+        dev = {'tag_name':'v0.2.18-dev.34', 'published_at':'2026-10-10T00:00:00Z'}
+        self.assertEqual(latest_beta([beta, dev]), beta)
+
+    def test_development_publish_preserves_latest_and_existing_compatibility_ranges(self):
+        import publish_distribution as publisher
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            meta = {'channel':'dev', 'apk':{'version':'0.2.18-dev.34','name':'test.apk'},
+                    'maa_python':{'name':'adapter.zip'}, 'source_commit':'a'*40}
+            (directory/'android-release.json').write_text(json.dumps(meta))
+            for name in ('test.apk', 'adapter.zip', 'distribution.json'):
+                (directory/name).write_bytes(b'fixture')
+            with patch.object(publisher,'releases',return_value=[]), patch.object(publisher,'notes',return_value='development'), patch.object(publisher,'gh') as gh:
+                publisher.publish(directory, 'v0.2.18-dev.34')
+            self.assertEqual(gh.call_count, 3)
+            self.assertEqual(gh.call_args.args, ('release','edit','v0.2.18-dev.34','--draft=false','--prerelease','--latest=false'))
+
+
+if __name__ == "__main__": unittest.main()
