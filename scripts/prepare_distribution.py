@@ -37,6 +37,12 @@ def plan(publish=False, force=False, mower_channel='beta'):
     if previous_release:
         descriptor = asset(previous_release, 'android-release.json')
         previous = json.loads(download(descriptor, ROOT/'artifacts/previous-release.json', 1024**2).read_text())
+    allocation_previous = previous
+    if mower_channel == 'beta' and previous_release and '-dev.' in previous_release['tag_name']:
+        beta_releases = [r for r in android if '-dev.' not in r['tag_name']]
+        previous_beta = max(beta_releases, key=lambda r: android_version_key(r['tag_name'])) if beta_releases else None
+        previous = (json.loads(download(asset(previous_beta, 'android-release.json'),
+                    ROOT/'artifacts/previous-beta-release.json', 1024**2).read_text()) if previous_beta else {})
     # Prefer an official update archive even if this tag was once bundled locally.
     mower_asset_name = f"arknights-mower_{mower['tag_name'].removeprefix('v')}_android_arm64.zip"
     if any(a['name'] == mower_asset_name for a in mower.get('assets', [])):
@@ -53,12 +59,12 @@ def plan(publish=False, force=False, mower_channel='beta'):
     bundled = {'mower':mower_state, 'maa':{'tag':maa['tag_name'], 'asset':maa_asset}}
     gradle = (ROOT/'android/app/build.gradle.kts').read_text()
     source_version = re.search(r'versionName = "([^"]+)"', gradle)[1]
-    previous_version = previous.get('apk', {}).get('version', '0.0.0').split('-dev.')[0]
+    previous_version = allocation_previous.get('apk', {}).get('version', '0.0.0').split('-dev.')[0]
     if version_key(source_version) <= version_key(previous_version):
         major, minor, patch = map(int, previous_version.split('.'))
         version = f'{major}.{minor}.{patch+1}'
     else: version = source_version
-    code = max(int(re.search(r'versionCode = (\d+)', gradle)[1]), previous.get('apk', {}).get('version_code', 0)+1)
+    code = max(int(re.search(r'versionCode = (\d+)', gradle)[1]), allocation_previous.get('apk', {}).get('version_code', 0)+1)
     if mower_channel == 'dev': version += f'-dev.{code}'
     meta = json.loads((ROOT/'runtime/mower_android/maa-python.json').read_text())
     old_adapter = previous.get('maa_python', {})

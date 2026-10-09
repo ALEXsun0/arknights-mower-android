@@ -95,14 +95,20 @@ class SnapshotTests(unittest.TestCase):
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
             adapter=json.loads((root/'runtime/mower_android/maa-python.json').read_text())
             previous={'apk':{'version':previous_version,'version_code':previous_code,'host_sha256':'a'*64,'host_version_code':15},'maa_python':adapter,'bundled':baseline}
-            previous_file=root/'previous.json';previous_file.write_text(json.dumps(previous))
+            previous_file=root/'previous.json'
+            beta_file=root/'previous-beta.json';beta_file.write_text(json.dumps(previous))
+            if '-dev.' in previous_version:
+                previous['bundled'] = json.loads(json.dumps(baseline))
+                previous['bundled']['mower']['tag'] += '.g12345678'
+            previous_file.write_text(json.dumps(previous))
             def asset(name): return {'name':name,'digest':'sha256:'+'b'*64,'size':10,'browser_download_url':'https://github.com/example/release.zip'}
             def release(tag,assets): return {'tag_name':tag,'published_at':'2026-09-11T00:00:00Z','assets':assets}
             mower=release(baseline['mower']['tag'],[])
             maa=release(baseline['maa']['tag'],[asset('MAAComponent-'+baseline['maa']['tag']+'-android-arm64.tar.gz')])
-            android=release('v0.2.0',[asset('android-release.json')])
+            android=release(previous_version if '-dev.' in previous_version else 'v0.2.0',[asset('android-release.json')])
             responses={prepare.MOWER_REPO:[mower],prepare.MAA_REPO:[maa],prepare.ANDROID_REPO:[android]}
-            with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo: responses[repo]),patch.object(prepare,'download',return_value=previous_file),patch.object(prepare,'host_digest',return_value='a'*64):
+            if '-dev.' in previous_version: responses[prepare.ANDROID_REPO].append(release('v0.2.17',[asset('android-release.json')]))
+            with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo: responses[repo]),patch.object(prepare,'download',side_effect=lambda item,target,*args: beta_file if target.name == 'previous-beta-release.json' else previous_file),patch.object(prepare,'host_digest',return_value='a'*64):
                 same=prepare.plan(publish=True)
                 self.assertFalse(same['publish']);self.assertFalse(same['host_update'])
                 maa['tag_name']='v6.17.6';maa['assets']=[asset('MAAComponent-v6.17.6-android-arm64.tar.gz')]
