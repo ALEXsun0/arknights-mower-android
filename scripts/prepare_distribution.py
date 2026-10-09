@@ -58,7 +58,7 @@ def plan(publish=False, force=False, mower_channel='beta'):
     maa_asset = asset(maa, f"MAAComponent-{maa['tag_name']}-android-arm64.tar.gz")
     bundled = {'mower':mower_state, 'maa':{'tag':maa['tag_name'], 'asset':maa_asset}}
     gradle = (ROOT/'android/app/build.gradle.kts').read_text()
-    source_version = re.search(r'versionName = "([^"]+)"', gradle)[1]
+    source_version = re.search(r'versionName = "([^"]+)"', gradle)[1].split('-dev.')[0]
     previous_version = allocation_previous.get('apk', {}).get('version', '0.0.0').split('-dev.')[0]
     if version_key(source_version) <= version_key(previous_version):
         major, minor, patch = map(int, previous_version.split('.'))

@@ -83,7 +83,7 @@ class ReleaseAutomationTests(unittest.TestCase):
 
 
 class SnapshotTests(unittest.TestCase):
-    def test_resource_only_snapshot_and_unchanged_snapshot(self, previous_version="0.2.0", previous_code=15):
+    def test_resource_only_snapshot_and_unchanged_snapshot(self, previous_version="0.2.0", previous_code=15, source_version=None):
         import prepare_distribution as prepare
         import shutil
         with tempfile.TemporaryDirectory() as temp:
@@ -92,6 +92,8 @@ class SnapshotTests(unittest.TestCase):
                 p=root/name;p.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,p)
             gradle=root/'android/app/build.gradle.kts'
             gradle.write_text(re.sub(r'versionCode = \d+', 'versionCode = 15', gradle.read_text()))
+            if source_version:
+                gradle.write_text(re.sub(r'versionName = "[^"]+"', f'versionName = "{source_version}"', gradle.read_text()))
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
             adapter=json.loads((root/'runtime/mower_android/maa-python.json').read_text())
             previous={'apk':{'version':previous_version,'version_code':previous_code,'host_sha256':'a'*64,'host_version_code':15},'maa_python':adapter,'bundled':baseline}
@@ -122,6 +124,9 @@ class SnapshotTests(unittest.TestCase):
                 prepare.apply(metadata_only=True)
                 self.assertTrue((root/'android/app/src/main/assets/host-build.json').is_file())
 
+
+    def test_applied_development_version_can_be_planned_again(self):
+        self.test_resource_only_snapshot_and_unchanged_snapshot(previous_version='0.2.18-dev.34', previous_code=34, source_version='0.2.18-dev.34')
 
     def test_beta_continues_after_a_development_release(self):
         self.test_resource_only_snapshot_and_unchanged_snapshot(previous_version='0.2.18-dev.34', previous_code=34)
