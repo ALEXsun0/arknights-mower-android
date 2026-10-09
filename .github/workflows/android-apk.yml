@@ -12,20 +12,8 @@ on:
         description: 'Build and publish a complete release using the selected Mower channel and latest beta-channel MAA'
         type: boolean
         default: false
-  schedule:
-    - cron: '17,47 * * * *'
   repository_dispatch:
-    types: [mower-release, maa-release]
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/android-apk.yml'
-      - 'android/**'
-      - 'runtime/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - 'UPSTREAM.json'
-      - '.dockerignore'
+    types: [mower-release]
 
 permissions:
   contents: read
@@ -53,7 +41,7 @@ jobs:
           MOWER_CHANNEL: ${{ inputs.mower_channel || 'beta' }}
         run: |
           args=(--mower-channel "$MOWER_CHANNEL")
-          if [[ "$EVENT" == schedule || "$EVENT" == repository_dispatch || "$PUBLISH" == true ]]; then args+=(--publish); fi
+          if [[ "$EVENT" == repository_dispatch || "$PUBLISH" == true ]]; then args+=(--publish); fi
           if [[ "$PUBLISH" == true ]]; then args+=(--force); fi
           python3 scripts/prepare_distribution.py plan "${args[@]}"
       - uses: actions/upload-artifact@v4
@@ -65,7 +53,7 @@ jobs:
   runtime:
     name: ARM64 Python, WebUI and MAA
     needs: snapshot
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.snapshot.outputs.publish == 'true'
+    if: github.event_name == 'workflow_dispatch' || needs.snapshot.outputs.publish == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
