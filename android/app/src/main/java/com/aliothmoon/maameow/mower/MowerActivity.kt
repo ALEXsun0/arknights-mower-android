@@ -49,6 +49,7 @@ class MowerActivity : Activity() {
     private var webTimeoutTask: Runnable? = null
     private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+    private val fileExport by lazy { WebFileExport(this) }
     private val refreshLoop = VisibleUiRefresh(
         schedule = { callback, delay -> handler.postDelayed(callback, delay) },
         cancel = { handler.removeCallbacks(it) },
@@ -180,6 +181,9 @@ class MowerActivity : Activity() {
         settings.javaScriptEnabled = true; settings.domStorageEnabled = true
         settings.useWideViewPort = true
         settings.allowFileAccess = false; settings.allowContentAccess = false
+        setDownloadListener { url, _, disposition, mime, _ ->
+            fileExport.download(this, url, android.webkit.URLUtil.guessFileName(url, disposition, mime), mime ?: "application/octet-stream")
+        }
         webChromeClient = object : android.webkit.WebChromeClient() {
             override fun onShowFileChooser(view: WebView?, callback: android.webkit.ValueCallback<Array<android.net.Uri>>?, params: FileChooserParams?): Boolean {
                 fileSelection?.onReceiveValue(null); fileSelection = callback
@@ -190,8 +194,13 @@ class MowerActivity : Activity() {
             }
         }
         webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                fileExport.detach()
+            }
+
             override fun onPageFinished(view: WebView, url: String?) {
                 executeWebCommand(webRecovery.pageFinished(url))
+                fileExport.attach(view, MowerService.url)
                 // Chromium can retain the landscape layout width when a focused
                 // input rotates back to portrait. Keep the mobile viewport at
                 // its normal minimum scale; Mower's own UI scale still applies.
@@ -334,6 +343,7 @@ class MowerActivity : Activity() {
             fileSelection?.onReceiveValue(if (resultCode == RESULT_OK) data?.data?.let { arrayOf(it) } else null)
             fileSelection = null
         }
+        if (requestCode == WebFileExport.REQUEST_CODE) fileExport.result(resultCode, data?.data)
     }
 
     private fun updateLauncher() {
@@ -445,6 +455,6 @@ class MowerActivity : Activity() {
     }
 
     override fun onDestroy() {
-        refreshLoop.stop(); cancelWebTasks(); scope.cancel(); web.destroy(); super.onDestroy()
+        refreshLoop.stop(); cancelWebTasks(); scope.cancel(); fileExport.close(); web.destroy(); super.onDestroy()
     }
 }
