@@ -71,8 +71,6 @@ class AndroidDevice:
         return self.bridge.call('status')['resolution'] == [1920, 1080]
 
     def screencap(self):
-        import cv2
-        import numpy as np
         from arknights_mower.utils import config
         from arknights_mower.utils.csleep import MowerExit
         if config.stop_mower.is_set():
@@ -83,7 +81,15 @@ class AndroidDevice:
         started = time.monotonic()
         if config.stop_mower.is_set():
             raise MowerExit
-        png = base64.b64decode(self.bridge.call('screenshot', require_game=True), validate=True)
+        return self._decode_frame(self.bridge.call('screenshot', require_game=True), started)
+
+    def _decode_frame(self, encoded, started=None):
+        import cv2
+        import numpy as np
+        from arknights_mower.utils import config
+        if not isinstance(encoded, str):
+            raise RuntimeError('当前 Android 宿主不支持滑动截图，请更新 APK')
+        png = base64.b64decode(encoded, validate=True)
         bgr = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
         if bgr is None or bgr.shape[:2] != (1080, 1920):
             raise RuntimeError('后台画面不是 1920×1080，请重新启动后台游戏')
@@ -92,13 +98,14 @@ class AndroidDevice:
         from arknights_mower.utils.log import logger, save_screenshot
         save_screenshot(png)
         config.screenshot_time = datetime.now()
-        elapsed = (time.monotonic() - started) * 1000
-        config.screenshot_avg = elapsed if config.screenshot_avg is None else config.screenshot_avg * .9 + elapsed * .1
-        if config.screenshot_count >= 100:
-            config.screenshot_count = 0
-            logger.info(f'截图用时{elapsed:.0f}ms 平均用时{config.screenshot_avg:.0f}ms')
-        else:
-            config.screenshot_count += 1
+        if started is not None:
+            elapsed = (time.monotonic() - started) * 1000
+            config.screenshot_avg = elapsed if config.screenshot_avg is None else config.screenshot_avg * .9 + elapsed * .1
+            if config.screenshot_count >= 100:
+                config.screenshot_count = 0
+                logger.info(f'截图用时{elapsed:.0f}ms 平均用时{config.screenshot_avg:.0f}ms')
+            else:
+                config.screenshot_count += 1
         return png, rgb, gray
 
     def tap(self, point):
@@ -107,9 +114,17 @@ class AndroidDevice:
     def swipe(self, start, end, duration=100):
         self.swipe_ext([start, end], [duration], up_wait=0)
 
-    def swipe_ext(self, points, durations, up_wait=200):
-        self.bridge.call('swipe', points=[[int(x), int(y)] for x, y in points],
-                         durations=[int(d) for d in durations], up_wait=int(up_wait))
+    def swipe_ext(self, points, durations, up_wait=200, *, capture=False):
+        from arknights_mower.utils import config
+        from arknights_mower.utils.csleep import MowerExit
+        if config.stop_mower.is_set():
+            raise MowerExit
+        result = self.bridge.call('swipe', points=[[int(x), int(y)] for x, y in points],
+                                  durations=[int(d) for d in durations], up_wait=int(up_wait),
+                                  **({'capture': True} if capture else {}))
+        if capture:
+            # Decode the frame captured before touch-up; never replay a gesture.
+            return self._decode_frame(result)
 
     def close(self):
         # The Android foreground service owns the display and engine lifetime.

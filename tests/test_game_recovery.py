@@ -79,3 +79,28 @@ class GameRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'budget exhausted'):
             self.device.screencap()
         self.device.bridge.call.assert_called_once_with('screenshot', require_game=True)
+
+    def test_swipe_capture_decodes_held_frame_without_another_device_call(self):
+        frame = self.device.swipe_ext([(600, 500), (100, 500)], [200], up_wait=400, capture=True)
+        self.device.bridge.call.assert_called_once_with(
+            'swipe', points=[[600, 500], [100, 500]], durations=[200], up_wait=400, capture=True)
+        png, rgb, gray = frame
+        self.assertTrue(png)
+        self.assertEqual(rgb.shape, (1080, 1920, 3))
+        self.assertEqual(gray.shape, (1080, 1920))
+        self.assertEqual(rgb[0, 0].tolist(), [220, 220, 220])
+
+    def test_old_host_or_capture_failure_never_replays_the_gesture(self):
+        for response in [True, 'not base64']:
+            with self.subTest(response=response):
+                self.device.bridge.call.reset_mock()
+                self.device.bridge.call.return_value = response
+                with self.assertRaises((RuntimeError, ValueError)):
+                    self.device.swipe_ext([(600, 500), (100, 500)], [200], capture=True)
+                self.device.bridge.call.assert_called_once()
+
+    def test_stop_prevents_swipe_capture(self):
+        self.stop.set()
+        with self.assertRaises(MowerExit):
+            self.device.swipe_ext([(600, 500), (100, 500)], [200], capture=True)
+        self.device.bridge.call.assert_not_called()

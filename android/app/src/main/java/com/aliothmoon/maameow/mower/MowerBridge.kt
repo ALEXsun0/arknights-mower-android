@@ -214,6 +214,12 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         return x to y
     }
 
+    private fun screenshot(s: RemoteService): String {
+        val fd = s.mowerFrame() ?: error("后台画面尚未就绪")
+        val bytes = ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
     @Synchronized private fun dispatch(method: String, p: JSONObject): Any {
         if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
         check(!closed) { "Mower 服务正在停止" }
@@ -278,9 +284,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         return when (method) {
             "screenshot" -> {
                 if (p.optBoolean("require_game")) recoverTaskGame(captureDemand = true)
-                val fd = s.mowerFrame() ?: error("后台画面尚未就绪")
-                val bytes = ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
-                Base64.encodeToString(bytes, Base64.NO_WRAP)
+                screenshot(s)
             }
             "game_status" -> JSONObject().put("alive", s.isAppAlive(packageName) == 1)
                 .put("on_display", s.isAppAlive(packageName) == 1 && s.isAppOnVirtualDisplay(packageName))
@@ -313,25 +317,17 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                     require(pair.length() == 2)
                     pair.getInt(0) to pair.getInt(1)
                 })
-                val points = path.points
                 val times = (0 until durations.length()).map { durations.getInt(it).also { d -> require(d in 1..10000) } }
                 require(times.sum() <= 30000)
                 val wait = p.optInt("up_wait", 0).also { require(it in 0..3000) }
-                try {
-                    s.touchDown(points.first().first, points.first().second, 0)
-                    for (i in times.indices) {
-                        val steps = maxOf(1, times[i] / 16)
-                        for (n in 1..steps) {
-                            Thread.sleep((times[i] / steps).toLong())
-                            val (x, y) = path.at(i, n, steps)
-                            s.touchMove(x, y, 0)
-                        }
-                    }
-                    Thread.sleep(wait.toLong())
-                    val (endX, endY) = path.end
-                    s.touchUp(endX, endY, 0)
-                } finally { s.touchCancel() }
-                true
+                MowerSwipe.perform(
+                    path, times, wait,
+                    down = { x, y -> s.touchDown(x, y, 0) },
+                    move = { x, y -> s.touchMove(x, y, 0) },
+                    up = { x, y -> s.touchUp(x, y, 0) },
+                    cancel = { s.touchCancel() },
+                    capture = if (p.optBoolean("capture")) ({ screenshot(s) }) else null,
+                ) ?: true
             }
             else -> error("Unknown bridge operation")
         }
