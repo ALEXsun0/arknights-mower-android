@@ -64,7 +64,11 @@ WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓�
 
 ### GitHub Actions
 
-推送到 `main` 会自动验证构建，也可以在 [Actions → Android APK](https://github.com/ALEXsun0/arknights-mower-android/actions/workflows/android-apk.yml) 手动构建，设置 `publish=true` 后发布。CI 每 30 分钟检查 Mower 和 MAA 官方 Release；检测到新版本后自动构建并发布，也支持上游 Release 事件触发。内置组件选择公测渠道最新公开版本（包括更新的正式版，排除开发版），Release 正文列出实际内置版本。没有组件变化时不会重复发布。
+APK 只响应 Mower 主仓主动发送的 `mower-release` 通知或手动触发；仓库不定时检查 Mower/MAA 发行，不响应 MAA 通知或分支推送。Mower 通知使用最新公测渠道组件（包括更新的正式版，排除开发版），无组件变化时不重复发布。每次被触发时固定本次内置组件版本，Release 正文列出实际内置版本。
+
+手动普通构建：打开 [Actions → Android APK](https://github.com/ALEXsun0/arknights-mower-android/actions/workflows/android-apk.yml)，点击 **Run workflow**，选择 `main`，将 `mower_channel` 设为 `beta`；`publish=false` 仅构建，`publish=true` 同时发布。
+
+手动开发版发布：将 `mower_channel` 设为 `dev`、`publish` 设为 `true`。流水线固定读取 MowerRelease 的 `dev` 索引所指向的已发布 Nightly Android 完整运行包，MAA 沿用最新公测渠道；缺包或校验失败时终止。开发版使用 `v版本-dev.版本代码` 标签，发布为 Pre-release，不替换 Latest；Mower 主仓通知只使用 `beta`。开发版沿用固定签名，可从 Release 下载 APK 并通过系统覆盖安装。每次手动发布分配递增 versionCode，普通版本后续发布也继续递增。
 
 每期 [Release](https://github.com/ALEXsun0/arknights-mower-android/releases) 同时提供四个配套附件：
 

@@ -24,7 +24,9 @@ def compatibility(meta, until=None):
 def notes(meta):
     m=meta['bundled']['mower']; maa=meta['bundled']['maa']
     text=f"Arknights Mower Android {meta['apk']['version']}（versionCode {meta['apk']['version_code']}）。\n\n"
-    if m.get('source') == 'bundled' and m.get('branch') == 'alpha':
+    if meta.get('channel') == 'dev':
+        text+=f"开发版 APK：内置 Mower Nightly **{m['tag']}**，MAA 使用公测渠道 **{maa['tag']}**。仅由手动工作流发包，标记为预发行版，不替换 Latest。\n"
+    elif m.get('source') == 'bundled' and m.get('branch') == 'alpha':
         text+=f"内置 Mower 更新至 **alpha `{m['revision'][:8]}`**（版本基线 {m['tag']}）；MAA 使用公测渠道最新发行 **{maa['tag']}**。\n"
     else:
         text+=f"内置 Mower 更新至 **{m['tag']}**，MAA 更新至 **{maa['tag']}**，均按公测渠道选择最新公测或正式发行。\n"
@@ -65,11 +67,16 @@ def publish(directory, tag):
         else: gh('release','edit',tag,'--notes-file',str(body))
         gh('release','upload',tag,*[str(directory/n) for n in required],'--clobber')
         # Visibility changes only after all packages have uploaded successfully.
-        gh('release','edit',tag,'--draft=false','--latest')
+        development = meta.get('channel') == 'dev'
+        gh('release','edit',tag,'--draft=false',
+           '--prerelease' if development else '--prerelease=false',
+           '--latest=false' if development else '--latest')
+        if development:
+            print(f'Published development prerelease {tag}'); return
         # Only our generated compatibility block is edited; historic v0.1.0 is left intact.
         for release in items:
             oldbody=release.get('body') or ''
-            if START not in oldbody or release['tag_name']==tag or release.get('draft'): continue
+            if START not in oldbody or release['tag_name']==tag or release.get('draft') or '-dev.' in release['tag_name']: continue
             old=json.loads(download(asset(release,'android-release.json'),Path(temp)/'old.json',1024**2).read_text())
             p=old.get('maa_python',{})
             if not p.get('compatibility') or p.get('sha256')==meta['maa_python']['sha256']: continue

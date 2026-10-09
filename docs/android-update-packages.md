@@ -31,7 +31,7 @@ MAA 核心和资源只走官方源，Android 暂时禁用 Mirror酱。`android-r
 
 ## 自动发行与组件版本
 
-`Android APK` 工作流每 30 分钟检查 Mower 和 MAA 的公开 Release，也支持手动 `publish=true` 及 `repository_dispatch`。公测渠道选择按发布时间最新的正式或 alpha/beta/rc 发行，排除 dev/nightly。上游 Release 资产尚未上传完成、缺少 GitHub digest、Android 更新包不兼容或 ABI 检查失败时停止发布，下一轮重新检查。一次检测中同时变化的组件合并到同一完整发行。
+`Android APK` 工作流只接受 Mower 主仓 `mower-release` 通知与手动触发，不定时轮询，不响应 MAA 通知或分支推送。入口、手动参数与重试规则见 [Android 独立发行](release-ci.md)。普通版按发布时间选择最新正式或 alpha/beta/rc 发行；手动开发版固定使用 MowerRelease dev 索引对应的已发布 Nightly 完整包。上游附件、GitHub digest、Android 兼容检查或 ABI 检查失败时停止发布。
 
 构建前生成固定的 `distribution.json`，ARM64 运行环境和 APK 两个作业都使用同一份快照。Mower 使用主仓库 Android ZIP；MAA 使用官方 Android ARM64 组件，并检查 Mower 调用的 Python 接口及桥接调用的 MaaCore 符号。MAA 的 OCR 资源继续按现有方式转换与裁剪，APK 不附带构建工具或源码部署工具。当前 alpha.5 没有 Android 附件，首发暂沿用已在实机验证的兼容快照；后续 Mower 包需要包含 #1032 的可选组件更新能力，避免热更新后入口消失。
 
