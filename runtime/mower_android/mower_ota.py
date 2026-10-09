@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import lzma
+import re
 import shutil
 import stat
 import tempfile
@@ -33,7 +34,8 @@ def _runtime_name(name, directory=False):
         raise ValueError('OTA 运行时路径无效')
     path = PurePosixPath(name)
     if (path.is_absolute() or path.as_posix() != name.rstrip('/') or
-            '..' in path.parts or '\\' in name or ':' in name or
+            '..' in path.parts or '\\' in name or '\0' in name or
+            re.match(r'^[A-Za-z]:', name) or
             name.endswith('/') != directory or
             (name.startswith(('mower/', 'mower-data/')) and not directory) or
             (name in ('mower', 'mower-data') and not directory)):
