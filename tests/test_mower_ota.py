@@ -17,6 +17,15 @@ from mower_android import app_update, mower_ota, mower_package
 
 
 class MowerOtaTests(unittest.TestCase):
+    def test_runtime_paths_allow_posix_multiarch_and_reject_unsafe_names(self):
+        name = 'var/lib/dpkg/info/libc6:arm64.list'
+        self.assertEqual(mower_ota._runtime_name(name), name)
+        for name in ('../escape', '/absolute', 'usr/../escape', 'C:escape',
+                     'usr//lib', 'usr/./lib', 'usr\\escape', 'mower', 'mower-data',
+                     'mower/server.py', 'mower-data/conf.yml', 'usr/nul\0file'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                mower_ota._runtime_name(name)
+
     def test_beta_check_reads_full_and_ota_from_one_mower_release_index(self):
         target = 'v4.1.6-alpha.8'
         full_name = 'arknights-mower_4.1.6-alpha.8_android_arm64.zip'
@@ -176,7 +185,7 @@ class MowerOtaTests(unittest.TestCase):
         with zipfile.ZipFile(output, 'w') as archive:
             archive.writestr('usr/', b'')
             archive.writestr('usr/local/bin/python3.12', b'python binary')
-            archive.writestr('usr/lib/changed.so', data)
+            archive.writestr('var/lib/dpkg/info/libc6:arm64.list', data)
             archive.writestr('.symlinks.json', b'{}')
         return lzma.compress(output.getvalue(), preset=6)
 
@@ -221,7 +230,7 @@ class MowerOtaTests(unittest.TestCase):
             'to': '4.1.6-alpha.8', 'platform': 'android', 'arch': 'arm64',
             'files': files,
             'changed': [name for name in files if name != 'python-runtime.zip.xz'],
-            'runtime': {'files': runtime_files, 'changed': ['usr/lib/changed.so']},
+            'runtime': {'files': runtime_files, 'changed': ['var/lib/dpkg/info/libc6:arm64.list']},
         }
         delta = self.root / 'runtime-ota.zip'
         with zipfile.ZipFile(delta, 'w') as archive:
@@ -232,7 +241,7 @@ class MowerOtaTests(unittest.TestCase):
                     b'__version__ = "4.1.6-alpha.8"' if name.endswith('__init__.py') else
                     b'ui' if name.endswith('index.html') else b'requirements')
                 archive.writestr('payload/' + name, payload)
-            archive.writestr('runtime/usr/lib/changed.so', b'new dependency')
+            archive.writestr('runtime/var/lib/dpkg/info/libc6:arm64.list', b'new dependency')
         complete = self.root / 'rebuilt.zip'
         mower_ota.reconstruct(delta, self.base, complete,
                               from_version='4.1.6-alpha.7', to_version='v4.1.6-alpha.8')
@@ -241,7 +250,7 @@ class MowerOtaTests(unittest.TestCase):
             rebuilt_meta = json.loads(archive.read('mower-android.json'))
         self.assertEqual(rebuilt_meta['runtime']['sha256'], hashlib.sha256(rebuilt_runtime).hexdigest())
         with zipfile.ZipFile(io.BytesIO(lzma.decompress(rebuilt_runtime))) as runtime:
-            self.assertEqual(runtime.read('usr/lib/changed.so'), b'new dependency')
+            self.assertEqual(runtime.read('var/lib/dpkg/info/libc6:arm64.list'), b'new dependency')
             self.assertEqual(runtime.read('usr/local/bin/python3.12'), old_zip.read('usr/local/bin/python3.12'))
         self.assertEqual(mower_package.inspect(complete, apk_code=29)['version'], '4.1.6-alpha.8')
         (self.base / 'python-runtime.zip.xz').write_bytes(b'corrupted')
