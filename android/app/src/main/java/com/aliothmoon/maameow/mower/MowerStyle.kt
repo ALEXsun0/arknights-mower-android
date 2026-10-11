@@ -76,7 +76,7 @@ internal object MowerStyle {
         }
         when (val bg = view.background) {
             is Surface -> bg.refresh()
-            is RippleDrawable -> (bg.getDrawable(0) as? Surface)?.refresh()
+            is RippleDrawable -> for (i in 0 until bg.numberOfLayers) (bg.getDrawable(i) as? Surface)?.refresh()
         }
         if (view is ViewGroup) for (i in 0 until view.childCount) applyTheme(view.getChildAt(i))
     }

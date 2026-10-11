@@ -128,6 +128,27 @@ class RunOutcome:
                 self.failed = True
 
 
+class MaaCallError(RuntimeError):
+    """Identify a rejected MAA call without exposing its full task parameters."""
+
+    def __init__(self, operation, *, task_type=None, stage=None, detail=""):
+        self.operation = operation
+        self.task_type = task_type
+        self.stage = stage
+        label = {
+            "load": "资源加载失败",
+            "append_task": "任务提交失败",
+            "start": "任务启动失败",
+        }[operation]
+        target = f" | task={task_type}" if task_type else ""
+        if stage is not None:
+            target += f" | stage={stage or '上次作战'}"
+        super().__init__(
+            f"MAA {label}{target}：{detail or '核心未接受调用'}。"
+            "请检查 MAA 核心及资源版本，并查看 MAA 目录/debug/asst.log"
+        )
+
+
 class VerifiedAsst:
     """Preserve the Asst API and callback while checking actual task completion."""
 
@@ -168,11 +189,22 @@ class VerifiedAsst:
         if self._consumer is not None:
             self._consumer(message, details, argument)
 
+    def append_task(self, type_name, params=None):
+        params = {} if params is None else params
+        task_id = self._asst.append_task(type_name, params)
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise MaaCallError(
+                "append_task", task_type=type_name, stage=params.get("stage")
+            )
+        return task_id
+
     def start(self):
         self._outcome.begin()
         self._verified = False
         result = self._asst.start()
         self._outcome.accept(result)
+        if not result:
+            raise MaaCallError("start")
         return result
 
     def _cleanup(self, verified=False):
