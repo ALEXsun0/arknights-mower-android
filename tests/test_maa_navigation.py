@@ -155,9 +155,9 @@ def test_android_invalid_download_loads_previous_cached_navigation(android):
     )
 
 
-def test_android_old_host_requires_apk_update(android):
-    android.bridge.call.side_effect = RuntimeError("Unknown MAA operation")
-    with pytest.raises(maa_backup.MaaCallError, match="请更新 APK"):
+def test_android_bridge_failure_prevents_task_submission(android):
+    android.bridge.call.side_effect = RuntimeError("bridge disconnected")
+    with pytest.raises(RuntimeError, match="bridge disconnected"):
         android.scheduler.initialize_maa()
     android.native.connect.assert_not_called()
     android.native.append_task.assert_not_called()
