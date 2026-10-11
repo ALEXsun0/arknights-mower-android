@@ -98,7 +98,15 @@ class AndroidMaaCore {
             "maa_reset" -> { check(!core.AsstRunning(ptr)); check(core.AsstStop(ptr)); synchronized(events) { events.clear(); sequence } }
             "maa_connected" -> core.AsstConnected(ptr)
             "maa_option" -> if (p.getInt("key") == 2) true else core.AsstSetInstanceOption(ptr, p.getInt("key"), p.getString("value"))
-            "maa_append" -> { check(!core.AsstRunning(ptr)); val id = core.AsstAppendTask(ptr, p.getString("type"), p.getJSONObject("params").toString()); check(id > 0); id }
+            "maa_navigation" -> MaaNavigation.load(installed!!, p.getJSONObject("tasks"), core.AsstRunning(ptr)) { core.AsstLoadResource(it) }
+            "maa_append" -> {
+                check(!core.AsstRunning(ptr)) { "MAA 任务仍在运行，不能提交新任务" }
+                val type = p.getString("type")
+                val params = p.getJSONObject("params")
+                val id = core.AsstAppendTask(ptr, type, params.toString())
+                check(id > 0) { "MAA 任务提交失败 | task=$type | stage=${params.optString("stage", "未指定")}；请检查核心及导航资源" }
+                id
+            }
             "maa_params" -> core.AsstSetTaskParams(ptr, p.getInt("id"), p.getJSONObject("params").toString()).toInt() != 0
             "maa_start" -> core.AsstStart(ptr)
             "maa_running" -> core.AsstRunning(ptr)

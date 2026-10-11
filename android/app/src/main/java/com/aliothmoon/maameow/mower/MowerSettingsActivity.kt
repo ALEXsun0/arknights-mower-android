@@ -75,7 +75,7 @@ class MowerSettingsActivity : Activity() {
                     execute {
                         check(getSharedPreferences("appearance", 0).edit().putBoolean("dark", index == 1).commit()) { "外观保存失败" }
                         AppearancePreferences.sync(this)
-                        runOnUiThread {
+                        withContext(Dispatchers.Main) {
                             MowerStyle.dark = index == 1
                             appearanceButton.text = "显示模式：${if (MowerStyle.dark) "暗色" else "亮色"}"
                             MowerStyle.applyTheme(window.decorView); chrome()
@@ -217,7 +217,7 @@ class MowerSettingsActivity : Activity() {
         AndroidSystemSettings.lastAction
     }
 
-    private fun execute(work: () -> String) {
+    private fun execute(work: suspend () -> String) {
         if (busy) return
         busy = true; refresh()
         scope.launch {

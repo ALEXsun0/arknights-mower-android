@@ -58,7 +58,9 @@ Python 的 DNS 随 Android 当前网络同步，切换 Wi-Fi 或 VPN 后自动�
 
 WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓版仅选择 `MAAComponent-…-android-arm64.tar.gz`，校验官方 SHA-256、解压并准备 NCNN 模型，再生成 Android 服务所用的组件包。Python 兼容接口位于应用运行时，不会被 MAA 包覆盖。
 
-更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新也会重新准备 OCR 模型并提示重启。更新转换可能持续数分钟；请保证空间和网络。Mower 本体使用主仓库的 Android 更新包，停止并重启服务后生效，无需更新 APK。Android 暂时禁用 Mirror酱，核心与资源均从官方获取。
+每次创建 MAA 实例时均下载并校验官方活动导航，由宿主在空闲时安装到当前组件缓存并加载，再提交关卡。下载失败时保留旧缓存并记录错误；加载失败阻止本轮任务。此链路需要包含导航加载接口的新 APK，仅更新 Mower 无法补齐旧宿主接口。
+
+更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新也会重新准备 OCR 模型并提示重启。更新转换可能持续数分钟；请保证空间和网络。Mower 本体使用主仓库的 Android 更新包，停止并重启服务后生效，无需更新 APK。Android 核心使用官方组件包，资源更新支持 GitHub 和 Mirror酱，并分别选择来源。
 
 ## 构建
 
@@ -132,7 +134,7 @@ Android APK 由本仓库 CI 构建。WebUI 的内置 Mower 更新支持正式版
 
 WebUI 软件更新页支持检查、下载和恢复内置 Python 接口，默认每 6 小时自动检查；按接口内容判断是否有更新，兼容包随 APK 重新发布不会重复提示。除 APK 外，组件更新设置均放在 WebUI，也可通过已认证的局域网页面使用。
 
-MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Android 暂时禁用 Mirror酱；MAA 核心与资源均使用官方来源。主仓库每次发布可从本仓库 Release 自动附带兼容的 APK 与接口 ZIP，不要求 APK 跟随 Mower 发版。
+MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Android 核心使用官方组件包；MAA 资源支持 GitHub 和 Mirror酱。主仓库每次发布可从本仓库 Release 自动附带兼容的 APK 与接口 ZIP，不要求 APK 跟随 Mower 发版。
 
 ### 游戏内性能测试
 
@@ -143,3 +145,9 @@ MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Andro
 运行环境使用整包 XZ 压缩；移除运行期不需要的 Git、头文件、测试、字节码缓存和当前 Mower 未使用的 OCR beta 模型。MAA 保留所有地区资源，将 OCR 转为 Android 所用的 NCNN 后不再重复打包对应 ONNX；其他 ONNX 推理模型与原生库保留。APK 仍内置 Python、Mower、MAA，首次启动无需额外下载运行环境。
 
 更新备份会在验证成功后自动清理：Mower 等新版本 WebUI 启动就绪，MAA 核心与资源等首次任务正常完成。失败、取消或尚未验证时保留；配置备份和用户数据不受影响。
+
+### Android 活动导航与主题验证
+
+宿主的 `maa_navigation` 接口只在 MAA 空闲时接收非空 JSON 对象，原子替换当前组件缓存的 `resource/tasks.json` 并确认 `AsstLoadResource` 成功。资源整包更新仍经过 OCR 模型准备、组件打包和服务重启。Mirror酱资源来源复用 [MAA-Meow 的 MaaResource 接口](https://github.com/Aliothmoon/MAA-Meow/blob/4e6a4d910d8b5f0b34c9cce2e5cc08a9da4f4f1b/app/src/main/java/com/aliothmoon/maameow/data/datasource/update/MirrorChyanResourceDownloadUrlResolver.kt)；MAA-Meow 的 APK 更新接口不提供 Mower 核心组件。
+
+亮暗主题切换遍历背景的实际图层数量，空涟漪背景保留原样。原生界面更新在主线程协程内完成，异常交回现有设置错误处理。离线回归覆盖空背景、多次往返切换、宿主 RPC 加载顺序、关卡拒绝诊断和导航缓存保留。

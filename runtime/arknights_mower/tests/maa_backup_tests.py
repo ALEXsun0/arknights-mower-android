@@ -89,7 +89,8 @@ class MaaBackupTests(unittest.TestCase):
                 self.assertTrue(self.old.exists())
         instance = self.asst()
         instance._asst.accepted = False
-        self.assertFalse(instance.start())
+        with self.assertRaises(backup.MaaCallError):
+            instance.start()
         self.finish(instance)
         self.assertTrue(self.old.exists())
         instance = self.asst()

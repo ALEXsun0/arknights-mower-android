@@ -23,12 +23,14 @@ android {
     externalNativeBuild { cmake { path = file("src/main/native/CMakeLists.txt"); version = "3.22.1" } }
     packaging { jniLibs { useLegacyPackaging = true } }
     androidResources { noCompress += listOf("zip", "xz") }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     // PRoot currently needs targetSdk 28. This APK is distributed through GitHub,
     // not Google Play; retain all other release lint checks.
     lint { disable += "ExpiredTargetSdkVersion" }
 }
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("org.json:json:20240303")
     implementation("org.tukaani:xz:1.10")
     implementation("androidx.core:core:1.17.0")
