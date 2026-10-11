@@ -126,9 +126,16 @@ def main():
         finally: raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
-    progress.report('启动 WebUI 监听')
-    faulthandler.cancel_dump_traceback_later()
-    server.app.run(host=os.environ.get('MOWER_WEB_BIND', '127.0.0.1'), port=config.conf.webview.port, threaded=True, use_reloader=False)
+    from werkzeug.serving import make_server
+    from mower_android.task_startup import start_tasks
+    try:
+        with make_server(os.environ.get('MOWER_WEB_BIND', '127.0.0.1'), config.conf.webview.port, server.app, threaded=True) as http:
+            start_tasks(server, config, token)
+            progress.report('启动 WebUI 监听')
+            faulthandler.cancel_dump_traceback_later()
+            http.serve_forever()
+    finally:
+        config.stop_mower.set(); config.stop_maa.set()
 
 
 if __name__ == '__main__': main()

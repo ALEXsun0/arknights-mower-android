@@ -548,7 +548,8 @@ const { operators } = storeToRefs(plan_store)
 const { load_plan, load_operators } = plan_store
 
 const mower_store = useMowerStore()
-const { ws, running, log_lines, auto_start_handled } = storeToRefs(mower_store)
+const { ws, running, log_lines, auto_start_handled, desktop_startup_handled } =
+  storeToRefs(mower_store)
 const { get_running, listen_ws } = mower_store
 
 const update_notice_store = useUpdateNoticeStore()
@@ -678,7 +679,7 @@ onMounted(async () => {
     console.error('failed to load update notice', error)
     showUpdateNoticeModal.value = false
   }
-  // Render settings while updating, but resume automatic tasks only afterwards.
+  // The service process owns automatic resources and tasks when claimed in status.
   const resourceUpdateRequest = (async () => {
     try {
       if (await loadResourceJob()) {
@@ -686,7 +687,11 @@ onMounted(async () => {
       }
       if (hot_update_enable.value) {
         const resourceInfo = await loadResourceVersion()
-        if (hot_update_auto_update.value && resourceInfo.update_available === true) {
+        if (
+          !desktop_startup_handled.value &&
+          hot_update_auto_update.value &&
+          resourceInfo.update_available === true
+        ) {
           if (await installResource()) {
             await Promise.all([load_shop(), load_item(), load_operators()])
           }
