@@ -83,7 +83,7 @@ class ReleaseAutomationTests(unittest.TestCase):
 
 
 class SnapshotTests(unittest.TestCase):
-    def test_resource_only_snapshot_and_unchanged_snapshot(self, previous_version="0.2.0", previous_code=15, source_version=None):
+    def test_resource_only_snapshot_and_unchanged_snapshot(self, previous_version="0.2.0", previous_code=15, source_version="0.2.18"):
         import prepare_distribution as prepare
         import shutil
         with tempfile.TemporaryDirectory() as temp:
