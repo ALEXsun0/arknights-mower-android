@@ -36,6 +36,7 @@ class MowerService : Service() {
     private var ownsRuntime = false
     private var bridge: MowerBridge? = null
     private var python: Process? = null
+    private var pythonSharedMemory: File? = null
     private var runtimeNetwork: RuntimeNetwork? = null
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var failed = false
@@ -158,8 +159,11 @@ class MowerService : Service() {
                 val talloc = File(exec, "libtalloc.so.2")
                 talloc.delete()
                 Os.symlink(File(native, "libtalloc.so").path, talloc.path)
+                val sharedMemory = java.nio.file.Files.createTempDirectory(cacheDir.toPath(), "python-shm-").toFile()
+                pythonSharedMemory = sharedMemory
+                Os.chmod(sharedMemory.path, 448) // 0700; one private directory per run.
                 val args = listOf(File(native, "libproot.so").path, "--kill-on-exit", "-0", "-r", root.path,
-                    "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${data.path}:/mower-data",
+                    "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${sharedMemory.path}:/dev/shm", "-b", "${data.path}:/mower-data",
                     "-b", "${selected.program.path}:/mower", "-b", "${bundledRoot.path}/mower/mower_android:/mower/mower_android", "-w", "/mower",
                     "/usr/bin/env", "-i", "HOME=/mower-data", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TZ=${java.util.TimeZone.getDefault().id}",
                     "MOWER_ANDROID=1", "MOWER_SOURCE_SELECTED=1", "MOWER_ACTIVE_ID=${selected.id.orEmpty()}", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
@@ -342,7 +346,14 @@ class MowerService : Service() {
                 }
                 python?.let {
                     it.destroy()
-                    if (!it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) it.destroyForcibly()
+                    if (!it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                        it.destroyForcibly()
+                        it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                }
+                if (python?.isAlive != true) {
+                    pythonSharedMemory?.deleteRecursively()
+                    pythonSharedMemory = null
                 }
                 pidFile.delete()
                 bridge?.close()

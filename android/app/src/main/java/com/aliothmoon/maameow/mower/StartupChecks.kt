@@ -28,7 +28,7 @@ internal object StartupChecks {
     }.getOrDefault(false)
 
     fun nativeRuntime(directory: File) {
-        for (name in listOf("libproot.so", "libproot-loader.so", "liblauncher.so", "libtalloc.so")) {
+        for (name in listOf("libproot.so", "libproot-loader.so", "liblauncher.so", "libtalloc.so", "libandroid-shmem.so")) {
             val file = File(directory, name)
             check(file.canRead() && file.canExecute() && isElf(file)) {
                 "Android 启动组件不完整，请覆盖安装 APK（$name）"
