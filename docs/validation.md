@@ -338,3 +338,9 @@ MuMu Wi-Fi 地址为 NAT 内部地址，电脑不能直接路由到该地址；�
 - 本轮没有操作手机、安装组件/APK、启动排班或发布Release。手机最后确认版本仍为 `4.1.6-alpha.5+c0c1149`，实际换班效果由用户测试后结合新日志确认。
 
 - 用户随后授权安装最新组件。经现有WebUI导入接口安装 `d5c2424a` 并从原生首页停止/启动服务，当前进程返回 `4.1.6-alpha.5+d5c2424`，WebUI HTTP 200。APK仍为0.2.3，未覆盖安装APK或MAA。用户已自行启动排班；安装验证期间曾误停一次，用户说明后不再控制排班，最后只读状态为working。安装记录为 `artifacts/missed-order-20260912/installed-validation.json`，实机换班效果由用户测试。
+
+## 2026-10-13 Python IPC
+
+- Android 12 / ARM64 / 4.19 内核，已安装 APK 的 PRoot + Python 3.12.14：未映射 `/dev/shm` 时，`multiprocessing.Queue` 创建信号量失败；映射每次运行的私有目录后，spawn 子进程与队列往返检查通过，目录权限为 0700。
+- `scripts/check_android_ipc.py` 使用临时测试目录，不启动 Mower 或游戏、不读取实例配置。设备已安装 APK 缺少 `libandroid-shmem.so`，此次通过 `--native-deps` 暂存锁定版本的共享库后验证；未覆盖安装 APK。
+- `:app:testDebugUnitTest --tests '*StartupChecksTest'` 通过，包含共享库缺失时的启动拒绝检查。完整 APK 打包安装和服务生命周期实机回归尚未执行。

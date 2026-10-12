@@ -17,3 +17,7 @@ Android 服务进程完成初始化并成功绑定 WebUI 端口后，读取一�
 宿主对内置和热更新的 Mower 使用同一启动入口，兼容 `hot_update` 和 `resource_update` 资源设置。`/status` 的 `auto_start_handled` 与 `desktop_startup_handled` 在整个进程内保持为 `true`，分别阻止共享 WebUI 再次自动启动任务和安装资源；后一个字段沿用桌面端名称以兼容已有 WebUI。
 
 此启动行为由 Android 宿主提供，需要安装包含本次修复的新版 APK。仅更新 Mower 程序包不会更新旧 APK 的启动入口。
+
+Python 每次服务运行使用独立的应用私有缓存目录作为 PRoot `/dev/shm`，权限为 0700；进程退出后清理。该目录支持 `multiprocessing` 的 POSIX 信号量与跨进程队列，不使用 Android 系统共享目录，也不改变 Mower 数据目录。启动检查包含 PRoot 依赖 `libandroid-shmem.so`，缺失时在启动前提示覆盖安装 APK。
+
+`python3 scripts/check_android_ipc.py --serial SERIAL` 在可调试 APK 中运行临时 spawn/Queue 检查，不启动 Mower 或游戏、不挂载用户数据。旧 APK 缺少共享库时，可用 `--native-deps DIRECTORY` 临时提供 `scripts/engine-assets.lock.json` 固定版本的 `libandroid-shmem.so`；该检查会报告额外依赖，不代表旧 APK 本身已经修复。

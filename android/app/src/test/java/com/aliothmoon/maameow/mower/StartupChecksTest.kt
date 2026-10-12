@@ -51,6 +51,21 @@ class StartupChecksTest {
         assertTrue(failure.message!!.contains("覆盖安装 APK"))
     }
 
+    @Test fun nativeCheckRequiresProotSharedMemoryDependency() {
+        val root = temporary.newFolder()
+        for (name in listOf("libproot.so", "libproot-loader.so", "liblauncher.so", "libtalloc.so")) {
+            File(root, name).apply {
+                writeBytes(byteArrayOf(0x7f, 0x45, 0x4c, 0x46, 1)); setExecutable(true)
+            }
+        }
+        val failure = assertThrows(IllegalStateException::class.java) { StartupChecks.nativeRuntime(root) }
+        assertTrue(failure.message!!.contains("libandroid-shmem.so"))
+        File(root, "libandroid-shmem.so").apply {
+            writeBytes(byteArrayOf(0x7f, 0x45, 0x4c, 0x46, 1)); setExecutable(true)
+        }
+        StartupChecks.nativeRuntime(root)
+    }
+
     @Test fun storageRequiresExtraSpaceOnlyForInstallation() {
         StartupChecks.storage(100L * 1024 * 1024, false)
         assertThrows(IllegalStateException::class.java) { StartupChecks.storage(100L * 1024 * 1024, true) }
