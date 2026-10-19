@@ -18,7 +18,7 @@ class ApkBundledTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.env = patch.dict(os.environ, {'MOWER_DATA_DIR': str(self.root), 'MOWER_APK_GENERATION': '26:100'})
+        self.env = patch.dict(os.environ, {'MOWER_ANDROID': '1', 'MOWER_DATA_DIR': str(self.root), 'MOWER_APK_GENERATION': '26:100'})
         self.env.start(); self.addCleanup(self.env.stop)
         os.environ.pop('MOWER_ACTIVE_ID', None)
         self.addCleanup(os.environ.pop, 'MOWER_ACTIVE_ID', None)
