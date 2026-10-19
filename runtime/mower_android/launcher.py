@@ -15,6 +15,8 @@ def main():
     faulthandler.dump_traceback_later(45, repeat=True)
     from mower_android import mower_package
     source = mower_package.select_source(Path(__file__).resolve().parents[1])
+    from mower_android import app_update
+    app_update.restore_restart_context()
     sys.path.insert(0, str(source))
     os.chdir(source)
     os.environ['MOWER_ANDROID'] = '1'
@@ -52,6 +54,15 @@ def main():
             if request.path == '/':
                 return '<!doctype html><meta name="viewport" content="width=device-width"><title>Mower</title><p>请使用手机「局域网」页面中带访问令牌的完整地址。</p>'
             abort(401)
+        if request.path == '/stop':
+            app_update.cancel_resume()
+        if request.path.startswith('/start/') or request.path in (
+                '/maa-update/start', '/maa-resource-update/start', '/resource/install',
+                '/android/mower-recovery', '/android/python-update'):
+            update = app_update.status()
+            if update.get('status') == 'running' and update.get('phase') == 'restarting':
+                if request.path.startswith('/start/'): return 'false'
+                if request.method != 'GET': return {'ok':False, 'message':'Mower 服务正在重启，请等待完成'}, 409
         if request.method not in ('GET', 'HEAD', 'OPTIONS') and request.headers.get('Origin'):
             if request.headers['Origin'] != request.host_url.rstrip('/'):
                 abort(403)
@@ -84,6 +95,7 @@ def main():
             response.set_cookie('mower_access', token, httponly=True, samesite='Strict')
         if response.status_code == 200 and request.path in ('/', '/software-update/info') and request.environ.get('HTTP_TOKEN') == token:
             mower_package.mark_ready()
+            app_update.resume_tasks(server)
         response.headers['Referrer-Policy'] = 'no-referrer'
         return response
 

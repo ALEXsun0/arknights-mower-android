@@ -16,7 +16,8 @@ import java.security.MessageDigest
 import kotlin.concurrent.thread
 
 /** Private, authenticated, single-writer bridge to the embedded engine. */
-class MowerBridge(private val context: Context, private val token: String) : AutoCloseable {
+class MowerBridge(private val context: Context, private val token: String,
+                  private val updateRestart: (() -> Unit)? = null) : AutoCloseable {
     private val listener = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     val port: Int get() = listener.localPort
     @Volatile private var closed = false
@@ -99,6 +100,7 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
             val socket = try { listener.accept() } catch (_: Exception) { break }
             socket.use {
                 it.soTimeout = 10000
+                var restart = false
                 val response = try {
                     val input = DataInputStream(it.getInputStream())
                     val size = input.readInt()
@@ -106,7 +108,10 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                     val bytes = ByteArray(size).also(input::readFully)
                     val request = JSONObject(String(bytes, Charsets.UTF_8))
                     check(MessageDigest.isEqual(token.toByteArray(), request.optString("token").toByteArray())) { "Unauthorized" }
-                    JSONObject().put("ok", true).put("result", dispatch(request.getString("method"), request.optJSONObject("params") ?: JSONObject()))
+                    val method = request.getString("method")
+                    val result = dispatch(method, request.optJSONObject("params") ?: JSONObject())
+                    restart = method == "mower_restart"
+                    JSONObject().put("ok", true).put("result", result)
                 } catch (e: Exception) {
                     JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName)
                 }
@@ -114,6 +119,8 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
                     val data = response.toString().toByteArray()
                     DataOutputStream(it.getOutputStream()).apply { writeInt(data.size); write(data); flush() }
                 }
+                // The request is accepted before shutdown can close this bridge.
+                if (restart) updateRestart?.invoke()
             }
         }
     }
@@ -224,6 +231,14 @@ class MowerBridge(private val context: Context, private val token: String) : Aut
         if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
         check(!closed) { "Mower 服务正在停止" }
         if (method == "status") return status()
+        if (method == "mower_restart") {
+            check(updateRestart != null && MowerService.active && !MowerService.stopping) { "服务无法自动重启，请手动停止并重新启动" }
+            val id = p.getString("id")
+            require(id.matches(Regex("[a-f0-9]{64}"))) { "Mower 更新版本无效" }
+            val state = JSONObject(java.io.File(context.filesDir, "mower-data/mower-programs/active.json").readText())
+            check(state.optString("id") == id && state.optBoolean("pending") && !state.optBoolean("booting")) { "没有匹配的待启动 Mower 更新" }
+            return true
+        }
         if (method == "apk_info" || method == "apk_install") {
             val id = p.getString("id")
             val result = AndroidAppUpdate.inspect(context, id)

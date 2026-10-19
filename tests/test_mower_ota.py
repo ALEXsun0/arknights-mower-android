@@ -1,6 +1,7 @@
 import hashlib
 import io
 import lzma
+import os
 import json
 import sys
 import tempfile
@@ -295,6 +296,40 @@ class MowerOtaTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in request.call_args_list], [f'{app_update.OTA_INDEX_URL}/{channel}.json' for channel in ('dev', 'beta', 'stable')])
         app_update._plans.pop(result['check_id'], None)
 
+
+    def test_manual_and_online_ota_request_restart_after_reconstruction(self):
+        for online in (False, True):
+            with self.subTest(online=online):
+                delta = self.delta()
+                digest = hashlib.sha256(delta.read_bytes()).hexdigest()
+                plan = {'kind': 'mower-ota', 'path': delta, 'sha256': digest,
+                        'base_id': 'b'*64, 'from_version': '4.1.6-alpha.7',
+                        'version': 'v4.1.6-alpha.8'}
+                if online:
+                    plan = {'asset': {'digest': 'sha256:'+digest},
+                            'version': 'v4.1.6-alpha.8',
+                            'ota': {'asset': {'digest': 'sha256:'+digest},
+                                    'base_id': 'b'*64, 'from_version': '4.1.6-alpha.7'}}
+                with (patch.dict(os.environ, MOWER_SERVICE_RESTART='1', MOWER_DATA_DIR=str(self.root)),
+                      patch.object(app_update, '_job', {'ok': True, 'status': 'idle'}),
+                      patch.object(app_update, '_plans', {'ota': plan}),
+                      patch.object(app_update, 'read_restart', return_value={}),
+                      patch.object(app_update, 'folder', return_value=self.root),
+                      patch.object(app_update, 'download_asset', return_value=delta),
+                      patch.object(app_update.mower_package, 'folder', return_value=self.root),
+                      patch.object(app_update.mower_package, 'state', side_effect=[
+                          {'id': 'b'*64}, {'id': 'c'*64, 'pending': True}]),
+                      patch.object(app_update.mower_ota, 'reconstruct') as reconstruct,
+                      patch.object(app_update.mower_package, 'install', return_value={'version': '4.1.6-alpha.8'}),
+                      patch.object(app_update, 'prepare_restart', return_value=True),
+                      patch.object(app_update, 'Bridge') as bridge,
+                      patch.object(app_update.threading, 'Thread', side_effect=lambda *, target, daemon: Mock(start=target))):
+                    result = app_update.submit('ota')
+                    self.assertEqual(result['phase'], 'restarting')
+                    self.assertEqual(result['status'], 'running')
+                    self.assertTrue(result['resume_mower'])
+                    reconstruct.assert_called_once()
+                    bridge.return_value.call.assert_called_once_with('mower_restart', id='c'*64)
 
     def test_manual_ota_reconstructs_offline(self):
         import arknights_mower

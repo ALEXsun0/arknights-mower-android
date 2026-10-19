@@ -319,6 +319,18 @@ class TaskStartupTests(unittest.TestCase):
         server.get_resource_version.assert_not_called()
         server.start.assert_not_called()
 
+    def test_update_restart_suppresses_automatic_tasks_and_resource_installation(self):
+        def serve(client, workers, config, server, events):
+            self.assertEqual(workers, [])
+            self.assertEqual(self.status(client), "stopped")
+
+        with patch.dict(os.environ, MOWER_RESTART_JOB="update-job"):
+            events, server = self.launch(resource=True, during_serve=serve)
+        self.assertEqual(events, ["bound"])
+        server.start.assert_not_called()
+        server.get_resource_version.assert_not_called()
+        server.install_resource.assert_not_called()
+
     def test_bind_failure_never_starts_tasks(self):
         events, _ = self.launch(binding_error=True)
         self.assertEqual(events, ["bound"])

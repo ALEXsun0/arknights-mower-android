@@ -41,6 +41,107 @@ def folder():
     return path
 
 
+def automatic_restart():
+    return os.environ.get('MOWER_SERVICE_RESTART') == '1'
+
+
+def restart_folder():
+    # /mower is the host's stable program mount across downloaded generations.
+    key = hashlib.sha256(b'/mower').hexdigest()[:20]
+    path = Path(os.environ.get('MOWER_DATA_DIR', '/mower-data'))/'tmp'/'updates'/key/'android-service'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_restart(job):
+    temporary = restart_folder()/'service-restart.new'
+    temporary.write_text(json.dumps(job))
+    temporary.replace(restart_folder()/'service-restart.json')
+
+
+def read_restart():
+    try:
+        value = json.loads((restart_folder()/'service-restart.json').read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def restore_restart_context():
+    saved = read_restart()
+    if saved.get('status') == 'running' and saved.get('target') == os.environ.get('MOWER_ACTIVE_ID'):
+        os.environ['MOWER_RESTART_JOB'] = saved['id']
+
+
+def cancel_resume():
+    current = status()
+    if current.get('status') == 'running' and current.get('phase') == 'restarting':
+        temporary = restart_folder()/(uuid.uuid4().hex+'.cancel')
+        try:
+            temporary.write_text(current['id'])
+            temporary.replace(restart_folder()/'service-restart-cancelled')
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def resume_tasks(server):
+    with _lock:
+        saved = read_restart()
+        current = mower_package.state()
+        if (saved.get('status') != 'running' or saved.get('target') != os.environ.get('MOWER_ACTIVE_ID') or
+                current.get('id') != saved.get('target') or current.get('pending') or current.get('booting')):
+            return
+        try:
+            cancelled = (restart_folder()/'service-restart-cancelled').read_text() == saved['id']
+        except OSError:
+            cancelled = False
+        if cancelled:
+            saved['resume_mower'] = False
+        if saved.get('resume_mower'):
+            if saved.get('resume_state') == 'starting':
+                saved.update(status='failed', resume_state='failed', message='上次任务续接未能确认，请在 WebUI 手动启动。')
+                save_restart(saved)
+                return
+            saved['resume_state'] = 'starting'
+            save_restart(saved)
+            try:
+                # Start mode 0 loads the saved task queue without clearing its timestamps.
+                if server.start.__wrapped__('0') != 'true':
+                    raise ValueError('Mower 未能启动原任务')
+            except Exception as exc:
+                saved.update(status='failed', resume_state='failed', message=f'Mower 已更新，但任务续接失败：{exc}；请手动启动。')
+                save_restart(saved)
+                return
+            saved['resume_state'] = 'succeeded'
+        saved.update(status='succeeded', phase='completed', progress=100, restarted=True,
+                     message=f"Mower {saved['version']} 已更新并重新启动" + ('，已续接原任务' if saved.get('resume_mower') else ''))
+        save_restart(saved)
+
+
+def restart_hint():
+    return '更新包准备完成后自动重启 Mower 服务。' if automatic_restart() else '停止并重新启动手机服务后生效。'
+
+
+def prepare_restart():
+    import server
+    from arknights_mower.utils import config
+    with server.maa_maintenance_lock:
+        if (server._job_running(server.maa_update_job) or server._job_running(server.maa_resource_update_job) or
+                server.resource_update.running()):
+            raise ValueError('其他组件正在更新，请等待完成后手动重启服务')
+        running = server.mower_thread is not None and server.mower_thread.is_alive()
+        if running:
+            from arknights_mower.solvers.record import current_state, save_state_to_db
+            saved = current_state()
+        config.stop_maa.set()
+        # Reuse /stop's bounded shutdown and saved-state wrapper inside this authenticated update.
+        if server.stop.__wrapped__() != 'true':
+            raise ValueError('Mower 任务尚未停止，未重启服务')
+        if running and saved is not None and not save_state_to_db(saved):
+            raise ValueError('任务状态保存失败，未重启服务')
+        return running
+
+
 def prefs():
     try: data = json.loads((folder()/'settings.json').read_text())
     except (OSError, ValueError): data = {}
@@ -54,7 +155,7 @@ def save_settings(data):
     if any(type(data.get(k, False)) is not bool for k in ('auto_check', 'auto_update', 'background')):
         raise ValueError('设置格式错误')
     if data.get('auto_update') or data.get('background'):
-        raise ValueError('更新后需在手机停止并重新启动 Mower 服务')
+        raise ValueError('此安装器不支持自动更新或后台安装')
     current = {**prefs(), **data}
     temporary = folder()/'settings.new'; temporary.write_text(json.dumps(current)); temporary.replace(folder()/'settings.json')
     return {'ok': True}
@@ -65,7 +166,7 @@ def info():
     return {'ok': True, 'deployment': 'release', 'platform': 'android', 'version': __version__,
             'settings': prefs(), 'blockers': [], 'instances': [{'name': '本机', 'running': True}],
             'force_supported': False, 'manual_supported': True, 'source_remotes': [],
-            'capabilities': {'auto_update': False, 'silent_restart': False, 'dev_update': True},
+            'capabilities': {'auto_update': False, 'silent_restart': False, 'dev_update': True, 'service_restart': automatic_restart()},
             'channels': [{'label': '正式版', 'value': 'stable', 'description': '最新正式 Release'},
                          {'label': '公测版', 'value': 'beta', 'description': '公测版和更新的正式版'},
                          {'label': '开发版', 'value': 'dev', 'description': 'Android Nightly、更新的公测版和正式版；APK 和 MAA 保持不变。'}],
@@ -78,7 +179,23 @@ def info():
 
 
 def status():
-    return {**_job, 'last_check': _last_check}
+    result = dict(_job)
+    saved = read_restart()
+    if (saved.get('id') and
+            (result.get('status') == 'idle' or result.get('id') == saved['id'])):
+        result = saved
+        current = mower_package.state()
+        if (saved.get('target') == os.environ.get('MOWER_ACTIVE_ID') == current.get('id') and
+                not current.get('pending') and not current.get('booting')):
+            if saved.get('resume_state') == 'failed':
+                result = {**saved, 'restarted': True}
+            elif not saved.get('resume_mower') or saved.get('resume_state') == 'succeeded':
+                result = {**saved, 'status': 'succeeded', 'phase': 'completed', 'progress': 100,
+                          'restarted': True, 'message': saved.get('message') if saved.get('status') == 'succeeded'
+                          else f"Mower {saved['version']} 已更新并重新启动"}
+        elif current.get('rollback') or (current.get('id') != saved.get('target') and not current.get('pending')):
+            result = {**saved, 'status': 'failed', 'message': '新版本未能启动，已恢复原版本；请查看手机诊断日志。'}
+    return {**result, 'last_check': _last_check}
 
 
 def release_index(channel):
@@ -214,7 +331,7 @@ def check(channel):
     _last_check = {'ok': True, 'check_id': ident, 'channel': channel, 'checked_at': time.time(),
         'version': release['tag_name'], 'available': available,
         'downgrade': False, 'url': release['html_url'], 'notes': release.get('body', ''),
-        'confirm_title': '确认下载安装？', 'confirm_message': '下载并校验 Mower 更新包，停止并重启手机服务后生效。APK 和 MAA 保持不变。'}
+        'confirm_title': '确认下载安装？', 'confirm_message': '下载并校验 Mower 更新包。'+restart_hint()+'APK 和 MAA 保持不变。'}
     return _last_check
 
 
@@ -253,7 +370,7 @@ def inspect_upload(upload):
                 from arknights_mower import __version__
                 downgrade = version_key(meta['version']) < version_key(__version__)
                 kind, version = 'mower', meta['version']
-                message = '更新内置 Mower；停止并重新启动手机服务后生效，APK 和 MAA 保持不变。'
+                message = '更新 Mower。'+restart_hint()+'APK 和 MAA 保持不变。'
             elif 'ota.json' in names:
                 with zipfile.ZipFile(target) as archive:
                     if archive.getinfo('ota.json').file_size > 16 * 1024**2:
@@ -273,7 +390,7 @@ def inspect_upload(upload):
                     raise ValueError('OTA 差异包起点、平台或当前 Mower 安装不匹配')
                 downgrade = version_key(meta['to']) < version_key(__version__)
                 kind, version = 'mower-ota', 'v' + meta['to']
-                message = '从本地 OTA 差异包重建 Mower，校验失败时保留当前版本；无需连接 GitHub。'
+                message = '从本地 OTA 差异包重建 Mower，校验失败时保留当前版本；无需连接 GitHub。'+restart_hint()
             else: raise ValueError('请选择 Android Mower 更新包、官方 MAA 核心或兼容 Python 包')
         _plans[ident] = {'path': target, 'sha256': digest, 'filename': upload.filename, 'kind': kind, 'version': version, 'downgrade': downgrade}
         if kind == 'mower-ota':
@@ -294,6 +411,9 @@ def discard_upload(check_id):
 def submit(check_id, background=False, force=False, confirm_downgrade=False):
     global _job
     if background or force: raise ValueError('此 Release 安装器不支持所选操作')
+    current = status()
+    if current.get('status') == 'running' and current.get('phase') == 'restarting':
+        raise ValueError('Mower 服务正在重启，请等待完成')
     plan = _plans.get(check_id)
     if plan is None: raise ValueError('请重新检查或导入更新包')
     if plan.get('downgrade') and not confirm_downgrade: raise ValueError('请确认回退 Mower 版本')
@@ -305,6 +425,7 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
     def run():
         path = plan.get('path')
         reconstructed = None
+        restarting = False
         try:
             result = None
             if plan.get('kind') == 'mower-ota':
@@ -354,8 +475,20 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                     if server._job_running(server.maa_update_job) or server._job_running(server.maa_resource_update_job):
                         raise ValueError('MAA 正在更新，请等待完成后重试')
                     result = import_component(path, plan['filename'])
-            _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
-        except Exception as exc: _job.update(status='failed', message=str(exc))
+            if (plan.get('kind') in ('mower', 'mower-ota') or 'asset' in plan) and automatic_restart():
+                target = mower_package.state()['id']
+                _job.update(phase='restarting', progress=100, target=target, version=result['version'],
+                            message='更新包已准备完成，正在重新启动 Mower 服务')
+                restarting = True
+                _job['resume_mower'] = prepare_restart()
+                save_restart(_job)
+                Bridge(timeout=10).call('mower_restart', id=target)
+            else:
+                _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
+        except Exception as exc:
+            _job.update(status='failed', message=(f'更新包已准备完成，但自动重启未完成：{exc}；请在手机停止并重新启动服务。'
+                        if restarting else str(exc)))
+            if restarting: save_restart(_job)
         finally:
             if path is not None and plan.get('kind') != 'apk': path.unlink(missing_ok=True)
             if reconstructed is not None: reconstructed.unlink(missing_ok=True)

@@ -1,5 +1,6 @@
 """Admit automatic tasks once per Android service process."""
 
+import os
 from threading import Event, Lock, Thread
 
 
@@ -65,5 +66,8 @@ def start_tasks(server, config, token):
                 if automatic and not stopping():
                     server.start("0")
 
+    # The update journal owns task resumption and preserves the prior stopped state.
+    if os.environ.get("MOWER_RESTART_JOB"):
+        return
     if automatic or auto_resource:
         Thread(target=run, name="android-task-startup", daemon=True).start()
