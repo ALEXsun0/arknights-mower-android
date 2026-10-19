@@ -1,1 +1,1 @@
-<paths xmlns:android="http://schemas.android.com/apk/res/android"><files-path name="updates" path="mower-data/android-updates/" /><cache-path name="diagnostics" path="diagnostics/" /></paths>
+<paths xmlns:android="http://schemas.android.com/apk/res/android"><files-path name="updates" path="mower-data/android-updates/" /><files-path name="apk-updates" path="mower-data/tmp/updates/4e21008231518eabb448/android-apk/" /><cache-path name="diagnostics" path="diagnostics/" /></paths>

@@ -314,16 +314,7 @@ class MowerActivity : Activity() {
         super.onPause()
     }
 
-    fun installUpdate(file: java.io.File): String {
-        if (!packageManager.canRequestPackageInstalls()) {
-            runOnUiThread { startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName"))) }
-            return "请在手机上允许安装应用，再返回此页点击安装"
-        }
-        val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.updates", file)
-        runOnUiThread { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
-        return "已在手机上打开系统安装器，请在手机确认；安装后重新启动服务"
-    }
+    fun installUpdate(file: java.io.File): String = installMowerApk(file)
 
     fun openSystemSettings(action: String) {
         val target = when (action) {

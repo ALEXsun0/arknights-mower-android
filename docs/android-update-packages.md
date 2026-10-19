@@ -1,6 +1,10 @@
 # Android 更新包接口
 
-APK 由本仓库构建发布。共享 WebUI 的软件更新检查 `ArkMowers/MowerRelease` 镜像的 Android Mower 包，支持正式和公测渠道，不运行 Git/npm。APK 与 Mower 版本独立；需要更新宿主时从原生「APK 版本与更新」检查并进入本仓库 Release，使用 Android 安装器覆盖安装，保留原签名和用户数据。
+APK 由本仓库构建发布。共享 WebUI 的软件更新检查 `ArkMowers/MowerRelease` 镜像的 Android Mower 包，支持正式和公测渠道，不运行 Git/npm。APK 与 Mower 版本独立；需要更新宿主时，先启动 Mower 服务，再从原生设置的「关于软件 → 检查 APK 更新」检查本仓库发行版。确认有宿主更新后，点击「下载并安装」，应用内完成下载和校验，再打开 Android 系统安装器，由用户确认覆盖安装，保留原签名和用户数据。未允许安装应用时，先打开系统授权页面，授权后返回同一弹窗点击「安装已下载 APK」。安装完成后重新启动服务。
+
+APK 检查和下载通过带认证的本机 `/android/apk-update` 接口交给 Mower 服务处理，沿用 Mower「网络与下载代理」中的全局网络代理与 GitHub 下载代理站点；每次检查和下载读取当前设置，不另存一份 Android 代理配置。GitHub API 只使用全局网络代理，发行清单和 APK 文件使用配置的 GitHub 下载站点。未配置下载站点时先直连，连接失败、读取中断或返回 403、429、5xx 时，仅再尝试一次默认的 `https://ghfast.top/`；已指定站点时不改用其他站点。SHA256 或大小校验失败不会换站继续安装。
+
+下载先核对发行清单与 APK 的 GitHub asset digest 和大小，再由原生宿主校验 APK 包名、签名及版本，拒绝不匹配的清单、其他应用、异签名包和降级包。下载状态和检查结果只保留当前服务的一次记录。未完成文件与已下载 APK 位于数据目录的 `tmp/updates/4e21008231518eabb448/android-apk/`；下载失败删除未完成文件，下一次成功下载清理其他旧 APK。关闭弹窗不取消已经开始的下载，服务退出后需重新检查。这个更新入口需要包含新原生界面与 APK 绑定适配层的新版 APK，单独更新 Mower 程序不会新增入口。
 
 WebUI 的 **Mower 软件更新** 从 [MowerRelease](https://github.com/ArkMowers/MowerRelease) 的渠道索引读取完整 Android 包与当前版本直达目标版本的 Android ARM64 OTA 包。宿主只在当前 Mower 目录由已安装的完整包保留、版本和目录记录一致时使用差异包；以现有目录重建完整目标包，逐文件校验 SHA-256，再走原有安装、启动失败回退流程。APK 内置的首次版本或任何起点不匹配、下载／校验失败的情况使用同一 MowerRelease 的完整 Android 包。`python-runtime.zip.xz` 摘要不变时复用旧文件，变化时差异包可携带完整新文件；差异包过大则发行侧不发布。此流程不更新 APK、MAA 核心或 MAA Python 接口。
 
