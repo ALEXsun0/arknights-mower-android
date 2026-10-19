@@ -30,7 +30,9 @@ class MowerService : Service() {
         @Volatile var url: String? = null
         fun secret(): String = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
     }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val updateRestart = RuntimeRestart()
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var runtimeJob: Job? = null
     private var maintenanceJob: Job? = null
     private var ownsRuntime = false
@@ -140,7 +142,11 @@ class MowerService : Service() {
                 RemoteServiceManager.getInstance()
                 val bridgeToken = secret()
                 val webToken = savedConnection.token
-                val localBridge = MowerBridge(this@MowerService, bridgeToken)
+                val localBridge = MowerBridge(this@MowerService, bridgeToken) {
+                    mainHandler.post {
+                        if (active && !stopping && ownsRuntime && updateRestart.request()) stopRuntime()
+                    }
+                }
                 bridge = localBridge
                 engine = localBridge
                 localBridge.start()
@@ -166,7 +172,7 @@ class MowerService : Service() {
                     "-b", "/dev", "-b", "/proc", "-b", "/sys", "-b", "${sharedMemory.path}:/dev/shm", "-b", "${data.path}:/mower-data",
                     "-b", "${selected.program.path}:/mower", "-b", "${bundledRoot.path}/mower/mower_android:/mower/mower_android", "-w", "/mower",
                     "/usr/bin/env", "-i", "HOME=/mower-data", "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "TZ=${java.util.TimeZone.getDefault().id}",
-                    "MOWER_ANDROID=1", "MOWER_SOURCE_SELECTED=1", "MOWER_ACTIVE_ID=${selected.id.orEmpty()}", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
+                    "MOWER_ANDROID=1", "MOWER_SERVICE_RESTART=1", "MOWER_SOURCE_SELECTED=1", "MOWER_ACTIVE_ID=${selected.id.orEmpty()}", "MOWER_APK_GENERATION=$apkGeneration", "MOWER_APK_CODE=${com.aliothmoon.maameow.BuildConfig.VERSION_CODE}", "MOWER_WEB_BIND=${if (lanEnabled) "0.0.0.0" else "127.0.0.1"}", "MOWER_DATA_DIR=/mower-data", "MOWER_BRIDGE_PORT=${localBridge.port}",
                     "MOWER_BRIDGE_TOKEN=$bridgeToken", "MOWER_WEB_TOKEN=$webToken", "MOWER_WEB_PORT=$webPort",
                     "OPENBLAS_NUM_THREADS=2", "OMP_NUM_THREADS=2", "PYTHONUNBUFFERED=1", "/usr/local/bin/python", "-m", "mower_android.launcher")
                 val builder = ProcessBuilder(args).redirectErrorStream(true)
@@ -318,7 +324,15 @@ class MowerService : Service() {
 
     override fun onDestroy() {
         getSharedPreferences("android-system", 0).unregisterOnSharedPreferenceChangeListener(settingListener)
-        if (!ownsRuntime) { scope.cancel(); super.onDestroy(); return }
+        updateRestart.cancel()
+        if (!failed) runCatching { RuntimeRestart.cancelResume(File(filesDir, "mower-data")) }
+            .onFailure { android.util.Log.e("Mower", "取消任务续接失败", it) }
+        if (ownsRuntime && !stopping) stopRuntime()
+        else scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun stopRuntime() {
         stopping = true
         getSharedPreferences("runtime-wake", 0).edit().putBoolean("requested", false).apply()
         MowerWakeReceiver.cancel(this); MowerScreenSaver.hide(); monitor = null
@@ -328,10 +342,15 @@ class MowerService : Service() {
         scope.cancel()
         File(filesDir, "runtime-session.json").delete()
         kotlin.concurrent.thread(name = "mower-cleanup") {
+            var cleaned = false
             try {
                 // Finish cancelled startup before releasing its files, process or Binder.
-                runBlocking { runtimeJob?.join(); maintenanceJob?.join() }
-                runtimeNetwork?.close()
+                runBlocking { withTimeout(15000) { runtimeJob?.join(); maintenanceJob?.join() } }
+                var cleanupFailure: Exception? = null
+                fun release(action: () -> Unit) {
+                    try { action() } catch (failure: Exception) { if (cleanupFailure == null) cleanupFailure = failure }
+                }
+                release { runtimeNetwork?.close() }
                 val pidFile = File(filesDir, "mower-data/runtime-python.pid")
                 val pid = runCatching { pidFile.readText().trim().toInt() }.getOrNull()
                 fun ownsPython(): Boolean = pid != null && runCatching {
@@ -339,33 +358,52 @@ class MowerService : Service() {
                         it.startsWith("Uid:") && it.split(Regex("\\s+"))[1].toInt() == android.os.Process.myUid()
                     } && File("/proc/$pid/comm").readText().trim().startsWith("python")
                 }.getOrDefault(false)
-                if (ownsPython()) {
-                    android.os.Process.sendSignal(pid!!, 15)
-                    Thread.sleep(700)
-                    if (ownsPython()) android.os.Process.sendSignal(pid, 9)
-                }
-                python?.let {
-                    it.destroy()
-                    if (!it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                        it.destroyForcibly()
-                        it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                release {
+                    if (ownsPython()) {
+                        android.os.Process.sendSignal(pid!!, 15)
+                        Thread.sleep(700)
+                        if (ownsPython()) android.os.Process.sendSignal(pid, 9)
                     }
                 }
-                if (python?.isAlive != true) {
+                release {
+                    python?.let {
+                        it.destroy()
+                        if (!it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                            it.destroyForcibly()
+                            check(it.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) { "旧 Python 进程未退出" }
+                        }
+                    }
+                    check(!ownsPython()) { "旧 Python 进程未退出" }
                     pythonSharedMemory?.deleteRecursively()
                     pythonSharedMemory = null
                 }
+                release { bridge?.close() }
+                release { runBlocking(Dispatchers.Main) { RemoteServiceManager.unbind() } }
+                cleanupFailure?.let { throw it }
                 pidFile.delete()
-                bridge?.close()
-                runCatching { runBlocking(Dispatchers.Main) { RemoteServiceManager.unbind() } }
+                cleaned = true
+            } catch (failure: Exception) {
+                failed = true
+                message = "停止服务失败：${failure.message}；请在系统设置中强制停止应用后重新打开"
+                android.util.Log.e("Mower", message, failure)
             } finally {
                 runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
                 cpuAwake = false
-                if (!failed) message = "已停止"
-                active = false
-                stopping = false
+                mainHandler.post {
+                    ownsRuntime = false
+                    if (!failed) message = "已停止"
+                    active = !cleaned
+                    stopping = !cleaned
+                    updateRestart.complete(cleaned) {
+                        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                        runtimeJob = null; maintenanceJob = null; bridge = null; python = null
+                        runtimeNetwork = null; wakeLock = null
+                        startupReport.clear(); failed = false
+                        onStartCommand(null, 0, 0)
+                    }
+                    if (!cleaned) stopSelf()
+                }
             }
         }
-        super.onDestroy()
     }
 }
