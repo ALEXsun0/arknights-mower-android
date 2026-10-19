@@ -50,6 +50,17 @@ class MowerActivity : Activity() {
     private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
     private val fileExport by lazy { WebFileExport(this) }
+    private val apkUpdateCheck by lazy {
+        StartupApkUpdateCheck(
+            scope = scope,
+            installedHash = {
+                org.json.JSONObject(assets.open("host-build.json").bufferedReader().use { it.readText() })
+                    .getString("host_sha256")
+            },
+            installedCode = com.aliothmoon.maameow.BuildConfig.VERSION_CODE,
+            showUpdate = { showMowerApkUpdatePrompt(it) },
+        )
+    }
     private val refreshLoop = VisibleUiRefresh(
         schedule = { callback, delay -> handler.postDelayed(callback, delay) },
         cancel = { handler.removeCallbacks(it) },
@@ -75,6 +86,7 @@ class MowerActivity : Activity() {
         executeWebCommand(webRecovery.updateTarget(url))
         landing.visibility = if (url == null) View.VISIBLE else View.GONE
         web.visibility = if (url == null) View.GONE else View.VISIBLE
+        apkUpdateCheck.refresh(uiResumed && !isFinishing && !isDestroyed, url != null && !MowerService.stopping)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -307,6 +319,7 @@ class MowerActivity : Activity() {
     }
     override fun onPause() {
         uiResumed = false
+        apkUpdateCheck.refresh(foreground = false, serviceReady = false)
         refreshLoop.stop()
         web.onPause(); web.pauseTimers()
         android.util.Log.i("Mower", "主页进入后台，已暂停界面刷新和 WebView 计时器")

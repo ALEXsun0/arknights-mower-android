@@ -30,6 +30,14 @@ fun Activity.showMowerAbout() {
         .show()
 }
 
+internal fun Activity.showMowerApkUpdatePrompt(version: String, openUpdate: () -> Unit = { showApkReleaseInfo() }) {
+    AlertDialog.Builder(this).setTitle("发现 APK 宿主更新")
+        .setMessage("新版本 $version 包含宿主更新，可前往查看并下载 APK。")
+        .setNegativeButton("稍后", null)
+        .setPositiveButton("查看更新") { _, _ -> openUpdate() }
+        .show()
+}
+
 fun Activity.showApkReleaseInfo() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val dialog = AlertDialog.Builder(this).setTitle("APK ${BuildConfig.VERSION_NAME}")
