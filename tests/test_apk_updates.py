@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import requests
@@ -93,7 +94,11 @@ class ApkUpdateTests(unittest.TestCase):
 
     def test_default_fallback_works_with_new_shared_helper_and_old_ota_helper(self):
         url = self.release['assets'][0]['browser_download_url']
-        self.assertFalse(hasattr(github_download, 'download_urls'))
+        legacy = SimpleNamespace(download_url=github_download.download_url)
+        with patch('arknights_mower.utils.github_download', legacy):
+            with patch.object(apk_updates.requests, 'get', side_effect=[requests.ConnectionError(), self.response(b'ok')]) as get:
+                self.assertEqual(apk_updates.receive(url, 2), b'ok')
+            self.assertEqual([call.args[0] for call in get.call_args_list], [url, 'https://ghfast.top/'+url])
         with patch.object(github_download, 'download_urls', create=True, return_value=(url, 'https://shared.example/'+url)) as urls:
             with patch.object(apk_updates.requests, 'get', side_effect=[requests.ConnectionError(), self.response(b'ok')]) as get:
                 self.assertEqual(apk_updates.receive(url, 2), b'ok')

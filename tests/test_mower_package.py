@@ -368,6 +368,8 @@ class MowerPackageTests(unittest.TestCase):
         import threading
         from datetime import datetime
         from types import SimpleNamespace
+
+        from flask import Flask, request
         from arknights_mower import utils
         record_path = Path(__file__).resolve().parents[1]/'runtime/arknights_mower/solvers/record.py'
         spec = importlib.util.spec_from_file_location('restart_record_fixture', record_path)
@@ -383,23 +385,39 @@ class MowerPackageTests(unittest.TestCase):
         self.ready_restart()
         source = Path(__file__).resolve().parents[1]/'runtime/server.py'
         # Run the production starter without importing the server's background workers.
-        starter = next(node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef) and node.name == 'start')
-        starter.decorator_list = []
+        starters = [node for node in ast.parse(source.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name in ('start', '_start_mower')]
+        for starter in starters:
+            starter.decorator_list = []
+        recovery = Mock()
+        recovery.cancelled.return_value = False
+        recovery.reset_observation_pending.return_value = False
+        recovery.status.return_value = {'active': False}
+        supervisor = SimpleNamespace(task_intent=Mock())
         namespace = dict(mower_thread=None, active_job=lambda:False, maa_maintenance_lock=threading.RLock(),
             _job_running=lambda job:False, maa_update_job={}, maa_resource_update_job={},
             resource_update=SimpleNamespace(running=lambda:False), get_path=lambda name:self.root,
-            config=Mock(), load_state=record.load_state, Thread=Mock(), set_mower_thread=Mock(), log_stream=Mock())
-        exec(compile(ast.Module(body=[starter], type_ignores=[]), str(source), 'exec'), namespace)
+            config=Mock(), load_state=record.load_state, Thread=Mock(), set_mower_thread=Mock(), log_stream=Mock(),
+            shutdown=SimpleNamespace(closing=False), request=request,
+            _run_mower_worker=Mock(), _cancel_scheduled_start=Mock())
+        exec(compile(ast.Module(body=starters, type_ignores=[]), str(source), 'exec'), namespace)
         server = SimpleNamespace(start=SimpleNamespace(__wrapped__=namespace['start']))
         with patch.object(record, 'get_path', side_effect=lambda name:self.root/'data.db' if name.endswith('data.db') else self.root), \
                 patch.object(record, '_tables_created', False), \
-                patch.dict(sys.modules, {'arknights_mower.__main__':SimpleNamespace(main=Mock())}):
+                patch.dict(sys.modules, {'arknights_mower.__main__':SimpleNamespace(main=Mock()),
+                    'arknights_mower.utils.crash_recovery':recovery,
+                    'arknights_mower.utils.instance_supervisor':supervisor}), \
+                patch.object(utils, 'crash_recovery', recovery, create=True), \
+                Flask(__name__).test_request_context('/software-update/info', method='GET'):
             self.assertTrue(record.save_state_to_db(saved))
+            # launcher.android_response resumes within this authenticated GET response.
             app_update.resume_tasks(server)
-            resumed, refresh = namespace['Thread'].call_args.kwargs['args']
-            self.assertEqual(resumed, saved)
-            self.assertFalse(refresh)
-            self.assertEqual(app_update.status()['status'], 'succeeded')
+            app_update.resume_tasks(server)
+            self.assertEqual(app_update.status()['status'], 'succeeded', app_update.status())
+            namespace['Thread'].assert_called_once()
+            arguments = namespace['Thread'].call_args.kwargs['args']
+            self.assertEqual(arguments, (saved,) if '_start_mower' in namespace else (saved, False))
+            namespace['Thread'].return_value.start.assert_called_once()
 
 
 class RestartPreparationTests(unittest.TestCase):
