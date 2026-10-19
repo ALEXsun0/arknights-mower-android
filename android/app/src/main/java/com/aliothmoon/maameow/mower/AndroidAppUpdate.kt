@@ -13,7 +13,14 @@ object AndroidAppUpdate {
         return File(context.filesDir, "mower-data/android-updates/$id.apk").also { check(it.isFile) { "请先上传 APK" } }
     }
     @Suppress("DEPRECATION") fun inspect(context: Context, id: String): JSONObject {
-        val file = file(context, id)
+        return inspectFile(context, file(context, id), id)
+    }
+    fun downloadedFile(context: Context, id: String): File {
+        require(id.matches(Regex("[a-f0-9]{64}"))) { "安装包编号无效" }
+        return File(context.filesDir, "mower-data/tmp/updates/4e21008231518eabb448/android-apk/$id.apk")
+            .also { check(it.isFile) { "请先下载 APK" } }
+    }
+    @Suppress("DEPRECATION") fun inspectFile(context: Context, file: File, id: String): JSONObject {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input -> val buffer = ByteArray(262144); while (true) {
             val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n)
@@ -31,4 +38,18 @@ object AndroidAppUpdate {
         check(!Regex("(?i)(dev|snapshot|nightly)").containsMatchIn(name)) { "Android 仅允许正式版和公测版更新" }
         return JSONObject().put("id", id).put("kind", "apk").put("version", name).put("version_code", code)
     }
+}
+
+/** Open Android's installer only after the update file has been verified. */
+fun android.app.Activity.installMowerApk(file: File): String {
+    if (!packageManager.canRequestPackageInstalls()) {
+        runOnUiThread { startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            android.net.Uri.parse("package:$packageName"))) }
+        return "请在手机上允许安装应用，再返回此页点击安装"
+    }
+    val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.updates", file)
+    runOnUiThread { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW)
+        .setDataAndType(uri, "application/vnd.android.package-archive")
+        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+    return "已在手机上打开系统安装器，请在手机确认；安装后重新启动服务"
 }

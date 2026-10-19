@@ -58,7 +58,7 @@ def main():
             app_update.cancel_resume()
         if request.path.startswith('/start/') or request.path in (
                 '/maa-update/start', '/maa-resource-update/start', '/resource/install',
-                '/android/mower-recovery', '/android/python-update'):
+                '/android/mower-recovery', '/android/python-update', '/android/apk-update'):
             update = app_update.status()
             if update.get('status') == 'running' and update.get('phase') == 'restarting':
                 if request.path.startswith('/start/'): return 'false'
@@ -118,6 +118,8 @@ def main():
     server.app.extensions['software_update_provider'] = app_update
     from mower_android import python_updates
     python_updates.register_routes(server.app)
+    from mower_android import apk_updates
+    apk_updates.register_routes(server.app)
     python_updates.start_auto_check()
 
     @server.app.route('/android/mower-recovery', methods=['GET','POST'])

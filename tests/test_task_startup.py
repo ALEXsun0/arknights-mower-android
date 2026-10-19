@@ -331,6 +331,21 @@ class TaskStartupTests(unittest.TestCase):
         server.get_resource_version.assert_not_called()
         server.install_resource.assert_not_called()
 
+    def test_apk_update_routes_keep_launcher_authentication_and_confirmation(self):
+        from mower_android import apk_updates
+        def serve(client, workers, config, server, events):
+            self.assertEqual(client.get("/android/apk-update").status_code, 401)
+            self.assertEqual(client.post("/android/apk-update", json={"action": "check"}).status_code, 401)
+            self.assertEqual(client.post("/android/apk-update", json={"action": "check"},
+                                        headers={"token": "test-token"}).status_code, 403)
+            with patch.object(apk_updates, "check", return_value={"ok": True, "check_id": "checked"}) as check:
+                response = client.post("/android/apk-update", json={"action": "check"},
+                                       headers={"token": "test-token", "X-Mower-Update": "1"})
+                self.assertEqual(response.json["check_id"], "checked")
+                check.assert_called_once_with()
+
+        self.launch(automatic=False, during_serve=serve)
+
     def test_bind_failure_never_starts_tasks(self):
         events, _ = self.launch(binding_error=True)
         self.assertEqual(events, ["bound"])
