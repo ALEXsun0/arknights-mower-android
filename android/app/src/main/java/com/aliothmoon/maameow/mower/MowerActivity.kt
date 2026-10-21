@@ -50,6 +50,7 @@ class MowerActivity : Activity() {
     private var webRetryTask: Runnable? = null
     private var fileSelection: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
     private val fileExport by lazy { WebFileExport(this) }
+    private val apkAnnouncement by lazy { ApkUpdateAnnouncement(this) }
     private val apkUpdateCheck by lazy {
         StartupApkUpdateCheck(
             scope = scope,
@@ -86,7 +87,7 @@ class MowerActivity : Activity() {
         executeWebCommand(webRecovery.updateTarget(url))
         landing.visibility = if (url == null) View.VISIBLE else View.GONE
         web.visibility = if (url == null) View.GONE else View.VISIBLE
-        apkUpdateCheck.refresh(uiResumed && !isFinishing && !isDestroyed, url != null && !MowerService.stopping)
+        apkUpdateCheck.refresh(uiResumed && !isFinishing && !isDestroyed && !apkAnnouncement.isShowing, url != null && !MowerService.stopping)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -315,6 +316,7 @@ class MowerActivity : Activity() {
         MowerStyle.dark = dark; MowerStyle.applyTheme(layout); chrome(); web.setBackgroundColor(MowerStyle.paper)
         if (dark != appliedTheme && MowerService.url != null) executeWebCommand(webRecovery.manualRetry())
         appliedTheme = dark
+        apkAnnouncement.showIfNeeded()
         web.onResume(); web.resumeTimers(); refreshLoop.start()
     }
     override fun onPause() {
@@ -459,6 +461,6 @@ class MowerActivity : Activity() {
     }
 
     override fun onDestroy() {
-        refreshLoop.stop(); cancelWebTasks(); scope.cancel(); fileExport.close(); web.destroy(); super.onDestroy()
+        refreshLoop.stop(); cancelWebTasks(); apkAnnouncement.close(); scope.cancel(); fileExport.close(); web.destroy(); super.onDestroy()
     }
 }
