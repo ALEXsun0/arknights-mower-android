@@ -165,7 +165,11 @@ class MowerBridge(private val context: Context, private val token: String,
 
     @Synchronized fun gameState(): JSONObject {
         val s = remote()
-        return (system(s, "game_status", JSONObject().put("package", packageName).put("monitor", settings.enabled("fps_monitor"))) as JSONObject).put("expected_running", expectedGameRunning)
+        val game = (system(s, "game_status", JSONObject().put("package", packageName).put("monitor", settings.enabled("fps_monitor"))) as JSONObject)
+        AndroidSystemSettings.displayWarning = if (game.optInt("display_flag_tier", -1) > 0) {
+            "系统未授予独立后台显示权限：锁屏或熄屏会暂停后台游戏，操作游戏可能切换手机焦点。请保持亮屏运行。"
+        } else ""
+        return game.put("expected_running", expectedGameRunning)
     }
     @Synchronized fun sleepPhone(): Int = system(remote(), "sleep") as Int
 

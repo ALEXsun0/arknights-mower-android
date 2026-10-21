@@ -7,6 +7,7 @@ import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.*
@@ -24,6 +25,7 @@ class MowerSettingsActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var settings: AndroidSystemSettings
     private lateinit var status: TextView
+    private lateinit var displayWarning: TextView
     private lateinit var idleButton: Button
     private var idleAction = "idle"
     private val idleValues = listOf("idle", "home", "exit")
@@ -60,6 +62,8 @@ class MowerSettingsActivity : Activity() {
         utilities.addView(action("截图保存时间") { showScreenshotRetention() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         content.addView(utilities, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         content.addView(status)
+        displayWarning = label(AndroidSystemSettings.displayWarning, 13f, MowerStyle.muted).apply { setPadding(dp(8), 0, dp(8), dp(16)) }
+        content.addView(displayWarning)
         permissionCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; background = surface(MowerStyle.control, 12)
             setPadding(dp(20), dp(16), dp(20), dp(12))
@@ -357,6 +361,10 @@ class MowerSettingsActivity : Activity() {
         }
     }
     private fun refreshPermissions() {
+        if (::displayWarning.isInitialized) {
+            displayWarning.text = AndroidSystemSettings.displayWarning
+            displayWarning.visibility = if (displayWarning.text.isEmpty()) View.GONE else View.VISIBLE
+        }
         if (!::permissionCard.isInitialized || !uiResumed || permissionJob?.isCompleted == false) return
         permissionJob = scope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { PermissionChecks.inspect(this@MowerSettingsActivity).entries } }

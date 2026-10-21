@@ -10,7 +10,7 @@ import com.aliothmoon.maameow.maa.InputControlUtils
 import com.aliothmoon.maameow.remote.internal.VirtualDisplayManager
 import com.aliothmoon.maameow.third.Workarounds
 import kotlin.concurrent.thread
-import kotlin.system.exitProcess
+import com.aliothmoon.maameow.root.ProcessExit
 
 /** Shizuku owns the display and official Android MAA core; Python owns scheduling. */
 class BackgroundGameService : RemoteService.Stub() {
@@ -18,7 +18,7 @@ class BackgroundGameService : RemoteService.Stub() {
     private val maa = AndroidMaaCore()
     private val audio = GameAudioSession({ audioModes(it).packageMode }, { pkg, mode -> setAudioMode(pkg, mode) })
     init {
-        if (Process.myUid() == 0 && android.os.Build.VERSION.SDK_INT < 34) {
+        if (Process.myUid() == 0) {
             // Use the shell identity expected by Android's display attribution checks.
             android.system.Os.setgid(2000)
             android.system.Os.setuid(2000)
@@ -60,6 +60,7 @@ class BackgroundGameService : RemoteService.Stub() {
                 org.json.JSONObject().put("alive", alive).put("on_display", onDisplay)
                     .put("display_id", VirtualDisplayManager.getDisplayId())
                     .put("display_valid", VirtualDisplayManager.isDisplayValid())
+                    .put("display_flag_tier", VirtualDisplayManager.getFlagTier())
                     .put("display_state", VirtualDisplayManager.getDisplayState())
                     .put("frame_count", NativeBridgeLib.getFrameCount())
                     .put("fps", com.aliothmoon.maameow.remote.internal.GameFpsMonitor.currentFps())
@@ -130,13 +131,16 @@ class BackgroundGameService : RemoteService.Stub() {
     override fun pollUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.poll()
     override fun cancelUnlockRecording() = com.aliothmoon.maameow.remote.internal.GestureRecorder.cancel()
 
-    @Synchronized override fun destroy() {
+    override fun destroy() = ProcessExit.exit("destroy requested") {
         // 应用被强退时也从独立后台进程恢复，不依赖主进程的 onDestroy。
+        runCatching { com.aliothmoon.maameow.remote.internal.PowerController.destroy() }
+        val preview = thread(name = "preview-shutdown", isDaemon = true) {
+            runCatching { NativeBridgeLib.shutdownPreview() }
+        }
+        preview.join(1_000)
         runCatching { audio.restoreAll() }.onFailure { android.util.Log.e("Mower", "退出前恢复游戏声音失败", it) }
         runCatching { cancelUnlockRecording() }
-        runCatching { com.aliothmoon.maameow.remote.internal.PowerController.destroy() }
         runCatching { stopVirtualDisplay() }
-        exitProcess(0)
     }
     override fun setVirtualDisplayMode(mode: Int) = mode == 2
     override fun setVirtualDisplayResolution(width: Int, height: Int, dpi: Int) {
@@ -153,7 +157,7 @@ class BackgroundGameService : RemoteService.Stub() {
         }
     }
     override fun setMonitorSurface(surface: Surface?) {
-        VirtualDisplayManager.setMonitorSurface(surface); NativeBridgeLib.setPreviewSurface(surface)
+        NativeBridgeLib.setPreviewSurface(surface)
     }
     override fun touchDown(x: Int, y: Int, contact: Int) { check(InputControlUtils.down(x * width / 1920, y * height / 1080, contact, display())) }
     override fun touchMove(x: Int, y: Int, contact: Int) { check(InputControlUtils.move(x * width / 1920, y * height / 1080, contact, display())) }

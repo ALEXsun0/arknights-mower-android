@@ -18,7 +18,7 @@ class RootServiceBootstrapProvider : ContentProvider() {
             return super.call(method, arg, extras)
         }
         val callingUid = Binder.getCallingUid()
-        if (callingUid != Process.SHELL_UID && callingUid != 0) {
+        if (callingUid != Process.SHELL_UID) {
             Ln.w("Rejecting background bootstrap caller")
             return null
         }
@@ -30,12 +30,15 @@ class RootServiceBootstrapProvider : ContentProvider() {
 
         val appBinder = RootServiceBootstrapRegistry.attach(token, binder) ?: run {
             Ln.w("Expired background bootstrap request")
+            kotlin.concurrent.thread(name = "expired-background", isDaemon = true) {
+                runCatching { com.aliothmoon.maameow.RemoteService.Stub.asInterface(binder).destroy() }
+            }
             return null
         }
 
         return Bundle().apply {
             putBinder(RootServiceBootstrapRegistry.KEY_APP_BINDER, appBinder)
-            putInt(RootServiceBootstrapRegistry.KEY_APP_PID, Process.myPid())
+            putParcelable(RootServiceBootstrapRegistry.KEY_LIFELINE, RootServiceBootstrapRegistry.lifelineReadEnd())
         }
     }
 

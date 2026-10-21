@@ -15,6 +15,7 @@ class AndroidSystemSettings(private val context: Context) {
             "external_device_alerts" to false, "fps_monitor" to true, "low_fps_alert" to true, "disconnect_stop" to true,
             "sleep_when_idle" to false, "preserve_screen_on" to true,
             "screen_saver" to false, "hardware_screen_off" to false, "restart_on_boot" to false, "root_backend" to false)
+        @Volatile var displayWarning = ""
         @Volatile var lastAction = "尚未执行系统操作"
         @Volatile var foreground: MowerActivity? = null
     }
@@ -39,6 +40,6 @@ class AndroidSystemSettings(private val context: Context) {
         return JSONObject().put("screen_on", power.isInteractive).put("locked", lock.isKeyguardLocked)
             .put("secure_lock", lock.isKeyguardSecure).put("battery_unrestricted", power.isIgnoringBatteryOptimizations(context.packageName))
             .put("cpu_awake", MowerService.cpuAwake).put("phone_foreground", foreground != null)
-            .put("last_action", lastAction).put("version", com.aliothmoon.maameow.BuildConfig.VERSION_NAME)
+            .put("display_warning", displayWarning).put("last_action", lastAction).put("version", com.aliothmoon.maameow.BuildConfig.VERSION_NAME)
     }
 }

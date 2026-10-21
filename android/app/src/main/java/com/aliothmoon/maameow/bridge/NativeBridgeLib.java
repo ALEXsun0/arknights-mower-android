@@ -28,7 +28,8 @@ public class NativeBridgeLib {
 
     public static native void releaseNativeCapturer();
 
-    @FastNative
+    public static native void shutdownPreview();
+
     public static native void setPreviewSurface(Object surface);
 
     /**
