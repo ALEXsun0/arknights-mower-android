@@ -47,7 +47,6 @@ class MowerBridge(private val context: Context, private val token: String,
     }
 
     private fun wake(s: RemoteService, dismiss: Boolean): JSONObject {
-        MowerService.monitor?.beforeWake()
         val power = context.getSystemService(android.os.PowerManager::class.java)
         val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
         if (!power.isInteractive) system(s, "wake")
@@ -127,7 +126,7 @@ class MowerBridge(private val context: Context, private val token: String,
 
     fun openGame() {
         dispatch("prepare", JSONObject())
-        dispatch("launch", JSONObject())
+        dispatch("launch", JSONObject().put("task", false))
     }
 
     private fun remote(): RemoteService = RemoteServiceManager.getInstanceOrNull()
@@ -228,8 +227,17 @@ class MowerBridge(private val context: Context, private val token: String,
     }
 
     @Synchronized private fun dispatch(method: String, p: JSONObject): Any {
-        if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
         check(!closed) { "Mower 服务正在停止" }
+        if (method == "task_screen_begin" || method == "task_screen_end") {
+            val monitor = checkNotNull(MowerService.monitor) { "任务监测尚未就绪" }
+            if (method == "task_screen_begin") monitor.beginRun() else monitor.endRun()
+            return true
+        }
+        if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
+        if (method == "maa_start" || (method == "launch" && p.optBoolean("task", true)) ||
+            (method == "screenshot" && p.optBoolean("require_game"))) {
+            MowerService.monitor?.beforeTaskAction()
+        }
         if (method == "status") return status()
         if (method == "mower_restart") {
             check(updateRestart != null && MowerService.active && !MowerService.stopping) { "服务无法自动重启，请手动停止并重新启动" }
