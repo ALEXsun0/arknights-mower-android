@@ -7,11 +7,14 @@ import com.aliothmoon.maameow.manager.RemoteServiceManager
 import org.json.JSONObject
 
 /** Observes Mower's own working/sleeping state; it never creates a second task queue. */
-class MowerRuntimeMonitor(private val context: Context) {
+class MowerRuntimeMonitor(
+    private val context: Context,
+    private val readStatus: () -> JSONObject = { JSONObject(NativeRuntimeClient.call("/status")) },
+    private val sleepPhone: (MowerBridge) -> Int = { it.sleepPhone() },
+) {
     private val settings = AndroidSystemSettings(context)
     private val cycles = TaskCyclePolicy()
     private val advisor = GameFpsAdvisor(windowSize = 3, maxIdleStreak = 1) // Samples every five seconds.
-    private val preWakeScreenOn = java.util.concurrent.atomic.AtomicReference<Boolean?>(null)
     private var missingSamples = 0
     private var nextWake = ""
     private var lastNotification = ""
@@ -21,15 +24,15 @@ class MowerRuntimeMonitor(private val context: Context) {
         if (settings.enabled("external_device_alerts")) runCatching { NativeRuntimeClient.call("/android/runtime-event", event) }
             .onFailure { AndroidSystemSettings.lastAction = "设备提醒发送失败，详情请查看运行日志" }
     }
-    fun beforeWake() {
-        preWakeScreenOn.compareAndSet(null, context.getSystemService(PowerManager::class.java).isInteractive)
-    }
+    fun beginRun() = cycles.beginRun(context.getSystemService(PowerManager::class.java).isInteractive)
+    fun endRun() = cycles.endRun()
+    fun beforeTaskAction() = cycles.beforeTaskAction(context.getSystemService(PowerManager::class.java).isInteractive)
     fun tick() {
         if (MowerService.url == null) return
-        val state = JSONObject(NativeRuntimeClient.call("/status"))
+        val state = readStatus()
         val name = state.optString("status", "stopped")
         val manual = MowerService.manual || MowerService.unlocking
-        val screenOn = preWakeScreenOn.get() ?: context.getSystemService(PowerManager::class.java).isInteractive
+        val screenOn = context.getSystemService(PowerManager::class.java).isInteractive
         val cycle = cycles.update(name, screenOn, manual, settings.enabled("preserve_screen_on"))
         if (cycle.started) { advisor.reset(); MowerScreenSaver.resetCycle(); missingSamples = 0 }
         val engine = MowerService.engine ?: return
@@ -95,12 +98,10 @@ class MowerRuntimeMonitor(private val context: Context) {
         } else MowerScreenSaver.hide()
         if (cycle.completed) {
             if (settings.enabled("sleep_when_idle") && cycle.maySleep) {
-                val code = engine.sleepPhone()
+                val code = sleepPhone(engine)
                 AndroidSystemSettings.lastAction = if (code == 0) "本轮任务完成，手机已锁屏休眠" else UnlockSettings.resultText(code)
             }
-            preWakeScreenOn.set(null)
         }
-        if (name == "stopped") preWakeScreenOn.set(null)
         val next = state.optString("next_task_time", "")
         if (name == "sleeping" && next != nextWake) {
             MowerWakeReceiver.schedule(context, state.optLong("remaining_seconds", 0)); nextWake = next

@@ -156,6 +156,7 @@ class TaskStartupTests(unittest.TestCase):
                 patch("mower_android.mower_package.mark_ready"),
                 patch("mower_android.managed.prepare_files"),
                 patch("mower_android.backup_cleanup.install_hooks"),
+                patch("mower_android.task_screen.install_hooks"),
                 patch("mower_android.python_updates.register_routes"),
                 patch("mower_android.python_updates.start_auto_check"),
                 patch("faulthandler.dump_traceback_later"),

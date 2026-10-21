@@ -43,6 +43,8 @@ def main():
     import server
     from mower_android.backup_cleanup import install_hooks
     install_hooks(server)
+    from mower_android.task_screen import install_hooks as install_task_screen_hooks
+    install_task_screen_hooks()
     from flask import request, abort, make_response
     from werkzeug.datastructures import ImmutableMultiDict
 
