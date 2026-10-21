@@ -8,7 +8,7 @@ interface RemoteService {
     void setVirtualDisplayResolution(int width, int height, int dpi) = 2;
     int startVirtualDisplay() = 3;
     void stopVirtualDisplay() = 4;
-    void setMonitorSurface(in Surface surface) = 5;
+    oneway void setMonitorSurface(in Surface surface) = 5;
     void touchDown(int x, int y, int contact) = 6;
     void touchMove(int x, int y, int contact) = 7;
     void touchUp(int x, int y, int contact) = 8;

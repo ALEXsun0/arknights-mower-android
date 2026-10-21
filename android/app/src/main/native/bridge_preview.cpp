@@ -379,10 +379,25 @@ void SetPreviewSurface(JNIEnv *env, jobject jSurface) {
 }
 
 void ShutdownPreview(JNIEnv *env) {
-    SetPreviewSurface(env, nullptr);
-
     std::lock_guard<std::mutex> lock(g_previewMutex);
-    if (g_renderThreadRunning.exchange(false, std::memory_order_acq_rel)) {
+    g_hasPreview.store(false, std::memory_order_release);
+    if (g_previewSurfaceObj && env) {
+        env->DeleteGlobalRef(g_previewSurfaceObj);
+        g_previewSurfaceObj = nullptr;
+    }
+    bool wasRunning;
+    {
+        // Change the wait predicate under the render mutex to avoid a lost wakeup.
+        std::lock_guard<std::mutex> queueLock(g_renderMutex);
+        DrainPreviewQueueLocked();
+        if (g_pendingWindow) {
+            ANativeWindow_release(g_pendingWindow);
+            g_pendingWindow = nullptr;
+        }
+        g_pendingDetach = false;
+        wasRunning = g_renderThreadRunning.exchange(false, std::memory_order_acq_rel);
+    }
+    if (wasRunning) {
         g_renderCv.notify_all();
         if (g_renderThread.joinable()) {
             g_renderThread.join();

@@ -2,6 +2,9 @@ package com.aliothmoon.maameow.root;
 
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import java.io.IOException;
+import java.io.InputStream;
 
 import com.aliothmoon.maameow.RemoteService;
 import com.aliothmoon.maameow.third.Ln;
@@ -34,13 +37,13 @@ public final class RemoteServiceStarter {
 
         if (!sendBinder(createdService)) {
             System.err.println("[" + TAG + "] sendBinder() failed");
-            System.exit(1);
+            onAppGone("bootstrap failed", createdService.service());
             return;
         }
         System.err.println("[" + TAG + "] sendBinder() ok, entering Looper");
 
         Looper.loop();
-        System.exit(0);
+        onAppGone("looper stopped", createdService.service());
     }
 
     private static boolean sendBinder(RootUserService.CreatedService createdService) {
@@ -56,21 +59,44 @@ public final class RemoteServiceStarter {
 
 
         try {
-            IBinder.DeathRecipient recipient = () -> {
-                Ln.i(TAG + ": app process died, destroying remote service");
-                destroyService(createdService.service());
-                Ln.i(TAG + ": remote service destroy signal sent, exiting");
-                System.exit(0);
-            };
+            IBinder.DeathRecipient recipient = () -> onAppGone("app binder died", createdService.service());
             IBinder lifecycleBinder = result.lifecycleBinder();
             lifecycleBinder.linkToDeath(recipient, 0);
             appLifecycleBinder = lifecycleBinder;
             appDeathRecipient = recipient;
+            watchLifeline(result.lifeline(), createdService.service());
             return true;
         } catch (Throwable tr) {
+            try { if (result.lifeline() != null) result.lifeline().close(); } catch (IOException ignored) {}
             Ln.e(TAG + ": failed to link app lifecycle binder", tr);
             return false;
         }
+    }
+
+    /** 两路死讯先到先走：binder 通知要等线程池，被卡住的调用占满时送不到，lifeline 独占线程不受影响 */
+    private static void onAppGone(String reason, IBinder service) {
+        ProcessExit.exit(reason, () -> destroyService(service));
+    }
+
+    static Thread watchLifeline(ParcelFileDescriptor lifeline, IBinder service) {
+        if (lifeline == null) {
+            Ln.w(TAG + ": no lifeline, relying on binder death only");
+            return null;
+        }
+        Thread watcher = new Thread(() -> {
+            try (InputStream in = new ParcelFileDescriptor.AutoCloseInputStream(lifeline)) {
+                // App 从不写，阻塞到它退出、内核关掉写端时的 EOF
+                while (in.read() >= 0) {
+                }
+            } catch (IOException e) {
+                Ln.w(TAG + ": lifeline read failed, relying on binder death only", e);
+                return;
+            }
+            onAppGone("app lifeline closed", service);
+        }, "app-lifeline");
+        watcher.setDaemon(true);
+        watcher.start();
+        return watcher;
     }
 
     private static void destroyService(IBinder service) {

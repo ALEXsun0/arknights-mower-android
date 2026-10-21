@@ -57,7 +57,6 @@ typedef struct {
     const char *debug_name;
     const char *log_file;
     int uid;
-    bool keep_root;
 } LauncherArgs;
 
 /* ── 文件日志 ── */
@@ -116,7 +115,7 @@ static bool parse_args(int argc, char **argv, LauncherArgs *out) {
                 LOGE("Invalid uid: %s", argv[i] + 6);
                 return false;
             }
-        } else if (strcmp(argv[i], "--keep-root") == 0) out->keep_root = true;
+        }
     }
 
     return out->apk_path != NULL
@@ -240,7 +239,12 @@ int main(int argc, char **argv) {
         /* 已是 shell 身份（Shizuku adb 模式）：非 root 下 setgroups 会 EPERM，跳过降权 */
         if (getuid() == kShellUid) {
             LOGFI("already shell uid, skip demotion");
-        } else if (!args.keep_root) {
+        } else {
+            /* Repair files written by older root-backed services before demoting. */
+            if (access("/data/local/tmp/mower-android-core", F_OK) == 0 &&
+                system("timeout -s KILL 5 find /data/local/tmp/mower-android-core ! -user 2000 -exec chown -h 2000:2000 {} + 2>/dev/null") != 0) {
+                LOGFW("core ownership repair skipped or incomplete");
+            }
             static const size_t kGidCount =
                     sizeof(kRequiredShellGids) / sizeof(kRequiredShellGids[0]);
 

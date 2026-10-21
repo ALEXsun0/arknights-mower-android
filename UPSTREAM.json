@@ -18,7 +18,20 @@
   "meow": {
     "url": "https://github.com/Aliothmoon/MAA-Meow",
     "commit": "042e21b6a7c826f1dcd4ecef0004e5288f7601f2",
-    "retained": "Background display/capture/preview/input, privileged process bootstrap, wake/unlock gesture recording, screen power, FPS monitoring, Android wrappers and hidden API declarations; adapted native host settings only, no Meow task scheduler or updater"
+    "retained": "Background display/capture/preview/input, privileged process bootstrap, wake/unlock gesture recording, screen power, FPS monitoring, Android wrappers and hidden API declarations; adapted native host settings only, no Meow task scheduler or updater",
+    "selective_android_fixes": {
+      "reviewed_head": "1e20a5fc2d249aea983bbbd2f0240d4ddb6905d4",
+      "commits": {
+        "685f83e7e64e960b8bc4acebc7211daed36a7e59": "Asynchronous preview Surface IPC and render-thread shutdown",
+        "aa9193f9a11eb1f1cfa71ed5fb917487cb94f3de": "Virtual display permission fallback and effective display diagnostics",
+        "2523fe44385771009e8b127121f9fefaee8413ea": "Privileged process exit deadline and app lifeline",
+        "78571bf605824b900e04f297afaccdd82bc8bdb7": "Root mount namespace and legacy core ownership repair",
+        "41ed98a234ebba608334891b377c23c1b15412d0": "Always demote privileged Root services to shell",
+        "a5b7ed230e9a1188b2e8d8956d7998decbbe82b5": "Ownership repair does not follow symlinks",
+        "f64237c63167ce130fc1d883fc9b502d600e2a02": "Preview shutdown holds render wait mutex while changing stop predicate"
+      },
+      "adaptations": "Preserve Mower AIDL transaction IDs, synchronous local cleanup, fixed 1080p display and Mower-owned task scheduling; retain original source baseline"
+    }
   },
   "maa": {
     "url": "https://github.com/MaaAssistantArknights/MaaAssistantArknights",

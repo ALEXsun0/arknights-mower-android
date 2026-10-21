@@ -36,6 +36,7 @@ object RemoteServiceManager {
     }
     fun unbind() {
         val old = service; service = null
+        com.aliothmoon.maameow.mower.AndroidSystemSettings.displayWarning = ""
         runCatching { old?.destroy() }
     }
     fun getInstanceOrNull(): RemoteService? = service?.takeIf { it.asBinder().isBinderAlive }
@@ -57,14 +58,13 @@ object RemoteServiceManager {
                 "--starter-class=com.aliothmoon.maameow.root.RemoteServiceStarter",
                 "--token=$token", "--package=${appContext.packageName}",
                 "--class=${BackgroundGameService::class.java.name}", "--uid=${android.os.Process.myUid()}",
-                "--log-file=/data/local/tmp/mower-background-launch.log") +
-                if (android.os.Build.VERSION.SDK_INT >= 34) listOf("--keep-root") else emptyList()
+                "--log-file=/data/local/tmp/mower-background-launch.log")
             val command = "exec " + arguments.joinToString(" ", transform = ::quote) + " </dev/null >/dev/null 2>&1"
             var remoteProcess: moe.shizuku.server.IRemoteProcess? = null
             var rootProcess: Process? = null
             try {
                 check(launcher.isFile) { "缺少后台启动器，请重新安装 APK" }
-                if (root) rootProcess = ProcessBuilder("su", "-c", command).start()
+                if (root) rootProcess = ProcessBuilder("su", "-c", rootMountCommand(command)).start()
                 else remoteProcess = moe.shizuku.server.IShizukuService.Stub.asInterface(Shizuku.getBinder())
                     .newProcess(arrayOf("sh", "-c", command), null, null)
                 val binder = awaitBackgroundService {
@@ -79,6 +79,12 @@ object RemoteServiceManager {
                 service = connected
                 connected
             } catch (failure: Exception) {
+                registry.unregister(token)
+                if (deferred.isCompleted && !deferred.isCancelled) {
+                    withContext(NonCancellable) {
+                        runCatching { RemoteService.Stub.asInterface(deferred.await()).destroy() }
+                    }
+                }
                 // Never log the command line: it contains the single-use bootstrap token.
                 runCatching { remoteProcess?.destroy() }; runCatching { rootProcess?.destroy() }
                 throw failure
