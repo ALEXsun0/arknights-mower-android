@@ -40,3 +40,29 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     compileOnly(project(":hidden-api"))
 }
+
+abstract class GenerateApkReleaseNotes : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val notes: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val text = notes.get().asFile.readText()
+        check(text.isNotBlank()) { "APK release notes must not be empty" }
+        val target = outputDirectory.file("apk-release-notes.md").get().asFile
+        target.parentFile.mkdirs()
+        target.writeText(text)
+    }
+}
+
+val apkReleaseNotes = tasks.register<GenerateApkReleaseNotes>("generateApkReleaseNotes") {
+    notes.set(rootProject.layout.projectDirectory.file("../docs/android-release-notes.md"))
+    outputDirectory.set(layout.buildDirectory.dir("generated/apkReleaseNotes"))
+}
+androidComponents.onVariants { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(apkReleaseNotes, GenerateApkReleaseNotes::outputDirectory)
+}

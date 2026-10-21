@@ -75,6 +75,17 @@ class ReleaseAutomationTests(unittest.TestCase):
             return data
         with patch.object(Path,'read_bytes',read): self.assertEqual(host_digest(ROOT),baseline)
         self.assertNotEqual(host_digest(ROOT,b'new-dependency==1.0'),baseline)
+    def test_bundled_release_notes_change_host_identity(self):
+        baseline = host_digest(ROOT)
+        real = Path.read_bytes
+        def read(path):
+            data = real(path)
+            if path == ROOT/'docs/android-release-notes.md':
+                return data + b'\n- New APK announcement.\n'
+            return data
+        with patch.object(Path, 'read_bytes', read):
+            self.assertNotEqual(host_digest(ROOT), baseline)
+
     def test_release_page_closes_range_at_next_interface_change(self):
         adapter=json.loads((ROOT/'runtime/mower_android/maa-python.json').read_text())
         meta={'maa_python':adapter,'bundled':{'mower':{'tag':'v4.1.6-alpha.5'},'maa':{'tag':'v6.17.5'}}}

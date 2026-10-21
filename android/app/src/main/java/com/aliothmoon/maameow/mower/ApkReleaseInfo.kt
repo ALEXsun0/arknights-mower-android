@@ -16,8 +16,19 @@ fun Activity.showMowerAbout() {
     val projectUrl = "https://github.com/ALEXsun0/arknights-mower-android"
     val themed = android.view.ContextThemeWrapper(this,
         if (MowerStyle.dark) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
-    AlertDialog.Builder(themed).setTitle("关于软件")
-        .setMessage("Mower Android\n版本 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）\n\n在 Android 上运行 Mower 与后台明日方舟。\n\nGitHub 项目\n$projectUrl")
+    val content = android.widget.LinearLayout(themed).apply {
+        orientation = android.widget.LinearLayout.VERTICAL
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        setPadding(padding, padding / 2, padding, 0)
+    }
+    content.addView(android.widget.TextView(themed).apply {
+        text = "Mower Android\n版本 ${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）\n\n在 Android 上运行 Mower 与后台明日方舟。\n\nGitHub 项目\n$projectUrl"
+        textSize = 15f
+    })
+    val notes = android.widget.Button(themed).apply { text = "更新日志" }
+    content.addView(notes)
+    val dialog = AlertDialog.Builder(themed).setTitle("关于软件")
+        .setView(content)
         .setNegativeButton("关闭", null)
         .setNeutralButton("GitHub 项目") { _, _ ->
             try {
@@ -28,6 +39,7 @@ fun Activity.showMowerAbout() {
         }
         .setPositiveButton("检查 APK 更新") { _, _ -> showApkReleaseInfo() }
         .show()
+    notes.setOnClickListener { dialog.dismiss(); showApkUpdateAnnouncement() }
 }
 
 internal fun Activity.showMowerApkUpdatePrompt(version: String, openUpdate: () -> Unit = { showApkReleaseInfo() }) {

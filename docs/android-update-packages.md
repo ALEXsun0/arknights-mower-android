@@ -35,6 +35,12 @@ JSON 示例：
 
 MAA 核心和资源只走官方源，Android 暂时禁用 Mirror酱。`android-release.json` 与 APK、Python 包一起发布，供主仓库识别同渠道的兼容宿主，无需每次重新构建 APK。
 
+## 安装后的更新日志
+
+首次安装或升级 APK 后，打开原生主页即可查看当前 APK 自带的更新日志，无需联网、授权 Shizuku 或启动 Mower 服务。点击「知道了」后，应用按 versionCode 保存已读状态；普通重启、屏幕旋转和同版本覆盖安装不再自动弹出。返回键关闭或页面在确认前销毁时不记为已读，同一主页也不重复弹出；创建新主页时仍可提示。降级不会清除较新版本的已读记录。
+
+「软件设置 → 关于软件 → 更新日志」可随时重看当前安装版本的说明。内容在 Gradle 构建时从 [APK 宿主发行说明](android-release-notes.md)打包进 APK，与发行页复用该说明来源；此文件纳入宿主指纹，修改说明会被识别为 APK 宿主变化。公告不读取网络上的最新版本，也不受 Mower 热更新影响。公告显示期间暂停主页的新 APK 更新提示，关闭后恢复现有检查流程。
+
 ## 自动发行与组件版本
 
 `Android APK` 工作流只接受 Mower 主仓 `mower-release` 通知与手动触发，不定时轮询，不响应 MAA 通知或分支推送。入口、手动参数与重试规则见 [Android 独立发行](release-ci.md)。普通版按发布时间选择最新正式或 alpha/beta/rc 发行；手动开发版固定使用 MowerRelease dev 索引对应的已发布 Nightly 完整包。上游附件、GitHub digest、Android 兼容检查或 ABI 检查失败时停止发布。
