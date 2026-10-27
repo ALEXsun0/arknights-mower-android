@@ -398,7 +398,7 @@ class MowerPackageTests(unittest.TestCase):
             _job_running=lambda job:False, maa_update_job={}, maa_resource_update_job={},
             resource_update=SimpleNamespace(running=lambda:False), get_path=lambda name:self.root,
             config=Mock(), load_state=record.load_state, Thread=Mock(), set_mower_thread=Mock(), log_stream=Mock(),
-            shutdown=SimpleNamespace(closing=False), request=request,
+            shutdown=SimpleNamespace(closing=False), request=request, round_stop=SimpleNamespace(cancel=Mock()),
             _run_mower_worker=Mock(), _cancel_scheduled_start=Mock())
         exec(compile(ast.Module(body=starters, type_ignores=[]), str(source), 'exec'), namespace)
         server = SimpleNamespace(start=SimpleNamespace(__wrapped__=namespace['start']))
