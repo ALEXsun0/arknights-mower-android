@@ -193,6 +193,7 @@ class MaaNavigationTests(unittest.TestCase):
                     )
                 )
                 scheduler._idle_sleep = Mock()
+                scheduler.rest_until_next_task = Mock()
                 with patch.object(self.base_schedule, "send_message") as notify:
                     scheduler.maa_plan_solver()
                 self.native.stop.assert_called_once()
