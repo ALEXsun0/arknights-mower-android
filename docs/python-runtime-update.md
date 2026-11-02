@@ -14,7 +14,7 @@
 
 APK CI 消费主仓格式 2 包时复用其确切运行环境，不另选依赖版本。配套依赖变化不再计为宿主变化，不会单独触发 APK 更新提示。
 
-MAA Python 兼容接口仅在 Android 的 MAA 页面接入联合检查，Windows、macOS、Linux 不请求该接口。两个检查并行、错误分别展示，接口根据代码摘要而非发行版号提示更新。保留自动检查、热加载和 WebUI 手动导入。
+MAA Python 兼容接口仅在 Android 的 MAA 页面接入联合检查，Windows、macOS、Linux 不请求该接口。仅在 MAA 检查成功且发现更新后检查兼容接口；MAA 无更新或检查失败时不请求接口更新，服务启动后不再独立定时检查。错误分别展示，接口根据代码摘要而非发行版号提示更新。保留热加载和 WebUI 手动导入。
 
 验证包括格式 1 兼容、清单和摘要拒绝、APK 版本门槛、Python 3.13 选择、回退/缓存及配置目录独立测试。真实归档可使用 `MOWER_TEST_FULL_UPDATE=/绝对路径/更新包.zip` 运行 `UpdatedPythonRuntimeTest` 进行原生完整解压测试；未提供归档时该项跳过。
 

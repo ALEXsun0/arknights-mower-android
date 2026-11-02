@@ -122,7 +122,6 @@ def main():
     python_updates.register_routes(server.app)
     from mower_android import apk_updates
     apk_updates.register_routes(server.app)
-    python_updates.start_auto_check()
 
     @server.app.route('/android/mower-recovery', methods=['GET','POST'])
     def mower_recovery():

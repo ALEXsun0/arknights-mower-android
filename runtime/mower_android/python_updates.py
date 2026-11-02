@@ -11,7 +11,6 @@ import requests
 from mower_android import python_package
 
 REPO = 'ALEXsun0/arknights-mower-android'
-INTERVAL = 6 * 60 * 60
 _lock = threading.RLock()
 
 
@@ -44,7 +43,7 @@ def info():
 def component_info():
     return {'label': 'MAA Python 兼容接口', 'endpoint': '/android/python-update',
             'check': True, 'combined_check': True,
-            'hint': '与 MAA 一起检查，仅接口内容变化时提示更新。现有任务保持原接口，新实例使用新接口；手动导入请使用软件更新中的拖拽入口。'}
+            'hint': '仅在 MAA 检查发现更新后检查兼容接口，接口内容变化时提示更新。现有任务保持原接口，新实例使用新接口；手动导入请使用软件更新中的拖拽入口。'}
 
 
 def fetch(item, limit):
@@ -136,25 +135,3 @@ def register_routes(app):
                 return info()
             raise ValueError('更新请求格式错误')
         except Exception as exc: return {'ok':False,'message':str(exc)},400
-
-
-def auto_check_once(notify):
-    with _lock:
-        data=state()
-        if not data.get('auto_check',True) or time.time()-data.get('latest',{}).get('checked_at',0)<INTERVAL: return
-        result=check()['latest']
-        data=state()
-        if result['available'] and data.get('notified')!=result['sha256']:
-            notify(result['version'])
-            data['notified']=result['sha256']; save(data)
-
-
-def start_auto_check():
-    def run():
-        from mower_android.bridge import Bridge
-        from arknights_mower.utils.log import logger
-        while True:
-            try: auto_check_once(lambda version: Bridge(timeout=10).call('python_update_available',version=version))
-            except Exception as exc: logger.debug(f'MAA Python 更新检查暂未完成：{exc}')
-            time.sleep(INTERVAL)
-    threading.Thread(target=run,name='maa-python-update',daemon=True).start()
