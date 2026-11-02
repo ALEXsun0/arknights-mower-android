@@ -132,7 +132,7 @@ Android APK 由本仓库 CI 构建。WebUI 的内置 Mower 更新支持正式版
 - 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，完成资源模型转换后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
 - 本仓库生成的 `mower-maa-python-版本.zip`：更新 Android 兼容 MAA Python 接口，校验协议、最低 APK 版本、完整性与接口结构；当前实例不变，新实例使用新接口，失败时回退内置接口。官方 ctypes Python 包不能直接用于 Android 桥接。
 
-WebUI 软件更新页支持检查、下载和恢复内置 Python 接口，默认每 6 小时自动检查；按接口内容判断是否有更新，兼容包随 APK 重新发布不会重复提示。除 APK 外，组件更新设置均放在 WebUI，也可通过已认证的局域网页面使用。
+WebUI 支持下载和恢复内置 Python 接口，仅在 MAA 检查发现更新后检查接口更新；按接口内容判断是否有更新，兼容包随 APK 重新发布不会重复提示。除 APK 外，组件更新设置均放在 WebUI，也可通过已认证的局域网页面使用。
 
 MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Android 核心使用官方组件包；MAA 资源支持 GitHub 和 Mirror酱。主仓库每次发布可从本仓库 Release 自动附带兼容的 APK 与接口 ZIP，不要求 APK 跟随 Mower 发版。
 

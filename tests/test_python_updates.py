@@ -35,16 +35,6 @@ class OnlinePythonTests(unittest.TestCase):
     def test_incompatible_host_does_not_offer_python_install(self):
         result=self.check({**self.meta,'sha256':'a'*64,'min_apk':999})
         self.assertFalse(result['available']);self.assertFalse(result['compatible'])
-    def test_auto_check_is_optional_and_deduplicates_notifications(self):
-        notify=Mock();updates.save({'auto_check':False})
-        with patch.object(updates,'check') as check: updates.auto_check_once(notify);check.assert_not_called()
-        updates.save({})
-        result={'available':True,'sha256':'a'*64,'version':'1.0.1','checked_at':0}
-        def check():
-            value=updates.state();value['latest']=result;updates.save(value);return {'latest':result}
-        with patch.object(updates,'check',side_effect=check):
-            updates.auto_check_once(notify);updates.auto_check_once(notify)
-        notify.assert_called_once_with('1.0.1')
     def test_online_install_verifies_descriptor_before_activation(self):
         code=(ROOT/'runtime/mower_android/maa_adapter.py').read_bytes()+b'\n# next interface\n'
         meta={**self.meta,'version':'1.0.1','sha256':hashlib.sha256(code).hexdigest()}

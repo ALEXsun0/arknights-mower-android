@@ -9,7 +9,6 @@ const data = ref(null)
 const busy = ref(false)
 const error = ref('')
 const url = `${import.meta.env.VITE_HTTP_URL || ''}${props.component.endpoint}`
-let timer
 let disposed = false
 async function load() {
   const response = await axios.get(url)
@@ -31,6 +30,11 @@ async function run(payload) {
     busy.value = false
   }
 }
+function check() {
+  if (props.component.check) return run({ action: 'check' })
+}
+defineExpose({ check })
+
 function confirm(action) {
   dialogs.warning({
     title: action === 'reset' ? '确认恢复内置版本？' : '确认更新兼容接口？',
@@ -40,18 +44,16 @@ function confirm(action) {
     onPositiveClick: () => run({ action })
   })
 }
-async function poll() {
+async function refresh() {
   try {
     if (!busy.value) await load()
   } catch (err) {
     error.value = err.message
   }
-  if (!disposed) timer = setTimeout(poll, 60000)
 }
-onMounted(poll)
+onMounted(refresh)
 onUnmounted(() => {
   disposed = true
-  clearTimeout(timer)
 })
 </script>
 
@@ -68,17 +70,9 @@ onUnmounted(() => {
     <span v-else-if="data?.latest?.version">{{
       data.latest.compatible === false ? '新接口需要更新 APK' : '兼容接口内容没有变化，无需更新'
     }}</span>
-    <n-checkbox
-      v-if="component.check"
-      :checked="data?.auto_check ?? true"
-      :disabled="busy || disabled || !data"
-      @update:checked="(value) => run({ auto_check: value })"
-    >
-      自动检查兼容接口（服务运行时每 6 小时）
-    </n-checkbox>
     <n-space>
       <n-button
-        v-if="component.check"
+        v-if="component.check && !component.combined_check"
         size="small"
         :disabled="busy || disabled"
         @click="run({ action: 'check' })"
