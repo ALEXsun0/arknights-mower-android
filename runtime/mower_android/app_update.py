@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 import requests
+from arknights_mower.utils.github_download import request_download, request_github
 from mower_android.bridge import Bridge
 from mower_android import python_package, mower_package, mower_ota
 
@@ -199,7 +200,7 @@ def status():
 
 
 def release_index(channel):
-    response = requests.get(f'{OTA_INDEX_URL}/{channel}.json', timeout=30)
+    response = request_download(requests, "get", f'{OTA_INDEX_URL}/{channel}.json', timeout=30)[0]
     response.raise_for_status()
     index = response.json()
     if (not isinstance(index, dict) or index.get('schema') != 1 or
@@ -253,7 +254,7 @@ def choose_ota_asset(target, current, full_size, release=None):
     name = f"arknights-mower-ota_{current.removeprefix('v')}_to_{target.removeprefix('v')}_android_arm64.zip"
     if release is None:
         try:
-            response = requests.get(f'https://api.github.com/repos/{OTA_REPO}/releases/tags/{target}', timeout=10)
+            response = request_github(requests, "get", f'https://api.github.com/repos/{OTA_REPO}/releases/tags/{target}', timeout=10)
             response.raise_for_status()
             release = response.json()
         except (requests.RequestException, ValueError):
@@ -276,7 +277,7 @@ def download_asset(asset, label):
     path = folder()/(digest+'.zip')
     size = 0; sha = hashlib.sha256()
     try:
-        with requests.get(asset['browser_download_url'], stream=True, timeout=(15, 60)) as response:
+        with request_download(requests, 'get', asset['browser_download_url'], stream=True, timeout=(15, 60))[0] as response:
             response.raise_for_status()
             with path.open('wb') as out:
                 for chunk in response.iter_content(256*1024):
@@ -309,7 +310,7 @@ def check(channel):
                    'assets': [{**item, 'browser_download_url': item.get('url')} for item in index['full_assets']]}
     else:
         endpoint = f'https://api.github.com/repos/{REPO}/releases'
-        response = requests.get(endpoint+'/latest', timeout=30)
+        response = request_github(requests, "get", endpoint+'/latest', timeout=30)
         response.raise_for_status()
         releases = [response.json()]
         releases = [r for r in releases if not re.search(r'dev|nightly|snapshot', r.get('tag_name', ''), re.I)]

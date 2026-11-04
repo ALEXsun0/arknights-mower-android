@@ -12,17 +12,19 @@ from pathlib import Path
 
 
 def prepare_models(resource):
-    import importlib.util
-    spec = importlib.util.find_spec('pnnx')
-    if spec is None: raise RuntimeError('缺少 Android OCR 模型转换器')
-    executable = Path(spec.origin).parent / 'pnnx'
     for model in sorted(Path(resource).rglob('inference.onnx')):
         kind = model.parent.name
         if kind not in ('det', 'rec'): continue
         identity = hashlib.sha256(model.read_bytes()).hexdigest() + '-pnnx20260526-fp32-v1'
         marker = model.parent / '.mower-ncnn.json'
         outputs = [model.parent / f'{kind}.ncnn.{ext}' for ext in ('param', 'bin')]
+        # Current official Android components already contain NCNN model pairs.
+        if not marker.exists() and all(p.is_file() and p.stat().st_size for p in outputs): continue
         if marker.exists() and marker.read_text() == identity and all(p.is_file() for p in outputs): continue
+        import importlib.util
+        spec = importlib.util.find_spec('pnnx')
+        if spec is None: raise RuntimeError('缺少 Android OCR 模型转换器')
+        executable = Path(spec.origin).parent / 'pnnx'
         with tempfile.TemporaryDirectory(prefix='mower-ocr-') as work:
             source = Path(work) / f'{kind}.onnx'; shutil.copyfile(model, source)
             shape = '[1,3,640,640]' if kind == 'det' else '[1,3,48,320]'

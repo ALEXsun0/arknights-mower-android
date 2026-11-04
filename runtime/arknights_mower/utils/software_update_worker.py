@@ -23,7 +23,7 @@ from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 if __package__:
-    from .github_download import download_url
+    from .github_download import download_url, git_environment, request_github
     from .update_runtime import (
         InstanceScanError,
         detached_options,
@@ -37,7 +37,7 @@ if __package__:
         write_json,
     )
 else:
-    from github_download import download_url
+    from github_download import download_url, git_environment, request_github
     from update_runtime import (
         InstanceScanError,
         detached_options,
@@ -221,7 +221,7 @@ class Worker:
         self.work = self.job_path.parent
         self.state = Path(self.job["state_dir"])
         self.root = Path(self.job["root"])
-        self.env = launch_environment({})
+        self.env = git_environment(launch_environment({}), self.job.get("github_token", ""))
         if self.job.get("tool_path"):
             self.env["PATH"] = self.job["tool_path"]
         if self.job.get("proxy"):
@@ -734,9 +734,10 @@ class Worker:
 
             proxy = self.job.get("proxy")
             with (
-                requests.get(
-                    download_url(asset["url"], self.job.get("github_proxy", "")),
+                request_github(requests, "get",
+                    download_url(asset["url"], self.job.get("github_proxy", ""), token=self.job.get("github_token", "")),
                     headers={"User-Agent": "Mower-Software-Update"},
+                    token=self.job.get("github_token", ""),
                     proxies={"http": proxy, "https": proxy} if proxy else None,
                     stream=True,
                     timeout=(10, 10),

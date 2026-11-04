@@ -79,13 +79,14 @@ class ProxySettingsBase(unittest.TestCase):
 
 class ProxySettingsTests(ProxySettingsBase):
     def test_settings_round_trip_and_clear(self):
-        self.assertEqual(network.get_settings(), {"http_proxy": "", "github_proxy": ""})
+        self.assertEqual(network.get_settings(), {"http_proxy": "", "github_proxy": "", "github_token": ""})
         self.save(" http://127.0.0.1:7897/ ", " https://ghfast.top ")
         self.assertEqual(
             network.get_settings(),
             {
                 "http_proxy": "http://127.0.0.1:7897",
                 "github_proxy": "https://ghfast.top/",
+                "github_token": "",
             },
         )
         self.assertEqual(github.get_proxy(), "https://ghfast.top/")

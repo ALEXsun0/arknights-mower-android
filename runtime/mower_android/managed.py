@@ -218,8 +218,9 @@ def import_component(package, filename, callback=None):
         expected=lock['sha256']
     else:
         import requests
+        from arknights_mower.utils.github_download import request_github
         try:
-            response=requests.get('https://api.github.com/repos/MaaAssistantArknights/MaaAssistantArknights/releases/tags/'+version,timeout=30)
+            response=request_github(requests, 'get', 'https://api.github.com/repos/MaaAssistantArknights/MaaAssistantArknights/releases/tags/'+version,timeout=30)
             response.raise_for_status()
             release=updater.parse_release(response.json(),system='android',machine='arm64')
             expected=release.runtime.sha256

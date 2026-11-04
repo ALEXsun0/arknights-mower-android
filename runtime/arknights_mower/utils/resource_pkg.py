@@ -21,7 +21,7 @@ else:
     import fcntl
 
 from arknights_mower import __rootdir__, __version__
-from arknights_mower.utils.github_download import download_url
+from arknights_mower.utils.github_download import download_url, request_github
 from arknights_mower.utils.log import logger
 from arknights_mower.utils.path import get_path
 from arknights_mower.utils.res_version import (
@@ -288,7 +288,7 @@ def resource_ui_path(rel, *, source=False):
 def download_resource_pkg(callback=None):
     report = callback or (lambda **values: None)
     try:
-        with requests.get(
+        with request_github(requests, "get",
             download_url(RESOURCE_ZIP_URL), timeout=60, stream=True
         ) as response:
             response.raise_for_status()

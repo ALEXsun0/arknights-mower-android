@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 import requests
+from arknights_mower.utils.github_download import request_download, request_github
 from mower_android import python_package
 
 REPO = 'ALEXsun0/arknights-mower-android'
@@ -53,7 +54,7 @@ def fetch(item, limit):
     if not url.startswith(f'https://github.com/{REPO}/releases/download/'):
         raise ValueError('更新包来源错误')
     size=0; chunks=[]
-    with requests.get(url,stream=True,timeout=(10,30)) as response:
+    with request_download(requests, "get", url,stream=True,timeout=(10,30))[0] as response:
         response.raise_for_status()
         for chunk in response.iter_content(65536):
             size+=len(chunk)
@@ -68,7 +69,7 @@ def fetch(item, limit):
 def check():
     from datetime import datetime
     with _lock:
-        response=requests.get(f'https://api.github.com/repos/{REPO}/releases',params={'per_page':100},timeout=(10,30))
+        response=request_github(requests, "get", f'https://api.github.com/repos/{REPO}/releases',params={'per_page':100},timeout=(10,30))
         response.raise_for_status()
         candidates=[r for r in response.json() if not r.get('draft') and
                     re.fullmatch(r'v?\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?',r.get('tag_name','')) and

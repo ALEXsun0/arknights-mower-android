@@ -54,3 +54,14 @@ Python 包按接口代码内容确定身份，ZIP 时间戳固定；接口未变
 原生设置仅保留 APK 版本检查；Mower、MAA、Python 的更新设置、Python 自动检查与热更新、拖拽/文件导入，以及恢复内置组件均在 WebUI。Python 自动检查默认开启，服务运行时每 6 小时检查一次，只对新接口内容提醒一次。下载后验证发布清单、包摘要、接口协议与最低 APK 版本，下一次创建 MAA 实例时生效，不打断现有任务。手动回退 Mower 需明确确认；组件回退不通过 APK 降级完成。
 
 APK 单独记录宿主内容标识与最低宿主 versionCode。只刷新内置 Mower、MAA 或可热更新 Python 接口的 Release 不提示升级 APK；包含原生功能或宿主运行依赖变化才提示。即使最新 Release 只是资源刷新，仍会正确提示使用更旧宿主的用户补齐之前的宿主更新。
+
+
+## MAA v6.21.4 与 GitHub Token
+
+APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方发布的 SHA-256。该版本适配明日方舟 2026 年 11 月 1 日的新主页及肉鸽入口，官方包已附带 NCNN OCR 模型。安装时直接保留官方模型；旧包或后续资源更新仅提供 ONNX 时，仍使用原有转换器生成 NCNN 模型。
+
+软件更新支持选择或拖入官方 `MAAComponent-v版本-android-arm64.tar.gz` 原包，在线更新与手动导入共用组件准备流程。v6.21.4 使用内置校验值，可完全离线导入；其他版本仍需联网读取该版本的官方 SHA-256。完成后按界面提示停止并重新启动手机服务。
+
+网络与下载代理新增 GitHub Token，供 Mower、MAA、资源及 MAA Python 兼容接口的 GitHub 检查和下载使用。填写后直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。Token 保存在本机共享网络配置中。
+
+登录 GitHub 后打开[创建 Token](https://github.com/settings/personal-access-tokens/new)，填写名称和有效期，Repository access 选择 Public repositories，不添加额外权限，生成后复制到设置中。也可使用不勾选任何 scope 的 classic token。清空后恢复原有下载方式。

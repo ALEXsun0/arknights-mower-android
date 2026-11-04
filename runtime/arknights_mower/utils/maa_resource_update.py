@@ -18,7 +18,7 @@ from zipfile import BadZipFile, ZipFile, ZipInfo
 
 import requests
 
-from arknights_mower.utils.github_download import download_url
+from arknights_mower.utils.github_download import download_url, request_github
 from arknights_mower.utils.maa_backup import update_transaction
 from arknights_mower.utils.maa_update import (
     MaaUpdateError,
@@ -168,7 +168,7 @@ def get_github_resource_release(
     """读取 MaaResource main 分支的最新资源版本。"""
     client = session or requests.Session()
     try:
-        response = client.get(
+        response = request_github(client, "get",
             download_url(GITHUB_RESOURCE_VERSION_URL), timeout=REQUEST_TIMEOUT
         )
         response.raise_for_status()
@@ -307,7 +307,7 @@ def download_resource_archive(
     downloaded = 0
     digest = hashlib.sha256()
     try:
-        with client.get(
+        with request_github(client, "get",
             download_url(release.url),
             stream=True,
             timeout=REQUEST_TIMEOUT,

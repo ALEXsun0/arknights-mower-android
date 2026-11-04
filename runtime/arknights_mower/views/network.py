@@ -7,7 +7,11 @@ import requests
 from flask import Blueprint, abort, current_app, request
 
 from arknights_mower.utils import network_settings
-from arknights_mower.utils.github_download import download_url
+from arknights_mower.utils.github_download import (
+    download_url,
+    request_download,
+    request_github,
+)
 
 network_bp = Blueprint("network", __name__, url_prefix="/network")
 FILE_TEST_URL = (
@@ -46,7 +50,7 @@ def settings():
     return {"ok": True, **settings}
 
 
-def _probe_connection(label, url, proxy):
+def _probe_connection(label, url, proxy, download_proxy=None, token=""):
     started = time.monotonic()
     result = {"label": label, "ok": False}
     try:
@@ -55,9 +59,25 @@ def _probe_connection(label, url, proxy):
             client.trust_env = False
             if proxy:
                 client.proxies = {"http": proxy, "https": proxy}
-            with client.head(url, timeout=(10, 10), allow_redirects=True) as response:
-                response.raise_for_status()
-        result.update(ok=True, message="连接成功")
+            response, selected_url = request_download(
+                client,
+                "head",
+                url,
+                proxy=download_proxy,
+                token=token,
+                timeout=(10, 10),
+                allow_redirects=True,
+            )
+            with response:
+                used_fallback = not download_proxy and selected_url != url
+        result.update(
+            ok=True,
+            message=(
+                f"默认站点 {urlparse(selected_url).hostname} 回退连接成功"
+                if used_fallback
+                else "连接成功"
+            ),
+        )
     except requests.ConnectTimeout:
         result["message"] = "建立连接超过 10 秒，请稍后重试或检查代理服务"
     except requests.ReadTimeout:
@@ -76,11 +96,43 @@ def _probe_connection(label, url, proxy):
 def test_connections():
     """Probe the saved download route; callers save edited settings separately."""
     settings = network_settings.get_effective_settings()
-    url = download_url(FILE_TEST_URL, settings["github_proxy"])
     result = _probe_connection(
-        "GitHub 文件下载", url, network_settings.proxy_for_url(url)
+        "GitHub 文件下载",
+        FILE_TEST_URL,
+        network_settings.proxy_for_url(
+            download_url(
+                FILE_TEST_URL, settings["github_proxy"], token=settings["github_token"]
+            )
+        ),
+        settings["github_proxy"],
+        settings["github_token"],
     )
-    return {"ok": True, "settings": settings, "results": [result]}
+    results = [result]
+    if settings["github_token"]:
+        started = time.monotonic()
+        validation = {"label": "GitHub Token", "ok": False}
+        try:
+            with request_github(
+                requests,
+                "get",
+                "https://api.github.com/repos/ArkMowers/MowerResource",
+                token=settings["github_token"],
+                timeout=(10, 10),
+            ) as response:
+                if response.status_code == 401:
+                    validation["message"] = "Token 无效或已过期，请重新生成"
+                elif response.status_code in (403, 429):
+                    validation["message"] = (
+                        "GitHub 拒绝请求或额度已用尽，请检查 Token 权限和配额"
+                    )
+                else:
+                    response.raise_for_status()
+                    validation.update(ok=True, message="GitHub Token 认证成功")
+        except requests.RequestException:
+            validation["message"] = "无法验证 GitHub Token，请检查网络代理或稍后重试"
+        validation["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+        results.append(validation)
+    return {"ok": True, "settings": settings, "results": results}
 
 
 @network_bp.get("/maa-copilot/<int:code>")
