@@ -62,6 +62,6 @@ APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方�
 
 软件更新支持选择或拖入官方 `MAAComponent-v版本-android-arm64.tar.gz` 原包，在线更新与手动导入共用组件准备流程。v6.21.4 使用内置校验值，可完全离线导入；其他版本仍需联网读取该版本的官方 SHA-256。完成后按界面提示停止并重新启动手机服务。
 
-网络与下载代理新增 GitHub Token，供 Mower、MAA、资源及 MAA Python 兼容接口的 GitHub 检查和下载使用。填写后直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。Token 保存在本机共享网络配置中。
+网络与下载代理新增 GitHub Token，供 APK、Mower、MAA、资源及 MAA Python 兼容接口的 GitHub 检查和下载使用。填写后直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。Token 保存在本机共享网络配置中。
 
 登录 GitHub 后打开[创建 Token](https://github.com/settings/personal-access-tokens/new)，填写名称和有效期，Repository access 选择 Public repositories，不添加额外权限，生成后复制到设置中。也可使用不勾选任何 scope 的 classic token。清空后恢复原有下载方式。

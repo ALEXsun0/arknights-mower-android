@@ -50,8 +50,8 @@ class ApkUpdateTests(unittest.TestCase):
             response.raise_for_status.side_effect = requests.HTTPError('request failed')
         return response
 
-    def settings(self, *, http='', github=''):
-        (self.root/'network.json').write_text(json.dumps({'http_proxy': http, 'github_proxy': github}))
+    def settings(self, *, http='', github='', token=''):
+        (self.root/'network.json').write_text(json.dumps({'http_proxy': http, 'github_proxy': github, 'github_token': token}))
 
     def download(self, check_id):
         # Execute the real worker synchronously; only thread scheduling is replaced.
@@ -79,6 +79,36 @@ class ApkUpdateTests(unittest.TestCase):
         self.assertEqual((apk_updates.folder()/(result['sha256']+'.apk')).read_bytes(), self.payload)
         self.assertEqual(apk_updates.folder(), self.root/'tmp/updates/4e21008231518eabb448/android-apk')
         self.assertFalse(list(apk_updates.folder().glob('*.part')))
+
+    def test_token_authenticates_apk_check_descriptor_and_package_without_mirrors(self):
+        self.settings(http='http://127.0.0.1:7890', github='https://mirror.invalid/', token='github_pat_test')
+        replies = iter([json.dumps(self.release).encode(), self.descriptor, self.payload])
+        calls = []
+        def get(url, **kwargs):
+            calls.append(url)
+            self.assertEqual(kwargs['headers']['Authorization'], 'Bearer github_pat_test')
+            self.assertEqual(requests.utils.get_environ_proxies(url)['https'], 'http://127.0.0.1:7890')
+            return self.response(next(replies))
+        with patch.object(apk_updates.requests, 'get', side_effect=get):
+            checked = apk_updates.check()
+            result = self.download(checked['check_id'])
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(calls, [f'https://api.github.com/repos/{apk_updates.REPO}/releases/latest',
+                                self.release['assets'][0]['browser_download_url'],
+                                self.release['assets'][1]['browser_download_url']])
+        self.assertEqual((apk_updates.folder()/(result['sha256']+'.apk')).read_bytes(), self.payload)
+
+    def test_authenticated_apk_failure_never_retries_a_mirror(self):
+        self.settings(token='github_pat_test')
+        url = self.release['assets'][1]['browser_download_url']
+        for failure in (requests.Timeout(), self.response(status=401), self.response(status=403)):
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(apk_updates.requests, 'get', side_effect=[failure]) as get:
+                    with self.assertRaises(requests.RequestException):
+                        apk_updates.receive(url, 100)
+                get.assert_called_once()
+                self.assertEqual(get.call_args.args[0], url)
+                self.assertEqual(get.call_args.kwargs['headers']['Authorization'], 'Bearer github_pat_test')
 
     def test_direct_timeout_and_retryable_http_status_try_the_default_station_once(self):
         url = self.release['assets'][0]['browser_download_url']

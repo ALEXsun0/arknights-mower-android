@@ -41,6 +41,9 @@ def candidates(url, file_download):
 
 
 def receive(url, limit, *, expected=None, output=None, file_download=True, progress=None):
+    from arknights_mower.utils import github_download
+
+    authenticated_request = getattr(github_download, 'request_github', None)
     urls = candidates(url, file_download)
     deadline = time.monotonic() + (30 * 60 if output else 90)
     for index, candidate in enumerate(urls):
@@ -48,7 +51,8 @@ def receive(url, limit, *, expected=None, output=None, file_download=True, progr
         if time.monotonic() >= deadline:
             raise ValueError('更新下载超过时间限制')
         try:
-            response = requests.get(candidate, stream=True, timeout=(10, 30))
+            response = (authenticated_request(requests, 'get', candidate, stream=True, timeout=(10, 30))
+                        if authenticated_request else requests.get(candidate, stream=True, timeout=(10, 30)))
             response.raise_for_status()
             digest = hashlib.sha256()
             size = 0
