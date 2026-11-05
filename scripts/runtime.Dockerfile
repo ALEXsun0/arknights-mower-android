@@ -13,7 +13,6 @@ PY
 RUN pip install --no-cache-dir -r /tmp/android-requirements.txt
 RUN pip uninstall -y opencv-python && pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless==4.9.0.80
 RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir --no-deps pnnx==20260526
 RUN mkdir -p /mower /mower-data /bridge /host-dev /host-proc && chmod 1777 /tmp
 WORKDIR /mower
 

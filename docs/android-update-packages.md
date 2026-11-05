@@ -45,7 +45,7 @@ MAA 核心和资源只走官方源，Android 暂时禁用 Mirror酱。`android-r
 
 `Android APK` 工作流只接受 Mower 主仓 `mower-release` 通知与手动触发，不定时轮询，不响应 MAA 通知或分支推送。入口、手动参数与重试规则见 [Android 独立发行](release-ci.md)。普通版按发布时间选择最新正式或 alpha/beta/rc 发行；手动开发版固定使用 MowerRelease dev 索引对应的已发布 Nightly 完整包。上游附件、GitHub digest、Android 兼容检查或 ABI 检查失败时停止发布。
 
-构建前生成固定的 `distribution.json`，ARM64 运行环境和 APK 两个作业都使用同一份快照。Mower 使用主仓库 Android ZIP；MAA 使用官方 Android ARM64 组件，并检查 Mower 调用的 Python 接口及桥接调用的 MaaCore 符号。MAA 的 OCR 资源继续按现有方式转换与裁剪，APK 不附带构建工具或源码部署工具。当前 alpha.5 没有 Android 附件，首发暂沿用已在实机验证的兼容快照；后续 Mower 包需要包含 #1032 的可选组件更新能力，避免热更新后入口消失。
+构建前生成固定的 `distribution.json`，ARM64 运行环境和 APK 两个作业都使用同一份快照。Mower 使用主仓库 Android ZIP；MAA 使用官方 Android ARM64 组件，并检查 Mower 调用的 Python 接口及桥接调用的 MaaCore 符号。MAA 直接打包官方 NCNN OCR 模型，APK 不附带模型转换器、构建工具或源码部署工具。当前 alpha.5 没有 Android 附件，首发暂沿用已在实机验证的兼容快照；后续 Mower 包需要包含 #1032 的可选组件更新能力，避免热更新后入口消失。
 
 每次发行均提供 APK、Python 兼容 ZIP、`android-release.json` 和构建快照 `distribution.json`。先创建草稿、上传全部附件，再公开。版本号和 versionCode 自动递增；组件版本及 Python 适用区间自动写入 Release 正文。不附加独立 SHA256 文件，上传完整性使用 GitHub digest。
 
@@ -58,7 +58,7 @@ APK 单独记录宿主内容标识与最低宿主 versionCode。只刷新内置 
 
 ## MAA v6.21.4 与 GitHub Token
 
-APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方发布的 SHA-256。该版本适配明日方舟 2026 年 11 月 1 日的新主页及肉鸽入口，官方包已附带 NCNN OCR 模型。安装时直接保留官方模型；旧包或后续资源更新仅提供 ONNX 时，仍使用原有转换器生成 NCNN 模型。
+APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方发布的 SHA-256。该版本适配明日方舟 2026 年 11 月 1 日的新主页及肉鸽入口，官方包已附带 NCNN OCR 模型。安装时直接保留官方 NCNN 模型，组件包必须包含完整的 NCNN OCR 模型；不再支持旧 ONNX OCR 模型的本地转换。独立资源更新继续使用已安装组件中的 NCNN 模型。
 
 软件更新支持选择或拖入官方 `MAAComponent-v版本-android-arm64.tar.gz` 原包，在线更新与手动导入共用组件准备流程。v6.21.4 使用内置校验值，可完全离线导入；其他版本仍需联网读取该版本的官方 SHA-256。完成后按界面提示停止并重新启动手机服务。
 

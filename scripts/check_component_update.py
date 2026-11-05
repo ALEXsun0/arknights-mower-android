@@ -1,22 +1,26 @@
-"""Offline integration test: real official archive, download hashing, conversion and swap.
+"""Offline integration test: real official archive, download hashing, NCNN packing and swap.
 
 Run inside the disposable Docker runtime with an archive mounted at /archive.tar.gz.
 Only release discovery and network transport are replaced with local fixtures.
 """
+import argparse
 import dataclasses
 import hashlib
-import io
 import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from mower_android import managed
-from arknights_mower.utils import maa_update as updater
 
-archive = Path('/archive.tar.gz')
-checksum = '93c1bb22c877f5022fcc83ac337114d1a63c25613cce84edc69d826bc5423638'
+from arknights_mower.utils import maa_update as updater
+from mower_android import managed
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--archive', type=Path, default=Path('/archive.tar.gz'))
+archive = parser.parse_args().archive
+lock = json.loads(Path(__file__).with_name('maa-android.lock.json').read_text())
+version, checksum = lock['version'], lock['sha256']
 assert hashlib.sha256(archive.read_bytes()).hexdigest() == checksum
-payload = {'tag_name':'v6.17.5','assets':[{'name':'MAAComponent-v6.17.5-android-arm64.tar.gz',
+payload = {'tag_name':version,'assets':[{'name':lock['url'].rsplit('/', 1)[1],
            'browser_download_url':'https://example.invalid/official.tar.gz','size':archive.stat().st_size,'digest':'sha256:'+checksum}]}
 release = updater.parse_release(payload, system='android', machine='arm64')
 class Response:
@@ -36,7 +40,7 @@ with tempfile.TemporaryDirectory() as work:
     adapter = Path(managed.__file__).with_name('maa.py'); before = hashlib.sha256(adapter.read_bytes()).hexdigest()
     with patch.object(managed, 'MAA_PATH', target), patch.object(managed,'COMPONENT',component), patch.object(updater,'get_latest_release',return_value=release):
         result = managed.install_update(target, session=Session())
-        assert result['restart_required'] and managed.installed_version(target) == 'v6.17.5'
+        assert result['restart_required'] and managed.installed_version(target) == version
         assert (target/'resource/PaddleOCR/rec/rec.ncnn.param').is_file()
         assert json.loads((target/'config.json').read_text())['preserved']
         assert (Path(str(target)+'.old')/'.mower-android.json').is_file()
@@ -49,7 +53,7 @@ with tempfile.TemporaryDirectory() as work:
             except updater.MaaUpdateError: pass
             else: raise AssertionError('Bad digest accepted')
         assert hashlib.sha256(component.read_bytes()).hexdigest() == component_before
-        assert managed.installed_version(target) == 'v6.17.5'
+        assert managed.installed_version(target) == version
         print(json.dumps({'official_archive_sha256':checksum,'installed_version':result['version'],'ncnn_models':True,
                           'python_adapter_preserved':True,'user_config_preserved':True,'backup_created':True,
                           'checksum_failure_preserves_installation':True,'restart_required':True}, indent=2))
