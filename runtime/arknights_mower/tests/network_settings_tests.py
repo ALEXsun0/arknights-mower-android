@@ -48,6 +48,7 @@ class ProxySettingsBase(unittest.TestCase):
         self.folder = Path(self.temporary.name)
         for target, name, value in (
             (network, "settings_path", lambda: self.folder / "network.json"),
+            (runtime, "state_dir", lambda: self.folder / "system-cache/install"),
             (network, "_base_environment", None),
             (network, "_effective_settings", None),
             (urllib.request, "_opener", None),

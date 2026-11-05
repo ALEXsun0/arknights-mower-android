@@ -27,6 +27,7 @@ def settings(tmp_path, monkeypatch):
     monkeypatch.setattr(network, "settings_path", lambda: path)
     monkeypatch.setattr(network, "_base_environment", None)
     monkeypatch.setattr(network, "_effective_settings", None)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     # Child-process evidence must never capture unrelated credentials from the host.
     environment = {
         key: value
@@ -34,6 +35,8 @@ def settings(tmp_path, monkeypatch):
         if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR"}
     }
     with patch.dict(os.environ, environment, clear=True):
+        os.environ["LOCALAPPDATA"] = str(tmp_path / "local-app-data")
+        os.environ["XDG_CACHE_HOME"] = str(tmp_path / "xdg-cache")
         runtime.write_json(
             path, {"http_proxy": "", "github_proxy": "", "github_token": TOKEN}
         )
@@ -146,8 +149,8 @@ def test_http_download_reads_current_token_without_recording_it(tmp_path, settin
     assert TOKEN not in worker.job_path.read_text()
 
 
-def legacy_jobs(settings):
-    cache = settings.parent.parent / "tmp/updates"
+def legacy_jobs(settings, cache=None):
+    cache = cache or settings.parent.parent / "tmp/updates"
     paths = []
     for index, status in enumerate(("succeeded", "failed", "cancelled", "running")):
         path = cache / f"installation-{index % 2}/jobs/job-{index}/job.json"
@@ -181,10 +184,47 @@ def test_startup_scrubs_legacy_jobs_without_waiting_for_settings_edit(
     assert network.get_settings()["github_token"] == TOKEN
 
 
-def test_cleanup_does_not_follow_cache_symlinks(settings, tmp_path):
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+@pytest.mark.parametrize("trigger", ["save", "startup"])
+def test_bundled_desktop_cache_is_cleaned_alongside_android_cache(
+    settings, tmp_path, monkeypatch, platform, trigger
+):
+    monkeypatch.setattr(runtime.sys, "platform", platform)
+    paths = legacy_jobs(settings)
+    for index in range(2):
+        state = runtime.state_dir(tmp_path / f"desktop-install-{index}")
+        path = state / "jobs/legacy/job.json"
+        runtime.write_json(path, {"id": str(index), "github_token": TOKEN})
+        runtime.write_json(path.parent / "status.json", {"status": "failed"})
+        paths.append(path)
+    if trigger == "save":
+        network.save_settings(
+            {"http_proxy": "", "github_proxy": "", "github_token": ""}
+        )
+    else:
+        monkeypatch.setattr(network, "_sync_thread", None)
+        monkeypatch.setattr(network, "_sync_stop", threading.Event())
+        with patch.object(network.threading, "Thread"):
+            network.start_proxy_sync()
+    assert all("github_token" not in runtime.read_json(path) for path in paths)
+    for index, path in enumerate(paths[-2:]):
+        assert runtime.read_json(path) == {"id": str(index)}
+        assert runtime.read_json(path.parent / "status.json") == {"status": "failed"}
+    assert network.get_settings()["github_token"] == (
+        "" if trigger == "save" else TOKEN
+    )
+
+
+@pytest.mark.parametrize("cache_kind", ["shared", "desktop"])
+def test_cleanup_does_not_follow_cache_symlinks(settings, tmp_path, cache_kind):
     outside = tmp_path / "outside/job.json"
     runtime.write_json(outside, {"github_token": TOKEN})
-    jobs = settings.parent.parent / "tmp/updates/install/jobs"
+    cache = (
+        settings.parent.parent / "tmp/updates"
+        if cache_kind == "shared"
+        else runtime.state_dir().parent
+    )
+    jobs = cache / "install/jobs"
     jobs.mkdir(parents=True)
     try:
         (jobs / "external").symlink_to(outside.parent, target_is_directory=True)
@@ -273,8 +313,17 @@ def test_real_package_download_reloads_token_after_clearing_settings(
         )
 
 
-def test_cleanup_write_failure_is_reported_and_other_legacy_jobs_are_scrubbed(settings):
-    paths = legacy_jobs(settings)
+@pytest.mark.parametrize("cache_kind", ["shared", "desktop"])
+def test_cleanup_write_failure_is_reported_and_other_legacy_jobs_are_scrubbed(
+    settings, cache_kind
+):
+    shared_paths = legacy_jobs(settings)
+    desktop_paths = legacy_jobs(settings, runtime.state_dir().parent)
+    paths = (
+        shared_paths + desktop_paths
+        if cache_kind == "shared"
+        else desktop_paths + shared_paths
+    )
     write = runtime.write_json
 
     def fail_one(path, value, **kwargs):

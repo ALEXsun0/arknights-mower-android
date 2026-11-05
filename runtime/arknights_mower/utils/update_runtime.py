@@ -81,25 +81,39 @@ def scrub_job_token(path):
 
 
 def scrub_update_job_tokens(settings_file):
-    """Clean owned job records across installations in the shared data root."""
-    cache = Path(settings_file).parent.parent / "tmp" / "updates"
-    if cache.is_symlink() or not cache.is_dir():
-        return 0
+    """Clean retained jobs in the shared data and bundled desktop caches."""
+    caches = (
+        Path(settings_file).parent.parent / "tmp" / "updates",
+        state_dir().parent,
+    )
     count = 0
     failed = False
-    for installation in cache.iterdir():
-        if installation.is_symlink() or not installation.is_dir():
+    for cache in dict.fromkeys(caches):
+        if cache.is_symlink() or not cache.is_dir():
             continue
-        jobs = installation / "jobs"
-        if jobs.is_symlink() or not jobs.is_dir():
+        try:
+            installations = list(cache.iterdir())
+        except OSError:
+            failed = True
             continue
-        for work in jobs.iterdir():
-            if work.is_symlink() or not work.is_dir():
+        for installation in installations:
+            if installation.is_symlink() or not installation.is_dir():
+                continue
+            jobs = installation / "jobs"
+            if jobs.is_symlink() or not jobs.is_dir():
                 continue
             try:
-                count += scrub_job_token(work / "job.json")
-            except (OSError, ValueError):
+                workspaces = list(jobs.iterdir())
+            except OSError:
                 failed = True
+                continue
+            for work in workspaces:
+                if work.is_symlink() or not work.is_dir():
+                    continue
+                try:
+                    count += scrub_job_token(work / "job.json")
+                except (OSError, ValueError):
+                    failed = True
     if failed:
         raise OSError("无法清理历史更新任务中的 GitHub Token，请检查更新缓存")
     return count
