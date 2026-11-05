@@ -62,63 +62,6 @@ def write_json(path, value, *, indent=None):
         Path(temporary).unlink(missing_ok=True)
 
 
-def scrub_job_token(path):
-    """Remove the retired credential field without discarding job metadata."""
-    path = Path(path)
-    if path.is_symlink():
-        raise ValueError("更新任务记录不能是符号链接")
-    try:
-        job = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    if not isinstance(job, dict):
-        raise ValueError("历史更新任务记录格式不正确")
-    if "github_token" not in job:
-        return False
-    del job["github_token"]
-    write_json(path, job)
-    return True
-
-
-def scrub_update_job_tokens(settings_file):
-    """Clean retained jobs in the shared data and bundled desktop caches."""
-    caches = (
-        Path(settings_file).parent.parent / "tmp" / "updates",
-        state_dir().parent,
-    )
-    count = 0
-    failed = False
-    for cache in dict.fromkeys(caches):
-        if cache.is_symlink() or not cache.is_dir():
-            continue
-        try:
-            installations = list(cache.iterdir())
-        except OSError:
-            failed = True
-            continue
-        for installation in installations:
-            if installation.is_symlink() or not installation.is_dir():
-                continue
-            jobs = installation / "jobs"
-            if jobs.is_symlink() or not jobs.is_dir():
-                continue
-            try:
-                workspaces = list(jobs.iterdir())
-            except OSError:
-                failed = True
-                continue
-            for work in workspaces:
-                if work.is_symlink() or not work.is_dir():
-                    continue
-                try:
-                    count += scrub_job_token(work / "job.json")
-                except (OSError, ValueError):
-                    failed = True
-    if failed:
-        raise OSError("无法清理历史更新任务中的 GitHub Token，请检查更新缓存")
-    return count
-
-
 def replace_with_retry(source, destination):
     """Atomically replace ``destination``, tolerating transient Windows locks.
 

@@ -7,9 +7,7 @@ import json
 import os
 import shutil
 import sys
-import threading
 import zipfile
-from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -27,7 +25,6 @@ def settings(tmp_path, monkeypatch):
     monkeypatch.setattr(network, "settings_path", lambda: path)
     monkeypatch.setattr(network, "_base_environment", None)
     monkeypatch.setattr(network, "_effective_settings", None)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     # Child-process evidence must never capture unrelated credentials from the host.
     environment = {
         key: value
@@ -35,8 +32,6 @@ def settings(tmp_path, monkeypatch):
         if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR"}
     }
     with patch.dict(os.environ, environment, clear=True):
-        os.environ["LOCALAPPDATA"] = str(tmp_path / "local-app-data")
-        os.environ["XDG_CACHE_HOME"] = str(tmp_path / "xdg-cache")
         runtime.write_json(
             path, {"http_proxy": "", "github_proxy": "", "github_token": TOKEN}
         )
@@ -67,10 +62,10 @@ def make_worker(tmp_path, settings, **changes):
 
 
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "cancelled"])
-def test_actual_worker_removes_legacy_copy_for_every_terminal_state(
+def test_actual_worker_never_records_token_in_any_terminal_state(
     tmp_path, settings, outcome
 ):
-    worker = make_worker(tmp_path, settings, github_token=TOKEN)
+    worker = make_worker(tmp_path, settings)
 
     def prepare():
         if outcome == "cancelled":
@@ -93,7 +88,7 @@ def test_actual_worker_removes_legacy_copy_for_every_terminal_state(
 def test_actual_non_git_child_and_pip_environment_never_receive_token(
     tmp_path, settings
 ):
-    worker = make_worker(tmp_path, settings, github_token=TOKEN)
+    worker = make_worker(tmp_path, settings)
     captured = tmp_path / "child-environment.json"
     script = "import json, os, sys; open(sys.argv[1], 'w').write(json.dumps(dict(os.environ)))"
     worker.run_command([sys.executable, "-c", script, str(captured)])
@@ -147,91 +142,6 @@ def test_http_download_reads_current_token_without_recording_it(tmp_path, settin
     network.save_settings({"http_proxy": "", "github_proxy": "", "github_token": ""})
     assert worker.github_token() == ""
     assert TOKEN not in worker.job_path.read_text()
-
-
-def legacy_jobs(settings, cache=None):
-    cache = cache or settings.parent.parent / "tmp/updates"
-    paths = []
-    for index, status in enumerate(("succeeded", "failed", "cancelled", "running")):
-        path = cache / f"installation-{index % 2}/jobs/job-{index}/job.json"
-        runtime.write_json(
-            path, {"id": str(index), "github_token": TOKEN, "deployment": "release"}
-        )
-        runtime.write_json(path.parent / "status.json", {"status": status})
-        paths.append(path)
-    return paths
-
-
-def test_clearing_settings_scrubs_all_installations_and_preserves_job_metadata(
-    settings,
-):
-    paths = legacy_jobs(settings)
-    network.save_settings({"http_proxy": "", "github_proxy": "", "github_token": ""})
-    for index, path in enumerate(paths):
-        assert runtime.read_json(path) == {"id": str(index), "deployment": "release"}
-    assert network.get_settings()["github_token"] == ""
-
-
-def test_startup_scrubs_legacy_jobs_without_waiting_for_settings_edit(
-    settings, monkeypatch
-):
-    paths = legacy_jobs(settings)
-    monkeypatch.setattr(network, "_sync_thread", None)
-    monkeypatch.setattr(network, "_sync_stop", threading.Event())
-    with patch.object(network.threading, "Thread"):
-        network.start_proxy_sync()
-    assert all(TOKEN not in path.read_text() for path in paths)
-    assert network.get_settings()["github_token"] == TOKEN
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
-@pytest.mark.parametrize("trigger", ["save", "startup"])
-def test_bundled_desktop_cache_is_cleaned_alongside_android_cache(
-    settings, tmp_path, monkeypatch, platform, trigger
-):
-    monkeypatch.setattr(runtime.sys, "platform", platform)
-    paths = legacy_jobs(settings)
-    for index in range(2):
-        state = runtime.state_dir(tmp_path / f"desktop-install-{index}")
-        path = state / "jobs/legacy/job.json"
-        runtime.write_json(path, {"id": str(index), "github_token": TOKEN})
-        runtime.write_json(path.parent / "status.json", {"status": "failed"})
-        paths.append(path)
-    if trigger == "save":
-        network.save_settings(
-            {"http_proxy": "", "github_proxy": "", "github_token": ""}
-        )
-    else:
-        monkeypatch.setattr(network, "_sync_thread", None)
-        monkeypatch.setattr(network, "_sync_stop", threading.Event())
-        with patch.object(network.threading, "Thread"):
-            network.start_proxy_sync()
-    assert all("github_token" not in runtime.read_json(path) for path in paths)
-    for index, path in enumerate(paths[-2:]):
-        assert runtime.read_json(path) == {"id": str(index)}
-        assert runtime.read_json(path.parent / "status.json") == {"status": "failed"}
-    assert network.get_settings()["github_token"] == (
-        "" if trigger == "save" else TOKEN
-    )
-
-
-@pytest.mark.parametrize("cache_kind", ["shared", "desktop"])
-def test_cleanup_does_not_follow_cache_symlinks(settings, tmp_path, cache_kind):
-    outside = tmp_path / "outside/job.json"
-    runtime.write_json(outside, {"github_token": TOKEN})
-    cache = (
-        settings.parent.parent / "tmp/updates"
-        if cache_kind == "shared"
-        else runtime.state_dir().parent
-    )
-    jobs = cache / "install/jobs"
-    jobs.mkdir(parents=True)
-    try:
-        (jobs / "external").symlink_to(outside.parent, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
-    network.save_settings({"http_proxy": "", "github_proxy": "", "github_token": ""})
-    assert runtime.read_json(outside) == {"github_token": TOKEN}
 
 
 def test_lfs_fetch_receives_token_but_lfs_version_and_local_git_do_not(
@@ -311,33 +221,3 @@ def test_real_package_download_reloads_token_after_clearing_settings(
         network.save_settings(
             {"http_proxy": "", "github_proxy": "", "github_token": ""}
         )
-
-
-@pytest.mark.parametrize("cache_kind", ["shared", "desktop"])
-def test_cleanup_write_failure_is_reported_and_other_legacy_jobs_are_scrubbed(
-    settings, cache_kind
-):
-    shared_paths = legacy_jobs(settings)
-    desktop_paths = legacy_jobs(settings, runtime.state_dir().parent)
-    paths = (
-        shared_paths + desktop_paths
-        if cache_kind == "shared"
-        else desktop_paths + shared_paths
-    )
-    write = runtime.write_json
-
-    def fail_one(path, value, **kwargs):
-        if Path(path) == paths[0]:
-            raise PermissionError("synthetic inaccessible job")
-        return write(path, value, **kwargs)
-
-    with (
-        patch.object(runtime, "write_json", side_effect=fail_one),
-        pytest.raises(OSError, match="GitHub Token"),
-    ):
-        network.save_settings(
-            {"http_proxy": "", "github_proxy": "", "github_token": ""}
-        )
-    assert network.get_settings()["github_token"] == ""
-    assert TOKEN in paths[0].read_text()
-    assert all(TOKEN not in path.read_text() for path in paths[1:])
