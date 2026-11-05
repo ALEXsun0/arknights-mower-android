@@ -14,7 +14,6 @@
 | PRoot | https://github.com/termux/proot | GPL-2.0-or-later |
 | libtalloc | https://talloc.samba.org/ | LGPL-3.0-or-later |
 | libandroid-shmem | https://github.com/termux/libandroid-shmem | 按上游许可证 |
-| pnnx 20260526 | https://github.com/pnnx/pnnx | BSD-3-Clause 与所含依赖声明 |
 | Python 依赖 | scripts/requirements-android.lock | 各包内保留原始许可证 |
 
-Termux 打包源和构建规则：https://github.com/termux/termux-packages 。二进制版本和校验信息见 `scripts/engine-assets.lock.json`。Python 运行包保留包级许可证与 Debian copyright 文件。MAA OCR 模型从官方组件的 ONNX 转换为 NCNN FP32，不改变官方核心二进制；转换形状参考 Meow 对应固定提交的 `scripts/convert_ocr_ncnn.py` 文档。发布和再分发应继续附带这些许可证及各许可证要求的源码。
+Termux 打包源和构建规则：https://github.com/termux/termux-packages 。二进制版本和校验信息见 `scripts/engine-assets.lock.json`。Python 运行包保留包级许可证与 Debian copyright 文件。MAA OCR 直接使用官方 Android 组件附带的 NCNN 模型，不改变官方核心二进制，也不再附带本地模型转换器。发布和再分发应继续附带这些许可证及各许可证要求的源码。

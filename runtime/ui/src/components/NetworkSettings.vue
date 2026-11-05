@@ -6,7 +6,8 @@ const base = `${import.meta.env.VITE_HTTP_URL || ''}/network`
 const headers = { 'X-Mower-Settings': '1' }
 const httpProxy = ref('')
 const githubProxy = ref('')
-const savedSettings = ref({ http_proxy: '', github_proxy: '' })
+const githubToken = ref('')
+const savedSettings = ref({ http_proxy: '', github_proxy: '', github_token: '' })
 const loading = ref(true)
 const ready = ref(false)
 const saving = ref(false)
@@ -17,7 +18,8 @@ const results = ref([])
 const dirty = computed(
   () =>
     httpProxy.value !== savedSettings.value.http_proxy ||
-    githubProxy.value !== savedSettings.value.github_proxy
+    githubProxy.value !== savedSettings.value.github_proxy ||
+    githubToken.value !== savedSettings.value.github_token
 )
 let timer
 let saveRequest
@@ -28,13 +30,22 @@ function errorMessage(err) {
 }
 
 function values() {
-  return { http_proxy: httpProxy.value, github_proxy: githubProxy.value }
+  return {
+    http_proxy: httpProxy.value,
+    github_proxy: githubProxy.value,
+    github_token: githubToken.value
+  }
 }
 
 function apply(data) {
   httpProxy.value = data.http_proxy
   githubProxy.value = data.github_proxy
-  savedSettings.value = { http_proxy: data.http_proxy, github_proxy: data.github_proxy }
+  githubToken.value = data.github_token || ''
+  savedSettings.value = {
+    http_proxy: data.http_proxy,
+    github_proxy: data.github_proxy,
+    github_token: data.github_token || ''
+  }
 }
 
 async function load() {
@@ -71,17 +82,25 @@ async function save() {
   if (!dirty.value) return true
   const submittedRevision = revision
   const submitted = values()
+  const payload = { ...submitted }
+  if (submitted.github_token === savedSettings.value.github_token) delete payload.github_token
   saving.value = true
   saveRequest = (async () => {
     try {
-      const { data } = await axios.post(`${base}/settings`, submitted, { headers })
+      const { data } = await axios.post(`${base}/settings`, payload, { headers })
       if (!data.ok) throw new Error(data.message)
-      savedSettings.value = { http_proxy: data.http_proxy, github_proxy: data.github_proxy }
+      savedSettings.value = {
+        http_proxy: data.http_proxy,
+        github_proxy: data.github_proxy,
+        github_token: data.github_token || ''
+      }
       // A slower response must never overwrite text entered after it was sent.
       if (revision === submittedRevision) {
         apply(data)
         saved.value = true
         error.value = ''
+      } else if (githubToken.value === submitted.github_token) {
+        githubToken.value = savedSettings.value.github_token
       }
       return true
     } catch (err) {
@@ -103,12 +122,13 @@ async function testConnection() {
   try {
     if (!(await save())) return
     testedRevision = revision
-    const { data } = await axios.post(`${base}/test`, {}, { headers, timeout: 65000 })
+    const { data } = await axios.post(`${base}/test`, {}, { headers, timeout: 105000 })
     if (!data.ok) throw new Error(data.message)
     if (revision === testedRevision) {
       if (
         data.settings.http_proxy !== savedSettings.value.http_proxy ||
-        data.settings.github_proxy !== savedSettings.value.github_proxy
+        data.settings.github_proxy !== savedSettings.value.github_proxy ||
+        (data.settings.github_token || '') !== savedSettings.value.github_token
       ) {
         throw new Error('代理设置已被其他实例修改，请重新加载后测试')
       }
@@ -148,7 +168,7 @@ onBeforeUnmount(() => {
         <n-input
           v-model:value="githubProxy"
           :input-props="{ 'aria-label': 'GitHub 下载代理站点' }"
-          placeholder="例如 https://ghfast.top/；留空直连 GitHub"
+          placeholder="可选，例如 https://ghfast.top/"
           :disabled="loading || !ready"
           clearable
           @update:value="changed"
@@ -157,7 +177,35 @@ onBeforeUnmount(() => {
       </n-form-item>
       <n-text depth="3">
         用于 Mower 和 MAA 的 GitHub 安装包、资源包、热更包及原始文件。支持“站点地址/原始下载链接”
-        格式；GitHub API 和 Git / Git LFS 使用上方网络代理。
+        格式；填写后仅使用指定站点。GitHub API 和 Git / Git LFS 使用全局网络代理。设置 GitHub Token
+        后下载代理站点暂停生效。
+      </n-text>
+      <n-form-item label="GitHub Token" :show-feedback="false">
+        <n-input
+          v-model:value="githubToken"
+          type="password"
+          show-password-on="click"
+          :input-props="{ 'aria-label': 'GitHub Token', autocomplete: 'off', spellcheck: false }"
+          placeholder="可选，用于 GitHub 检查与下载"
+          :disabled="loading || !ready"
+          clearable
+          @update:value="changed"
+          @blur="save"
+        />
+      </n-form-item>
+      <n-text depth="3">
+        填写后，GitHub
+        更新检查和文件下载直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。留空恢复原有下载方式。
+      </n-text>
+      <n-text depth="3">
+        <a
+          href="https://github.com/settings/personal-access-tokens/new"
+          target="_blank"
+          rel="noopener noreferrer"
+          >创建 GitHub Token</a
+        >： 登录后填写名称和有效期，Repository access 选择 Public
+        repositories，不添加额外权限，生成后复制到此处。 也可使用不勾选任何 scope 的 classic
+        token。Token 保存在本机共享网络配置中，请勿分享。
       </n-text>
       <n-text depth="3">填写后自动保存，所有实例共享，后续连接使用新的设置。</n-text>
       <n-space align="center">
@@ -174,7 +222,11 @@ onBeforeUnmount(() => {
           已应用到后续连接
         </n-text>
       </n-space>
-      <n-text depth="3">测试 GitHub 下载接口是否可达。</n-text>
+      <n-text depth="3"
+        >测试 GitHub 下载接口；填写 Token 时同时验证 GitHub API 认证。未填写 Token
+        和下载代理站点时，测试先直连，失败后依次尝试 ghfast.top、gh-proxy.com、gh-proxy.org 和
+        edgeone.gh-proxy.org。</n-text
+      >
       <n-alert v-if="error" type="error" aria-live="polite">{{ error }}</n-alert>
       <n-alert
         v-for="result in results"

@@ -79,13 +79,14 @@ class ProxySettingsBase(unittest.TestCase):
 
 class ProxySettingsTests(ProxySettingsBase):
     def test_settings_round_trip_and_clear(self):
-        self.assertEqual(network.get_settings(), {"http_proxy": "", "github_proxy": ""})
+        self.assertEqual(network.get_settings(), {"http_proxy": "", "github_proxy": "", "github_token": ""})
         self.save(" http://127.0.0.1:7897/ ", " https://ghfast.top ")
         self.assertEqual(
             network.get_settings(),
             {
                 "http_proxy": "http://127.0.0.1:7897",
                 "github_proxy": "https://ghfast.top/",
+                "github_token": "",
             },
         )
         self.assertEqual(github.get_proxy(), "https://ghfast.top/")
@@ -615,6 +616,8 @@ class LocalProxyIntegrationTests(ProxySettingsBase):
         job = runtime.read_json(work / "job.json")
         self.assertEqual(job["proxy"], "http://127.0.0.1:7897")
         self.assertEqual(job["github_proxy"], "https://ghfast.top/")
+        self.assertNotIn("github_token", job)
+        self.assertEqual(job["network_settings_path"], str(network.settings_path()))
         self.assertTrue((work / "github_download.py").is_file())
         # Copied worker must import without access to the application package.
         env = os.environ.copy()

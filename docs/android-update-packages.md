@@ -45,7 +45,7 @@ MAA 核心和资源只走官方源，Android 暂时禁用 Mirror酱。`android-r
 
 `Android APK` 工作流只接受 Mower 主仓 `mower-release` 通知与手动触发，不定时轮询，不响应 MAA 通知或分支推送。入口、手动参数与重试规则见 [Android 独立发行](release-ci.md)。普通版按发布时间选择最新正式或 alpha/beta/rc 发行；手动开发版固定使用 MowerRelease dev 索引对应的已发布 Nightly 完整包。上游附件、GitHub digest、Android 兼容检查或 ABI 检查失败时停止发布。
 
-构建前生成固定的 `distribution.json`，ARM64 运行环境和 APK 两个作业都使用同一份快照。Mower 使用主仓库 Android ZIP；MAA 使用官方 Android ARM64 组件，并检查 Mower 调用的 Python 接口及桥接调用的 MaaCore 符号。MAA 的 OCR 资源继续按现有方式转换与裁剪，APK 不附带构建工具或源码部署工具。当前 alpha.5 没有 Android 附件，首发暂沿用已在实机验证的兼容快照；后续 Mower 包需要包含 #1032 的可选组件更新能力，避免热更新后入口消失。
+构建前生成固定的 `distribution.json`，ARM64 运行环境和 APK 两个作业都使用同一份快照。Mower 使用主仓库 Android ZIP；MAA 使用官方 Android ARM64 组件，并检查 Mower 调用的 Python 接口及桥接调用的 MaaCore 符号。MAA 直接打包官方 NCNN OCR 模型，APK 不附带模型转换器、构建工具或源码部署工具。当前 alpha.5 没有 Android 附件，首发暂沿用已在实机验证的兼容快照；后续 Mower 包需要包含 #1032 的可选组件更新能力，避免热更新后入口消失。
 
 每次发行均提供 APK、Python 兼容 ZIP、`android-release.json` 和构建快照 `distribution.json`。先创建草稿、上传全部附件，再公开。版本号和 versionCode 自动递增；组件版本及 Python 适用区间自动写入 Release 正文。不附加独立 SHA256 文件，上传完整性使用 GitHub digest。
 
@@ -54,3 +54,19 @@ Python 包按接口代码内容确定身份，ZIP 时间戳固定；接口未变
 原生设置仅保留 APK 版本检查；Mower、MAA、Python 的更新设置、Python 自动检查与热更新、拖拽/文件导入，以及恢复内置组件均在 WebUI。Python 自动检查默认开启，服务运行时每 6 小时检查一次，只对新接口内容提醒一次。下载后验证发布清单、包摘要、接口协议与最低 APK 版本，下一次创建 MAA 实例时生效，不打断现有任务。手动回退 Mower 需明确确认；组件回退不通过 APK 降级完成。
 
 APK 单独记录宿主内容标识与最低宿主 versionCode。只刷新内置 Mower、MAA 或可热更新 Python 接口的 Release 不提示升级 APK；包含原生功能或宿主运行依赖变化才提示。即使最新 Release 只是资源刷新，仍会正确提示使用更旧宿主的用户补齐之前的宿主更新。
+
+
+## MAA v6.21.4 与 GitHub Token
+
+APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方发布的 SHA-256。该版本适配明日方舟 2026 年 11 月 1 日的新主页及肉鸽入口，官方包已附带 NCNN OCR 模型。安装时直接保留官方 NCNN 模型，组件包必须包含完整的 NCNN OCR 模型；不再支持旧 ONNX OCR 模型的本地转换。独立资源更新继续使用已安装组件中的 NCNN 模型。
+
+软件更新支持选择或拖入官方 `MAAComponent-v版本-android-arm64.tar.gz` 原包，在线更新与手动导入共用组件准备流程。v6.21.4 使用内置校验值，可完全离线导入；其他版本仍需联网读取该版本的官方 SHA-256。完成后按界面提示停止并重新启动手机服务。
+
+网络与下载代理新增 GitHub Token，供 APK、Mower、MAA、资源及 MAA Python 兼容接口的 GitHub 检查和下载使用。填写后直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。Token 保存在本机共享网络配置中。
+
+登录 GitHub 后打开[创建 Token](https://github.com/settings/personal-access-tokens/new)，填写名称和有效期，Repository access 选择 Public repositories，不添加额外权限，生成后复制到设置中。也可使用不勾选任何 scope 的 classic token。清空后恢复原有下载方式。
+
+
+独立更新任务仅记录共享网络配置文件的路径，下载及 Git fetch 时读取当前 Token，不把 Token 写入任务记录。清空或更换设置会应用于已启动任务的后续请求；npm、pip 和普通 Git 命令不接收此凭据。
+
+共享网络设置在同一跨进程锁内读取当前值并保存。仅修改代理时不提交未编辑的 Token，避免覆盖其他实例刚清空或更换的值；保存回复保留尚未提交的新编辑。锁等待最多三秒，超时不修改设置，界面提示稍后重试。

@@ -32,7 +32,7 @@ from zipfile import BadZipFile, ZipFile, ZipInfo
 import requests
 from packaging.version import InvalidVersion, Version
 
-from arknights_mower.utils.github_download import download_url
+from arknights_mower.utils.github_download import download_url, get_token, request_github
 from arknights_mower.utils.maa_backup import update_transaction
 from arknights_mower.utils.zip_safe import is_unsafe_zip_member
 
@@ -271,9 +271,20 @@ def get_latest_release(
     if os.environ.get("MOWER_ANDROID") == "1":
         system, machine = "android", "arm64"
     channel = normalize_update_channel(channel)
+    if get_token():
+        endpoint = LATEST_RELEASE_API if channel == "stable" else f"https://api.github.com/repos/{MAA_REPOSITORY}/releases?per_page=100"
+        try:
+            with request_github(client, "get", endpoint, timeout=REQUEST_TIMEOUT) as response:
+                response.raise_for_status()
+                payload = response.json()
+            if channel == "beta":
+                payload = next(row for row in payload if not row.get("draft"))
+            return parse_release(payload, system=system, machine=machine, channel=channel)
+        except (requests.RequestException, ValueError, StopIteration, TypeError) as exc:
+            raise MaaUpdateError("获取 MAA 版本失败，请检查 GitHub Token、配额和网络代理") from exc
     for url_template in MAA_VERSION_API_URLS:
         try:
-            response = client.get(
+            response = request_github(client, "get",
                 url_template.format(channel=channel),
                 timeout=REQUEST_TIMEOUT,
             )
@@ -294,7 +305,7 @@ def get_latest_release(
         if system == "android":
             # Select the SAME channel version as desktop, then obtain the official
             # Android component and its GitHub digest from that exact release.
-            response = client.get(
+            response = request_github(client, "get",
                 f"https://api.github.com/repos/{MAA_REPOSITORY}/releases/tags/{quote(version, safe='')}",
                 timeout=REQUEST_TIMEOUT,
             )
@@ -311,7 +322,7 @@ def get_latest_release(
 
     if channel == "stable":
         try:
-            response = client.get(
+            response = request_github(client, "get",
                 LATEST_RELEASE_API,
                 headers={"Accept": "application/vnd.github+json"},
                 timeout=REQUEST_TIMEOUT,
@@ -601,7 +612,7 @@ class HTTPRangeReader(io.RawIOBase):
         self._cache = b""
         request_url = download_url(url)
         try:
-            response = self._session.head(
+            response = request_github(self._session, "head",
                 request_url,
                 allow_redirects=True,
                 timeout=REQUEST_TIMEOUT,
@@ -653,7 +664,7 @@ class HTTPRangeReader(io.RawIOBase):
 
     def _fetch(self, start: int, end: int) -> bytes:
         try:
-            response = self._session.get(
+            response = request_github(self._session, "get",
                 self._url,
                 headers={"Range": f"bytes={start}-{end - 1}"},
                 stream=True,
@@ -1200,7 +1211,7 @@ def download_asset(
     downloaded = 0
     digest = hashlib.sha256()
     try:
-        with client.get(
+        with request_github(client, "get",
             download_url(asset.url),
             stream=True,
             timeout=REQUEST_TIMEOUT,

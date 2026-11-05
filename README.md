@@ -16,7 +16,7 @@ Shizuku 后台服务：官方 Android MaaCore + 显示器、截图、触控
 
 Android `.so` 使用 Bionic，不能由 Linux 用户态 Python 直接通过 ctypes 加载。因此 Python 适配器保留 Mower 使用的 Asst 调用方式，由 Android 原生服务加载官方库并转发回调。它实现的是当前 Mower 所需接口，并非官方 Python API 的完整替代。
 
-`MAAComponent-v6.17.5-android-arm64.tar.gz` 包含核心、原生控制器和资源，但没有 Python 绑定。该版 Android 核心使用 NCNN OCR，而发布包只有 ONNX 模型；构建和更新时使用固定版本 pnnx，将同一官方包中的模型转换为 FP32 NCNN。核心二进制保持原样。版本、来源和 SHA-256 见 [UPSTREAM.json](UPSTREAM.json) 与 [组件锁定文件](scripts/maa-android.lock.json)。
+`MAAComponent-v6.21.4-android-arm64.tar.gz` 包含核心、原生控制器和 NCNN OCR 资源，但没有 Python 绑定。构建和更新直接使用官方包中的 NCNN 模型，不再提供旧 ONNX OCR 模型的本地转换。核心二进制保持原样。版本、来源和 SHA-256 见 [UPSTREAM.json](UPSTREAM.json) 与 [组件锁定文件](scripts/maa-android.lock.json)。
 
 后台游戏能力参考 [MAA-Meow](https://github.com/Aliothmoon/MAA-Meow)，基于其中的后台显示、截图、预览与输入代码适配；本项目独立运行，并保留相关来源与许可证。
 
@@ -60,7 +60,7 @@ WebUI 保留 Mower 的官方 GitHub 稳定版／公测版更新入口，安卓�
 
 每轮 MAA 初始化时下载并校验官方活动导航，由宿主在空闲时加载到当前组件，再提交并启动任务，普通导航刷新无需重启服务。下载失败时保留旧缓存并记录错误；加载失败阻止本轮任务。旧宿主没有导航热加载接口时，复用现有组件打包流程；若当前组件未包含下载的导航，则准备新组件并要求停止、重启手机服务，并说明更新 APK 后可直接热加载导航。重启后核对组件哈希再提交任务。
 
-更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新也会重新准备 OCR 模型并提示重启。更新转换可能持续数分钟；请保证空间和网络。Mower 本体使用主仓库的 Android 更新包，停止并重启服务后生效，无需更新 APK。Android 核心使用官方组件包，资源更新支持 GitHub 和 Mirror酱，并分别选择来源。
+更新完成后必须停止并重新启动服务，才能释放已加载的原生库并启用新版。资源更新保留已安装的 NCNN OCR 模型，并重新打包组件后提示重启。组件准备可能持续数分钟；请保证空间和网络。Mower 本体使用主仓库的 Android 更新包，停止并重启服务后生效，无需更新 APK。Android 核心使用官方组件包，资源更新支持 GitHub 和 Mirror酱，并分别选择来源。
 
 ## 构建
 
@@ -129,7 +129,7 @@ Android APK 由本仓库 CI 构建。WebUI 的内置 Mower 更新支持正式版
 
 - 主仓库 `arknights-mower_版本_android_arm64.zip`：校验兼容协议，独立保存版本并在重启服务后切换；启动失败可回退，WebUI 软件更新页可恢复内置 Mower。APK 更新请使用原生「软件设置 → APK 版本与更新」。
 - MowerRelease `arknights-mower-ota_起点_to_目标_android_arm64.zip`：从当前已安装的内置 Mower 重建目标版本，校验失败不切换版本；也可离线手动导入。Python 运行时按内部文件生成差异包，变化的运行时文件随 Mower 一起更新。在线 OTA 不适用或失败时改用完整包。
-- 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，完成资源模型转换后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
+- 官方 `MAAComponent-v版本-android-arm64.tar.gz`：校验官方 SHA256，直接打包官方 NCNN 模型后暂存，重启服务后生效。内置版本可离线导入；其他版本需读取 GitHub 的校验值。
 - 本仓库生成的 `mower-maa-python-版本.zip`：更新 Android 兼容 MAA Python 接口，校验协议、最低 APK 版本、完整性与接口结构；当前实例不变，新实例使用新接口，失败时回退内置接口。官方 ctypes Python 包不能直接用于 Android 桥接。
 
 WebUI 支持下载和恢复内置 Python 接口，仅在 MAA 检查发现更新后检查接口更新；按接口内容判断是否有更新，兼容包随 APK 重新发布不会重复提示。除 APK 外，组件更新设置均放在 WebUI，也可通过已认证的局域网页面使用。
@@ -142,7 +142,7 @@ MAA 核心默认随 APK 提供，也可通过官方组件包独立更新。Andro
 
 ### APK 体积
 
-运行环境使用整包 XZ 压缩；移除运行期不需要的 Git、头文件、测试、字节码缓存和当前 Mower 未使用的 OCR beta 模型。MAA 保留所有地区资源，将 OCR 转为 Android 所用的 NCNN 后不再重复打包对应 ONNX；其他 ONNX 推理模型与原生库保留。APK 仍内置 Python、Mower、MAA，首次启动无需额外下载运行环境。
+运行环境使用整包 XZ 压缩；移除运行期不需要的 Git、头文件、测试、字节码缓存和当前 Mower 未使用的 OCR beta 模型。MAA 保留所有地区的官方 NCNN OCR 模型，不打包 OCR 目录中的 ONNX 文件，也不附带模型转换器；其他 ONNX 推理模型与原生库保留。APK 仍内置 Python、Mower、MAA，首次启动无需额外下载运行环境。
 
 更新备份会在验证成功后自动清理：Mower 等新版本 WebUI 启动就绪，MAA 核心与资源等首次任务正常完成。失败、取消或尚未验证时保留；配置备份和用户数据不受影响。
 

@@ -56,7 +56,8 @@ class AndroidMirrorTests(unittest.TestCase):
         from mower_android.managed import import_component
         with tempfile.TemporaryDirectory() as temp:
             package=Path(temp)/'wrong.tar.gz';package.write_bytes(b'wrong archive')
-            with self.assertRaisesRegex(MaaUpdateError, 'SHA256'):
-                import_component(package, 'MAAComponent-v6.17.5-android-arm64.tar.gz')
+            with patch('requests.get', side_effect=AssertionError('Pinned import must remain offline')):
+                with self.assertRaisesRegex(MaaUpdateError, 'SHA256'):
+                    import_component(package, 'MAAComponent-v6.21.4-android-arm64.tar.gz')
 
 if __name__ == '__main__': unittest.main()

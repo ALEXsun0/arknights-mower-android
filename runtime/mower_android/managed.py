@@ -144,14 +144,16 @@ def normalize(data):
 def pack_component(target, destination=COMPONENT):
     """Only official libraries/resources/metadata enter the privileged component store."""
     target = Path(target); destination = Path(destination)
-    from mower_android.ocr_models import prepare_models
-    prepare_models(target / 'resource')
-    if (target / 'cache/resource').is_dir(): prepare_models(target / 'cache/resource')
+    for kind in ('det', 'rec'):
+        for extension in ('param', 'bin'):
+            model = target / 'resource/PaddleOCR' / kind / f'{kind}.ncnn.{extension}'
+            if not model.is_file() or not model.stat().st_size:
+                raise ValueError('官方 Android MAA 组件缺少完整的 NCNN OCR 模型，请更新组件包')
     temporary = destination.with_suffix('.zip.new')
     with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for file in target.rglob('*'):
             relative = file.relative_to(target)
-            if file.name == 'inference.onnx' and file.parent.name in ('det', 'rec') and all((file.parent/f'{file.parent.name}.ncnn.{ext}').is_file() for ext in ('param','bin')):
+            if file.name == 'inference.onnx' and file.parent.name in ('det', 'rec'):
                 continue
             if file.is_file() and (relative.parts[0] in ('resource', 'cache') or (len(relative.parts) == 1 and (file.name.endswith('.so') or file.name == '.mower-android.json'))):
                 archive.write(file, str(relative))
@@ -218,8 +220,9 @@ def import_component(package, filename, callback=None):
         expected=lock['sha256']
     else:
         import requests
+        from arknights_mower.utils.github_download import request_github
         try:
-            response=requests.get('https://api.github.com/repos/MaaAssistantArknights/MaaAssistantArknights/releases/tags/'+version,timeout=30)
+            response=request_github(requests, 'get', 'https://api.github.com/repos/MaaAssistantArknights/MaaAssistantArknights/releases/tags/'+version,timeout=30)
             response.raise_for_status()
             release=updater.parse_release(response.json(),system='android',machine='arm64')
             expected=release.runtime.sha256
