@@ -616,6 +616,8 @@ class LocalProxyIntegrationTests(ProxySettingsBase):
         job = runtime.read_json(work / "job.json")
         self.assertEqual(job["proxy"], "http://127.0.0.1:7897")
         self.assertEqual(job["github_proxy"], "https://ghfast.top/")
+        self.assertNotIn("github_token", job)
+        self.assertEqual(job["network_settings_path"], str(network.settings_path()))
         self.assertTrue((work / "github_download.py").is_file())
         # Copied worker must import without access to the application package.
         env = os.environ.copy()

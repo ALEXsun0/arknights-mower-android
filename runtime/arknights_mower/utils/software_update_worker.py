@@ -23,7 +23,12 @@ from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 if __package__:
-    from .github_download import download_url, git_environment, request_github
+    from .github_download import (
+        download_url,
+        git_environment,
+        read_token_file,
+        request_github,
+    )
     from .update_runtime import (
         InstanceScanError,
         detached_options,
@@ -32,12 +37,18 @@ if __package__:
         process_alive,
         read_json,
         registration_key,
+        scrub_job_token,
         submission_lock,
         utf8_output,
         write_json,
     )
 else:
-    from github_download import download_url, git_environment, request_github
+    from github_download import (
+        download_url,
+        git_environment,
+        read_token_file,
+        request_github,
+    )
     from update_runtime import (
         InstanceScanError,
         detached_options,
@@ -46,6 +57,7 @@ else:
         process_alive,
         read_json,
         registration_key,
+        scrub_job_token,
         submission_lock,
         utf8_output,
         write_json,
@@ -217,11 +229,12 @@ def extract_archive(archive, destination, check_cancelled=lambda: None):
 class Worker:
     def __init__(self, job_path):
         self.job_path = Path(job_path)
+        scrub_job_token(self.job_path)
         self.job = read_json(self.job_path)
         self.work = self.job_path.parent
         self.state = Path(self.job["state_dir"])
         self.root = Path(self.job["root"])
-        self.env = git_environment(launch_environment({}), self.job.get("github_token", ""))
+        self.env = launch_environment({})
         if self.job.get("tool_path"):
             self.env["PATH"] = self.job["tool_path"]
         if self.job.get("proxy"):
@@ -296,15 +309,34 @@ class Worker:
                     raise
                 time.sleep(0.05)
 
-    def run_command(self, args, cwd=None, timeout=1800, env=None, cancellable=True):
+    def github_token(self):
+        return read_token_file(self.job.get("network_settings_path"))
+
+    def run_command(
+        self,
+        args,
+        cwd=None,
+        timeout=1800,
+        env=None,
+        cancellable=True,
+        github_auth=False,
+    ):
         if cancellable:
             self.check_cancelled()
+        environment = self.env if env is None else env
+        if github_auth:
+            command = list(map(str, args))
+            if command[0] != self.job.get("git") or not (
+                command[1:2] == ["fetch"] or command[1:3] == ["lfs", "fetch"]
+            ):
+                raise ValueError("GitHub 认证仅用于 Git fetch 和 Git LFS fetch")
+            environment = git_environment(environment, self.github_token())
         # Commands and arguments are fixed by the installer. Never use shell=True.
         print("执行：" + " ".join(map(str, args)), flush=True)
         process = subprocess.Popen(
             list(map(str, args)),
             cwd=cwd or self.root,
-            env=self.env if env is None else env,
+            env=environment,
             stdin=subprocess.DEVNULL,
             **detached_options(),
         )
@@ -419,7 +451,8 @@ class Worker:
                         if self.job.get("source_pr")
                         else [self.job["commit"]]
                     ),
-                ]
+                ],
+                github_auth=True,
             )
             if self.stage_attempted:
                 self.run_command(
@@ -434,7 +467,8 @@ class Worker:
                 "--no-tags",
                 self.job.get("source_url", "origin"),
                 ref,
-            ]
+            ],
+            github_auth=True,
         )
         if self.git_output("rev-parse", "FETCH_HEAD^{commit}") != expected:
             raise ValueError("远端版本已改变，请重新检查更新")
@@ -733,11 +767,16 @@ class Worker:
             import requests
 
             proxy = self.job.get("proxy")
+            token = self.github_token()
             with (
-                request_github(requests, "get",
-                    download_url(asset["url"], self.job.get("github_proxy", ""), token=self.job.get("github_token", "")),
+                request_github(
+                    requests,
+                    "get",
+                    download_url(
+                        asset["url"], self.job.get("github_proxy", ""), token=token
+                    ),
                     headers={"User-Agent": "Mower-Software-Update"},
-                    token=self.job.get("github_token", ""),
+                    token=token,
                     proxies={"http": proxy, "https": proxy} if proxy else None,
                     stream=True,
                     timeout=(10, 10),

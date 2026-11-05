@@ -65,3 +65,6 @@ APK 内置的官方 Android ARM64 MAA 组件固定为 v6.21.4，并校验官方�
 网络与下载代理新增 GitHub Token，供 APK、Mower、MAA、资源及 MAA Python 兼容接口的 GitHub 检查和下载使用。填写后直接访问官方地址，不经过下载代理站点，也不回退到镜像；全局网络代理仍生效。Token 保存在本机共享网络配置中。
 
 登录 GitHub 后打开[创建 Token](https://github.com/settings/personal-access-tokens/new)，填写名称和有效期，Repository access 选择 Public repositories，不添加额外权限，生成后复制到设置中。也可使用不勾选任何 scope 的 classic token。清空后恢复原有下载方式。
+
+
+独立更新任务仅记录共享网络配置文件的路径，下载及 Git fetch 时读取当前 Token，不把 Token 写入任务记录。清空或更换设置会应用于已启动任务的后续请求；npm、pip 和普通 Git 命令不接收此凭据。服务启动和保存网络设置时会移除同一数据目录下旧更新任务记录中的 Token 字段，保留任务的其他信息。旧版已运行进程中的凭据和外部副本不属于此次文件清理范围。
