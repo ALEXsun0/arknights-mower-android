@@ -26,13 +26,21 @@ class Bridge:
 
     def call(self, method, **params):
         payload = json.dumps(dict(token=self.token, method=method, params=params)).encode()
-        with socket.create_connection(('127.0.0.1', self.port), self.timeout) as sock:
-            sock.settimeout(self.timeout)
-            sock.sendall(struct.pack('!I', len(payload)) + payload)
-            size, = struct.unpack('!I', self._read(sock, 4))
-            if not 0 < size <= 32 * 1024 * 1024:
-                raise BridgeError('Invalid Android bridge response length')
-            response = json.loads(self._read(sock, size))
-        if not response.get('ok'):
-            raise BridgeError(response.get('error', 'Android operation failed'))
-        return response.get('result')
+        transmission_started = False
+        try:
+            with socket.create_connection(('127.0.0.1', self.port), self.timeout) as sock:
+                sock.settimeout(self.timeout)
+                transmission_started = True
+                sock.sendall(struct.pack('!I', len(payload)) + payload)
+                size, = struct.unpack('!I', self._read(sock, 4))
+                if not 0 < size <= 32 * 1024 * 1024:
+                    raise BridgeError('Invalid Android bridge response length')
+                response = json.loads(self._read(sock, size))
+            if not response.get('ok'):
+                raise BridgeError(response.get('error', 'Android operation failed'))
+            return response.get('result')
+        except (BridgeError, OSError, json.JSONDecodeError) as exc:
+            if method in ('tap', 'swipe', 'key', 'text'):
+                from mower_android.input_failure import AndroidTouchFailure
+                raise AndroidTouchFailure(exc, delivery_unknown=transmission_started) from exc
+            raise

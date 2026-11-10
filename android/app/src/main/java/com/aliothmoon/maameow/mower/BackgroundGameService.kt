@@ -159,9 +159,24 @@ class BackgroundGameService : RemoteService.Stub() {
     override fun setMonitorSurface(surface: Surface?) {
         NativeBridgeLib.setPreviewSurface(surface)
     }
-    override fun touchDown(x: Int, y: Int, contact: Int) { check(InputControlUtils.down(x * width / 1920, y * height / 1080, contact, display())) }
-    override fun touchMove(x: Int, y: Int, contact: Int) { check(InputControlUtils.move(x * width / 1920, y * height / 1080, contact, display())) }
-    override fun touchUp(x: Int, y: Int, contact: Int) { check(InputControlUtils.up(x * width / 1920, y * height / 1080, contact, display())) }
+    override fun touchDown(x: Int, y: Int, contact: Int) {
+        val target = display()
+        check(InputControlUtils.down(x * width / 1920, y * height / 1080, contact, target)) {
+            "Android 触控按下失败：display=$target, x=$x, y=$y, contact=$contact"
+        }
+    }
+    override fun touchMove(x: Int, y: Int, contact: Int) {
+        val target = display()
+        check(InputControlUtils.move(x * width / 1920, y * height / 1080, contact, target)) {
+            "Android 触控移动失败：display=$target, x=$x, y=$y, contact=$contact"
+        }
+    }
+    override fun touchUp(x: Int, y: Int, contact: Int) {
+        val target = display()
+        check(InputControlUtils.up(x * width / 1920, y * height / 1080, contact, target)) {
+            "Android 触控抬起失败：display=$target, x=$x, y=$y, contact=$contact"
+        }
+    }
     override fun setTouchMonitor(callback: com.aliothmoon.maameow.ITouchEventCallback?) { InputControlUtils.setTouchCallback(callback) }
     override fun touchCancel() { InputControlUtils.cancel(display()) }
     override fun mowerFrame(): ParcelFileDescriptor? {
