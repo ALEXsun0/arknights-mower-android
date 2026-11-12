@@ -10,6 +10,7 @@ import com.aliothmoon.maameow.third.FakeContext;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 
 @SuppressLint("PrivateApi,DiscouragedPrivateApi")
 public final class ServiceManager {
@@ -20,6 +21,8 @@ public final class ServiceManager {
     private static InputManager inputManager;
     private static ActivityManager activityManager;
     private static PowerManager powerManager;
+    private static VirtualDeviceManager virtualDeviceManager;
+    private static CompanionDeviceManager companionDeviceManager;
 
     static {
         try {
@@ -75,6 +78,26 @@ public final class ServiceManager {
             activityManager = ActivityManager.create();
         }
         return activityManager;
+    }
+
+    @androidx.annotation.RequiresApi(34)
+    public static synchronized VirtualDeviceManager getVirtualDeviceManager() {
+        if (virtualDeviceManager == null) virtualDeviceManager = VirtualDeviceManager.create();
+        return virtualDeviceManager;
+    }
+
+    @androidx.annotation.RequiresApi(33)
+    public static synchronized CompanionDeviceManager getCompanionDeviceManager() {
+        if (companionDeviceManager == null) companionDeviceManager = CompanionDeviceManager.create();
+        return companionDeviceManager;
+    }
+
+    static ReflectiveOperationException unwrap(InvocationTargetException exception) {
+        Throwable cause = exception.getCause();
+        if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+        if (cause instanceof Error) throw (Error) cause;
+        if (cause instanceof ReflectiveOperationException) return (ReflectiveOperationException) cause;
+        return exception;
     }
 
 }

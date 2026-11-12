@@ -135,6 +135,7 @@ class MowerSettingsActivity : Activity() {
             Triple("keep_screen_on", "查看 Mower 时保持亮屏", "仅在本应用前台生效，切换到其他应用后按系统设置熄屏。")
         ))
         group("后台游戏", listOf(
+            Triple("use_vdm", "使用 VDM 虚拟屏（实验性）", "参考 MAA-Meow，需 Android 14 或更高版本；默认使用 Legacy。停止并重新启动服务后生效，创建失败时请关闭此项。"),
             Triple("mute_game", "自动静音游戏", "关闭明日方舟声音，不改变手机媒体音量；关闭后恢复原声音权限。"),
             Triple("preview_sound", "查看游戏时恢复声音", "打开游戏画面时恢复声音，返回后继续按静音设置运行。"),
             Triple("recover_game", "自动移回后台", "每 5 秒检查游戏位置，意外回到主屏时尝试移回后台。")
@@ -181,6 +182,7 @@ class MowerSettingsActivity : Activity() {
         switches.forEach { (key, view) ->
             view.isChecked = settings.enabled(key)
             view.isEnabled = !busy && when (key) {
+                "use_vdm" -> android.os.Build.VERSION.SDK_INT >= 34
                 "dismiss_keyguard" -> settings.enabled("wake_on_launch")
                 "preview_sound" -> settings.enabled("mute_game")
                 "hardware_screen_off" -> settings.enabled("screen_saver")
@@ -201,7 +203,12 @@ class MowerSettingsActivity : Activity() {
         execute {
             val engine = MowerService.engine
             if (engine == null) { settings.save(snapshot); "已保存；启动服务后应用。" }
-            else { val state = engine.saveSystemSettings(snapshot); if (state.isNull("error")) "已保存并应用。" else state.getString("error") }
+            else {
+                val state = engine.saveSystemSettings(snapshot)
+                if (!state.isNull("error")) state.getString("error")
+                else if (key == "use_vdm") "已保存；停止并重新启动服务后生效。"
+                else "已保存并应用。"
+            }
         }
     }
 

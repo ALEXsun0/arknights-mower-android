@@ -31,6 +31,18 @@
         "f64237c63167ce130fc1d883fc9b502d600e2a02": "Preview shutdown holds render wait mutex while changing stop predicate"
       },
       "adaptations": "Preserve Mower AIDL transaction IDs, synchronous local cleanup, fixed 1080p display and Mower-owned task scheduling; retain original source baseline"
+    },
+    "vdm_backend": {
+      "source_commit": "9eab1041bf1640f623b3a2bbefb019a72d15b348",
+      "introduced_by": "95b27c50a801e067447d24ce5629f83cfb9fa27b",
+      "files": [
+        "remote/internal/VdmDisplayController.kt",
+        "third/wrappers/VirtualDeviceManager.java",
+        "third/wrappers/CompanionDeviceManager.java",
+        "VdmDisplayControllerTest.kt"
+      ],
+      "license": "AGPL-3.0",
+      "adaptations": "Opt-in Android 14+ backend through existing Binder mode 3; Legacy mode 2 remains the default. Preserve Binder transaction IDs, fixed 1080p, Mower scheduling, native display health queries and display keepalive. Bound companion commands and retain cleanup after capture release errors."
     }
   },
   "maa": {

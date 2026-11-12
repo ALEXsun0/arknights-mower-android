@@ -100,7 +100,6 @@ object VirtualDisplayManager {
             val cfg = config.get()
             val surface = NativeBridgeLib.setupNativeCapturer(cfg.width, cfg.height)
             createVirtualDisplay(surface, cfg)
-            PowerController.startVirtualDisplayKeepAlive(displayId.get())
 
             Ln.i("VirtualDisplayManager started, displayId=${displayId.get()}")
             return displayId.get()
@@ -112,7 +111,6 @@ object VirtualDisplayManager {
     }
 
     private fun releaseResources() {
-        PowerController.stopVirtualDisplayKeepAlive()
         try {
             runCatching { virtualDisplay.getAndSet(null)?.release() }
                 .onFailure { Ln.e("Virtual display release failed", it) }
@@ -121,9 +119,7 @@ object VirtualDisplayManager {
     }
 
     private fun createVirtualDisplay(surface: Surface, cfg: DisplayConfig) {
-        val wm = ServiceManager.getWindowManager()
-        val physicalRotation = runCatching { wm.rotation }.getOrDefault(-1)
-        Ln.i("Physical display rotation: $physicalRotation")
+        val physicalRotation = physicalRotation()
 
         val base = baseFlags()
         val tiers = flagTiers(Build.VERSION.SDK_INT).map { tier -> tier.fold(base, Int::or) }
@@ -149,11 +145,19 @@ object VirtualDisplayManager {
 
         logEffective(vdId, flags, d.flags)
 
+        fixRotation(d, cfg, physicalRotation)
+    }
+
+    internal fun physicalRotation(): Int = runCatching { ServiceManager.getWindowManager().rotation }.getOrDefault(-1)
+
+    internal fun fixRotation(d: android.view.Display, cfg: DisplayConfig, physicalRotation: Int) {
+        val wm = ServiceManager.getWindowManager()
+        val vdId = d.displayId
         if (d.rotation != Surface.ROTATION_0) {
             // 所有旋转非零的情况都先尝试 freezeRotation
             runCatching {
                 wm.freezeRotation(vdId, Surface.ROTATION_0)
-                Ln.i("freezeRotation done, post-freeze rotation=${vd.display.rotation}")
+                Ln.i("freezeRotation done, post-freeze rotation=${d.rotation}")
             }.onFailure { e -> Ln.w("freezeRotation failed: ${e.message}") }
 
             if (physicalRotation == Surface.ROTATION_0) {
@@ -236,13 +240,13 @@ object VirtualDisplayManager {
         else -> arrayOf(intArrayOf())
     }
 
-    internal fun <T> createWithFallback(tiers: List<Int>, create: (flags: Int) -> T): Pair<Int, T> {
+    internal fun <P, T> createWithFallback(tiers: List<P>, create: (flags: P) -> T): Pair<Int, T> {
         for ((index, flags) in tiers.withIndex()) {
             try {
                 return index to create(flags)
             } catch (e: SecurityException) {
                 if (index == tiers.lastIndex) throw e
-                Ln.w("createVirtualDisplay rejected at tier $index (flags=0x${flags.toString(16)}): ${e.message}")
+                Ln.w("createVirtualDisplay rejected at tier $index ($flags): ${e.message}")
             }
         }
         throw IllegalArgumentException("no flag tier")
