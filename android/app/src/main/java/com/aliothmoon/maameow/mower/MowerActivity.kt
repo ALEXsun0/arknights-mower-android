@@ -41,6 +41,7 @@ class MowerActivity : Activity() {
     private var appliedTheme = false
     private lateinit var dot: TextView
     private lateinit var toggle: Button
+    private lateinit var screenOff: Button
     private lateinit var webReload: Button
     private lateinit var web: WebView
     private lateinit var webHost: FrameLayout
@@ -81,6 +82,7 @@ class MowerActivity : Activity() {
         }
         val url = MowerService.url
         toggle.isEnabled = !MowerService.stopping && !requestingStart
+        screenOff.isEnabled = MowerService.active && !MowerService.stopping && url != null
         val toggleLabel = if (MowerService.active) "停止服务" else "启动服务"
         if (toggle.text.toString() != toggleLabel) toggle.text = toggleLabel
         dot.setTextColor(if (url != null) MowerStyle.green else MowerStyle.muted)
@@ -114,7 +116,7 @@ class MowerActivity : Activity() {
         }, LinearLayout.LayoutParams(0, -2, 1f))
         bar.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        bar.addView(actions, LinearLayout.LayoutParams(dp(320), -2))
+        bar.addView(actions, LinearLayout.LayoutParams(dp(416), -2))
         fun add(value: String, primary: Boolean = false, block: () -> Unit): Button {
             val b = action(value, primary, block)
             actions.addView(b, LinearLayout.LayoutParams(0, dp(44), 1f).apply { if (actions.childCount > 0) marginStart = dp(6) })
@@ -122,6 +124,15 @@ class MowerActivity : Activity() {
             return b
         }
         add("游戏画面") { startActivity(Intent(this, MowerGameActivity::class.java)) }
+        screenOff = add("一键息屏") {
+            runCatching { MowerScreenSaver.turnOffScreen(this) }.onFailure {
+                Toast.makeText(this, it.message ?: "无法关闭屏幕电源", Toast.LENGTH_LONG).show()
+            }
+        }.apply {
+            isEnabled = false
+            tooltipText = "仅关闭屏幕电源；恢复时可能需要短按两次电源键并解锁"
+            contentDescription = "一键息屏，仅关闭屏幕电源；恢复时可能需要短按两次电源键并解锁"
+        }
         add("软件设置") { startActivity(Intent(this, MowerSettingsActivity::class.java)) }
         toggle = add("启动服务", true) {
             if (MowerService.stopping) return@add

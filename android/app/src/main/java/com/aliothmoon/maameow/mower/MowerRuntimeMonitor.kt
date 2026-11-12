@@ -94,8 +94,8 @@ class MowerRuntimeMonitor(
             if (settings.enabled("screen_saver") && !MowerVisibility.visible && !MowerService.previewing) {
                 runCatching { MowerScreenSaver.show(context, settings.enabled("hardware_screen_off")) }
                     .onFailure { AndroidSystemSettings.lastAction = it.message ?: "屏保未启动" }
-            } else MowerScreenSaver.hide()
-        } else MowerScreenSaver.hide()
+            } else MowerScreenSaver.hide(automatic = true)
+        } else MowerScreenSaver.hide(automatic = true)
         if (cycle.completed) {
             if (settings.enabled("sleep_when_idle") && cycle.maySleep) {
                 val code = sleepPhone(engine)
