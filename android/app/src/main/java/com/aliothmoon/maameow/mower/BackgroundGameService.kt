@@ -7,7 +7,7 @@ import android.view.Surface
 import com.aliothmoon.maameow.RemoteService
 import com.aliothmoon.maameow.bridge.NativeBridgeLib
 import com.aliothmoon.maameow.maa.InputControlUtils
-import com.aliothmoon.maameow.remote.internal.VirtualDisplayManager
+import com.aliothmoon.maameow.remote.internal.BackgroundDisplay
 import com.aliothmoon.maameow.third.Workarounds
 import kotlin.concurrent.thread
 import com.aliothmoon.maameow.root.ProcessExit
@@ -32,7 +32,7 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     override fun installCore(zip: ParcelFileDescriptor, hash: String) = maa.install(zip, hash)
     override fun maaRpc(request: String): String = try {
-        org.json.JSONObject().put("ok", true).put("result", maa.call(org.json.JSONObject(request), VirtualDisplayManager.getDisplayId())).toString()
+        org.json.JSONObject().put("ok", true).put("result", maa.call(org.json.JSONObject(request), BackgroundDisplay.getDisplayId())).toString()
     } catch (e: Exception) { org.json.JSONObject().put("ok", false).put("error", e.message).toString() }
 
     private var width = 1920
@@ -54,14 +54,15 @@ class BackgroundGameService : RemoteService.Stub() {
             "game_status" -> {
                 val pkg = p.getString("package"); require(allowed(pkg))
                 val alive = isAppAlive(pkg) == 1
-                val onDisplay = VirtualDisplayManager.getDisplayId() > 0 && alive && isAppOnVirtualDisplay(pkg)
+                val onDisplay = BackgroundDisplay.getDisplayId() > 0 && alive && isAppOnVirtualDisplay(pkg)
                 if (p.optBoolean("monitor") && onDisplay) com.aliothmoon.maameow.remote.internal.GameFpsMonitor.ensureStarted(pkg)
                 else com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
                 org.json.JSONObject().put("alive", alive).put("on_display", onDisplay)
-                    .put("display_id", VirtualDisplayManager.getDisplayId())
-                    .put("display_valid", VirtualDisplayManager.isDisplayValid())
-                    .put("display_flag_tier", VirtualDisplayManager.getFlagTier())
-                    .put("display_state", VirtualDisplayManager.getDisplayState())
+                    .put("display_id", BackgroundDisplay.getDisplayId())
+                    .put("display_valid", BackgroundDisplay.isDisplayValid())
+                    .put("display_flag_tier", BackgroundDisplay.getFlagTier())
+                    .put("display_backend", BackgroundDisplay.backendName()).put("display_warning", BackgroundDisplay.warning())
+                    .put("display_state", BackgroundDisplay.getDisplayState())
                     .put("frame_count", NativeBridgeLib.getFrameCount())
                     .put("fps", com.aliothmoon.maameow.remote.internal.GameFpsMonitor.currentFps())
                     .put("width", width).put("height", height).put("maa_running", maa.running())
@@ -91,7 +92,7 @@ class BackgroundGameService : RemoteService.Stub() {
         org.json.JSONObject().put("ok", true).put("result", result).toString()
     } catch (e: Exception) { org.json.JSONObject().put("ok", false).put("error", e.message).toString() }
 
-    private fun display(): Int = VirtualDisplayManager.getDisplayId().also { check(it > 0) { "后台显示器尚未启动" } }
+    private fun display(): Int = BackgroundDisplay.getDisplayId().also { check(it > 0) { "后台显示器尚未启动" } }
     private fun allowed(pkg: String) = pkg in setOf("com.hypergryph.arknights", "com.hypergryph.arknights.bilibili")
     private fun command(vararg args: String): Pair<Int, String> {
         val process = ProcessBuilder(*args).redirectErrorStream(true).start()
@@ -142,18 +143,21 @@ class BackgroundGameService : RemoteService.Stub() {
         runCatching { cancelUnlockRecording() }
         runCatching { stopVirtualDisplay() }
     }
-    override fun setVirtualDisplayMode(mode: Int) = mode == 2
+    @Synchronized override fun setVirtualDisplayMode(mode: Int) = BackgroundDisplay.setMode(mode)
     override fun setVirtualDisplayResolution(width: Int, height: Int, dpi: Int) {
-        require(width == 1920 && height == 1080); this.width = width; this.height = height; VirtualDisplayManager.setResolution(width, height, dpi)
+        require(width == 1920 && height == 1080); this.width = width; this.height = height; BackgroundDisplay.setResolution(width, height, dpi)
     }
-    override fun startVirtualDisplay() = VirtualDisplayManager.start()
+    override fun startVirtualDisplay() = BackgroundDisplay.start()
     @Synchronized override fun stopVirtualDisplay() {
         try { audio.restoreAll() }
         finally {
-            com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
-            maa.stop()
-            InputControlUtils.cancel(VirtualDisplayManager.getDisplayId())
-            VirtualDisplayManager.stop()
+            try {
+                com.aliothmoon.maameow.remote.internal.GameFpsMonitor.stop()
+                maa.stop()
+            } finally {
+                try { InputControlUtils.cancel(BackgroundDisplay.getDisplayId()) }
+                finally { BackgroundDisplay.stop() }
+            }
         }
     }
     override fun setMonitorSurface(surface: Surface?) {
@@ -213,8 +217,8 @@ class BackgroundGameService : RemoteService.Stub() {
             return stopped
         }
         val id = display()
-        check(VirtualDisplayManager.isDisplayValid()) { "后台显示器已失效，请重新启动服务" }
-        check(VirtualDisplayManager.getDisplayState() == android.view.Display.STATE_ON) {
+        check(BackgroundDisplay.isDisplayValid()) { "后台显示器已失效，请重新启动服务" }
+        check(BackgroundDisplay.getDisplayState() == android.view.Display.STATE_ON) {
             "后台显示器处于休眠状态，请先唤醒手机后再打开游戏"
         }
         val activities = gameActivities(packageName)
@@ -243,8 +247,8 @@ class BackgroundGameService : RemoteService.Stub() {
     }
     override fun isAppOnVirtualDisplay(packageName: String): Boolean {
         require(allowed(packageName))
-        val id = VirtualDisplayManager.getDisplayId()
-        return id > 0 && VirtualDisplayManager.isDisplayValid() &&
+        val id = BackgroundDisplay.getDisplayId()
+        return id > 0 && BackgroundDisplay.isDisplayValid() &&
             gameActivities(packageName).any { it.displayId == id && it.present }
     }
     private fun gameActivities(packageName: String): List<GameActivityState> =

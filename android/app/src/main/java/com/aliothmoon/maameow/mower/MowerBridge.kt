@@ -139,6 +139,8 @@ class MowerBridge(private val context: Context, private val token: String,
     }
 
     private fun prepare(p: JSONObject): JSONObject {
+        val useVdm = settings.enabled("use_vdm")
+        require(!useVdm || android.os.Build.VERSION.SDK_INT >= 34) { "VDM 需要 Android 14 或更高版本" }
         val requested = p.optString("package", packageName)
         require(requested in setOf("com.hypergryph.arknights", "com.hypergryph.arknights.bilibili")) { "暂支持官服和 B 服" }
         val current = runBlocking { RemoteServiceManager.getInstance() }
@@ -146,7 +148,7 @@ class MowerBridge(private val context: Context, private val token: String,
         prepared = false
         restoreAudio(current)
         recoveredBinder = current.asBinder()
-        check(current.setVirtualDisplayMode(2))
+        check(current.setVirtualDisplayMode(if (useVdm) 3 else 2)) { "后台显示模式设置失败，请停止并重新启动服务；VDM 需要 Android 14 或更高版本" }
         current.setVirtualDisplayResolution(1920, 1080, 320)
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
@@ -165,7 +167,7 @@ class MowerBridge(private val context: Context, private val token: String,
     @Synchronized fun gameState(): JSONObject {
         val s = remote()
         val game = (system(s, "game_status", JSONObject().put("package", packageName).put("monitor", settings.enabled("fps_monitor"))) as JSONObject)
-        AndroidSystemSettings.displayWarning = if (game.optInt("display_flag_tier", -1) > 0) {
+        AndroidSystemSettings.displayWarning = if (game.has("display_warning")) game.getString("display_warning") else if (game.optInt("display_flag_tier", -1) > 0) {
             "系统未授予独立后台显示权限：锁屏或熄屏会暂停后台游戏，操作游戏可能切换手机焦点。请保持亮屏运行。"
         } else ""
         return game.put("expected_running", expectedGameRunning)

@@ -9,7 +9,7 @@ import org.json.JSONObject
 class AndroidSystemSettings(private val context: Context) {
     companion object {
         val defaults = linkedMapOf("mute_game" to false, "preview_sound" to true,
-            "recover_game" to true, "wake_on_launch" to false,
+            "recover_game" to true, "use_vdm" to false, "wake_on_launch" to false,
             "dismiss_keyguard" to false, "keep_cpu_awake" to true, "keep_screen_on" to false, "keep_game_alive" to true,
             "auto_pip" to false, "show_touch" to false,
             "external_device_alerts" to false, "fps_monitor" to true, "low_fps_alert" to true, "disconnect_stop" to true,
@@ -30,6 +30,7 @@ class AndroidSystemSettings(private val context: Context) {
         require(values.keys().asSequence().toSet() == defaults.keys) { "设置项不完整或不受支持" }
         defaults.keys.forEach { require(values.get(it) is Boolean) { "设置项必须为布尔值" } }
         require(!values.getBoolean("dismiss_keyguard") || values.getBoolean("wake_on_launch")) { "自动解锁需要开启自动唤醒" }
+        require(!values.getBoolean("use_vdm") || android.os.Build.VERSION.SDK_INT >= 34) { "VDM 需要 Android 14 或更高版本" }
         val edit = prefs.edit()
         defaults.keys.forEach { edit.putBoolean(it, values.getBoolean(it)) }
         check(edit.putInt("revision", prefs.getInt("revision", 0) + 1).commit()) { "设置保存失败" }
