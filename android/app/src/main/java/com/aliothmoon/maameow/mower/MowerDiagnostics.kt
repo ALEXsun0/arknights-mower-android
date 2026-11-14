@@ -108,7 +108,7 @@ object MowerDiagnostics {
                     (if (plan.compactImages) "关键截图模式：优先订单截图及错误前后两分钟，其余在时段内采样，上限 128 MiB / 512 张。\n" else "完整截图模式：收入所选时段内所有仍可读取的截图。\n") +
                     "详情见 manifest.json；是否勾选截图：${plan.includeImages}。\n" +
                     "设置为 0 时不保存新截图；已清理或未写盘的历史画面无法恢复。重要分类沿用 Mower 保留最近 100 张的规则。\n" +
-                    "日志仅包含所选时段，控制台最多读取末尾 4 MiB，最近四个 Mower 日志各 2 MiB；超限会在文件头说明。\n" +
+                    "带时间戳的日志按所选时段筛选；开头无法确定时间的日志仍保留并标注。控制台最多读取末尾 4 MiB，最近四个 Mower 日志各 2 MiB；超限会在文件头说明。\n" +
                     "不包含配置、Token 或解锁录制。系统诊断包含最近状态，可能覆盖其他时段。\n")
             }
             check(temporary.renameTo(target)) { "无法保存诊断包" }

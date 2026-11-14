@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 from flask import Flask, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
-from mower_android import launcher, python_updates, task_startup
+from mower_android import apk_updates, launcher, python_updates, task_startup
 
 
 class TaskStartupTests(unittest.TestCase):
@@ -157,7 +157,6 @@ class TaskStartupTests(unittest.TestCase):
                 patch("mower_android.managed.prepare_files"),
                 patch("mower_android.backup_cleanup.install_hooks"),
                 patch("mower_android.task_screen.install_hooks"),
-                patch.object(python_updates, "register_routes"),
                 patch("faulthandler.dump_traceback_later"),
                 patch("faulthandler.cancel_dump_traceback_later"),
                 patch("mower_android.launcher.signal.signal"),
@@ -189,6 +188,56 @@ class TaskStartupTests(unittest.TestCase):
         self.assertTrue(response.json["auto_start_handled"])
         self.assertTrue(response.json["desktop_startup_handled"])
         return response.json["status"]
+
+    def test_update_routes_coexist_and_require_current_token(self):
+        def serve(client, workers, config, server, events):
+            for path, module, reader in (
+                ("/android/python-update", python_updates, "info"),
+                ("/android/apk-update", apk_updates, "status"),
+            ):
+                with (
+                    self.subTest(path=path),
+                    patch.object(module, reader, return_value={"ok": True}) as read,
+                    patch.object(module, "check", return_value={"ok": True}) as check,
+                ):
+                    for method in ("GET", "HEAD", "POST"):
+                        for token in (None, "incorrect"):
+                            headers = {"X-Mower-Update": "1"}
+                            if token is not None:
+                                headers["token"] = token
+                            response = client.open(
+                                path,
+                                method=method,
+                                headers=headers,
+                                json={"action": "check"},
+                            )
+                            self.assertEqual(response.status_code, 401)
+                    read.assert_not_called()
+                    check.assert_not_called()
+                    headers = {"token": "test-token"}
+                    self.assertEqual(
+                        client.get(path, headers=headers).json, {"ok": True}
+                    )
+                    read.assert_called_once_with()
+                    self.assertEqual(
+                        client.post(
+                            path, headers=headers, json={"action": "check"}
+                        ).status_code,
+                        403,
+                    )
+                    check.assert_not_called()
+                    headers["X-Mower-Update"] = "1"
+                    self.assertEqual(
+                        client.post(
+                            path, headers=headers, json={"action": "check"}
+                        ).json,
+                        {"ok": True},
+                    )
+                    check.assert_called_once_with()
+
+        events, server = self.launch(automatic=False, during_serve=serve)
+        self.assertEqual(events, ["bound"])
+        server.start.assert_not_called()
 
     def test_service_start_needs_no_page_and_each_new_process_starts_once(self):
         for selected_source in (False, True):

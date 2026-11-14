@@ -187,10 +187,14 @@ class MowerService : Service() {
                 val startupFile = File(data, "runtime-startup.json")
                 startupFile.delete()
                 startupStage("Python 正在启动")
+                StartupChecks.recordPythonEvent(pythonLog, "Python 正在启动")
                 python = builder.start()
                 val startup = PythonStartup(android.os.SystemClock.elapsedRealtime())
                 while (true) {
-                    if (python?.isAlive != true) error(StartupChecks.pythonFailure(pythonLog, logOffset) ?: "Python 已退出，请查看诊断日志")
+                    if (python?.isAlive != true) {
+                        val result = python?.exitValue()
+                        error("${StartupChecks.pythonFailure(pythonLog, logOffset) ?: "Python 已退出，请查看诊断日志"}（退出码：$result）")
+                    }
                     val now = android.os.SystemClock.elapsedRealtime()
                     if (startup.observe(PythonStartupProgress.read(startupFile), now)) {
                         val progress = startup.progress!!
@@ -236,7 +240,7 @@ class MowerService : Service() {
                 installProgress = null
                 message = "$stage：${e.message ?: "启动失败"}"
                 saveStartupReport(message)
-                runCatching { File(filesDir, "python.log").appendText("\n${e.stackTraceToString()}\n") }
+                runCatching { StartupChecks.recordPythonEvent(File(filesDir, "python.log"), "$message\n${e.stackTraceToString()}") }
                 MowerNotifications.event(this@MowerService, message, true)
                 stopSelf()
             }

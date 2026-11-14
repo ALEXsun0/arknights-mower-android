@@ -7,6 +7,11 @@ import java.io.RandomAccessFile
 
 /** Small reads only: normal starts must not hash or rewrite the entire environment. */
 internal object StartupChecks {
+    fun recordPythonEvent(log: File, message: String) {
+        val time = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        log.appendText("\n$time [mower-startup] $message\n")
+    }
+
     val runtimeFiles = listOf(
         "usr/local/bin/python", "usr/bin/env", "lib/ld-linux-aarch64.so.1",
         "usr/local/lib/libpython3.12.so.1.0", "mower/mower_android/launcher.py",
