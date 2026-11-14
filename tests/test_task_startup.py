@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 from flask import Flask, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
-from mower_android import launcher, task_startup
+from mower_android import launcher, python_updates, task_startup
 
 
 class TaskStartupTests(unittest.TestCase):
@@ -157,8 +157,7 @@ class TaskStartupTests(unittest.TestCase):
                 patch("mower_android.managed.prepare_files"),
                 patch("mower_android.backup_cleanup.install_hooks"),
                 patch("mower_android.task_screen.install_hooks"),
-                patch("mower_android.python_updates.register_routes"),
-                patch("mower_android.python_updates.start_auto_check"),
+                patch.object(python_updates, "register_routes"),
                 patch("faulthandler.dump_traceback_later"),
                 patch("faulthandler.cancel_dump_traceback_later"),
                 patch("mower_android.launcher.signal.signal"),

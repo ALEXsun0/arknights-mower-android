@@ -1,0 +1,52 @@
+name: Android host tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-host-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Host Python regression
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Python image from checked-in dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/runtime.Dockerfile
+          platforms: linux/arm64
+          tags: mower-android-host-tests:dev
+          load: true
+          cache-from: type=gha,scope=android-host-tests
+          cache-to: type=gha,mode=max,scope=android-host-tests
+      - name: Test checked-in host and Mower source
+        run: docker run --rm --platform linux/arm64 -v "$PWD:/project" -w /project mower-android-host-tests:dev python -m unittest discover -s tests -v
+
+  webui:
+    name: Host WebUI regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: runtime/ui/package-lock.json
+      - name: Test checked-in WebUI source
+        working-directory: runtime/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test -- src/routes.test.js src/theme/mower.test.js src/utils/manualUpdate.test.js src/components/GlobalUpdateDrop.test.js src/components/SoftwareComponentUpdates.test.js src/components/SoftwareUpdate.test.js
