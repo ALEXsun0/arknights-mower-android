@@ -18,6 +18,14 @@ from mower_android.maa import Asst
 
 
 class TransportTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from arknights_mower.utils import path
+
+        runtime = Path(__file__).resolve().parents[1] / 'runtime'
+        cls.enterClassContext(patch.object(path, '_internal_dir', runtime))
+        cls.enterClassContext(patch.object(path, '_install_dir', runtime))
+
     def exchange(self, response, length=None):
         server = socket.socket()
         server.settimeout(3)

@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import tarfile
@@ -53,11 +54,18 @@ class AndroidMirrorTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_manual_core_rejects_wrong_checksum_before_extracting(self):
-        from mower_android.managed import import_component
+        from mower_android import managed
+        lock = json.loads(Path(managed.__file__).with_name('maa-component-lock.json').read_text())
+        filename = f"MAAComponent-{lock['version']}-android-arm64.tar.gz"
         with tempfile.TemporaryDirectory() as temp:
             package=Path(temp)/'wrong.tar.gz';package.write_bytes(b'wrong archive')
-            with patch('requests.get', side_effect=AssertionError('Pinned import must remain offline')):
+            with (
+                patch('requests.get', side_effect=AssertionError('Pinned import must remain offline')) as request,
+                patch('arknights_mower.utils.maa_update.extract_linux_package') as extract,
+            ):
                 with self.assertRaisesRegex(MaaUpdateError, 'SHA256'):
-                    import_component(package, 'MAAComponent-v6.21.4-android-arm64.tar.gz')
+                    managed.import_component(package, filename)
+                request.assert_not_called()
+                extract.assert_not_called()
 
 if __name__ == '__main__': unittest.main()
