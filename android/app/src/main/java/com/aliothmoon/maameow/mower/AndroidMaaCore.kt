@@ -12,7 +12,7 @@ import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.zip.ZipInputStream
 
-/** Official Android component loader; versions are isolated until service restart. */
+/** One component generation per native process, including failed load attempts. */
 class AndroidMaaCore {
     private val root = File("/data/local/tmp/mower-android-core")
     private var installed: File? = null
@@ -59,6 +59,7 @@ class AndroidMaaCore {
     private fun core(): MaaCoreLibrary {
         api?.let { return it }
         val path = installed ?: error("尚未安装 MAA 组件")
+        loaded = path.name
         // libc++ is already loaded by our NDK-built display bridge.
         for (name in listOf("libonnxruntime.so", "libopencv_world4.so", "libMaaUtils.so", "libfastdeploy_ppocr.so", "libMaaAndroidNativeControlUnit.so")) {
             if (File(path, name).exists()) System.load(File(path, name).path)

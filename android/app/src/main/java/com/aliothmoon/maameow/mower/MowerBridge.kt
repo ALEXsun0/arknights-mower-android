@@ -17,7 +17,11 @@ import kotlin.concurrent.thread
 
 /** Private, authenticated, single-writer bridge to the embedded engine. */
 class MowerBridge(private val context: Context, private val token: String,
-                  private val updateRestart: (() -> Unit)? = null) : AutoCloseable {
+                  private val updateRestart: (() -> Unit)? = null,
+                  private val currentService: () -> RemoteService? = { RemoteServiceManager.getInstanceOrNull() },
+                  private val connectService: () -> RemoteService = { runBlocking { RemoteServiceManager.getInstance() } },
+                  private val retireService: (RemoteService) -> Unit = { runBlocking { RemoteServiceManager.retireForCoreUpdate(it) } },
+) : AutoCloseable {
     private val listener = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
     val port: Int get() = listener.localPort
     @Volatile private var closed = false
@@ -65,7 +69,7 @@ class MowerBridge(private val context: Context, private val token: String,
 
     @Synchronized fun maintainSystem() {
         if (closed) return
-        val s = RemoteServiceManager.getInstanceOrNull()
+        val s = currentService()
         if (s == null) { if (prepared) systemError = "Shizuku 已断开，请恢复授权后点击重新连接"; return }
         try {
             if (recoveredBinder != s.asBinder()) { restoreAudio(s); recoveredBinder = s.asBinder() }
@@ -129,7 +133,7 @@ class MowerBridge(private val context: Context, private val token: String,
         dispatch("launch", JSONObject().put("task", false))
     }
 
-    private fun remote(): RemoteService = RemoteServiceManager.getInstanceOrNull()
+    private fun remote(): RemoteService = currentService()
         ?: error("请在手机上启动并授权 Shizuku，然后重启 Mower 服务")
 
     private fun ensurePrepared(): RemoteService {
@@ -138,12 +142,54 @@ class MowerBridge(private val context: Context, private val token: String,
         return service
     }
 
+    private fun componentHash() = java.io.File(context.filesDir, "mower-data/maa-component.sha256").readText().trim()
+
+    private fun reloadCore(expected: String): JSONObject {
+        val installed = componentHash()
+        require(expected.matches(Regex("[a-f0-9]{64}")) && expected == installed) { "MAA 安装版本已改变，请重新检查更新" }
+        val current = currentService()
+        val state = current?.let { JSONObject(it.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }
+        val activated = MaaCoreActivation.activate(expected, installed,
+            state?.optString("component_hash", "") ?: "", prepared && current?.asBinder() == serviceBinder,
+            state?.optBoolean("running") ?: false,
+            closed || MowerService.stopping || MowerService.manual || MowerService.previewing || MowerService.unlocking) {
+            val old = checkNotNull(current)
+            val gameAlive = old.isAppAlive(packageName) == 1
+            val wantedGame = expectedGameRunning
+            prepared = false
+            serviceBinder = null
+            displayId = -1
+            restoreAudio(old)
+            retireService(old)
+            check(!closed && !MowerService.stopping) { "服务正在停止，已取消 MAA 核心切换" }
+            try {
+                prepare(JSONObject().put("package", packageName))
+                if (gameAlive) check(ensurePrepared().mowerGame(packageName, true)) { "MAA 已加载，但游戏未能重新连接后台显示器" }
+                expectedGameRunning = wantedGame
+                nextGameProbe = 0L
+                applyAudio(ensurePrepared())
+                status().getString("maa_component_hash")
+            } catch (failure: Exception) {
+                prepared = false
+                throw failure
+            }
+        }
+        return JSONObject().put("activated", activated).put("component_hash", installed)
+    }
+
     private fun prepare(p: JSONObject): JSONObject {
         val useVdm = settings.enabled("use_vdm")
         require(!useVdm || android.os.Build.VERSION.SDK_INT >= 34) { "VDM 需要 Android 14 或更高版本" }
         val requested = p.optString("package", packageName)
         require(requested in setOf("com.hypergryph.arknights", "com.hypergryph.arknights.bilibili")) { "暂支持官服和 B 服" }
-        val current = runBlocking { RemoteServiceManager.getInstance() }
+        val current = connectService()
+        val hash = componentHash()
+        val coreState = JSONObject(current.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result")
+        val loaded = coreState.optString("component_hash", "")
+        if (loaded.isNotEmpty() && loaded != hash) {
+            check(reloadCore(hash).getBoolean("activated")) { "MAA 核心等待空闲切换，请结束当前任务或手动操作后重新连接" }
+            return prepare(p)
+        }
         if (prepared && current.asBinder() == serviceBinder && requested == packageName) return status()
         prepared = false
         restoreAudio(current)
@@ -153,7 +199,6 @@ class MowerBridge(private val context: Context, private val token: String,
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
         val component = java.io.File(context.filesDir, "mower-data/maa-component.zip")
-        val hash = java.io.File(context.filesDir, "mower-data/maa-component.sha256").readText().trim()
         check(current.installCore(ParcelFileDescriptor.open(component, ParcelFileDescriptor.MODE_READ_ONLY), hash))
         val connected = JSONObject(current.maaRpc(JSONObject().put("method", "maa_prepare")
             .put("params", JSONObject().put("bridge_library", java.io.File(context.applicationInfo.nativeLibraryDir, "libbridge.so").path)).toString()))
@@ -206,7 +251,7 @@ class MowerBridge(private val context: Context, private val token: String,
     }
 
     private fun status(): JSONObject {
-        val s = RemoteServiceManager.getInstanceOrNull()
+        val s = currentService()
         val maa = runCatching { JSONObject(s!!.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }.getOrNull()
         return JSONObject().put("protocol", 1).put("connected", s != null)
             .put("prepared", prepared && s?.asBinder() == serviceBinder)
@@ -245,6 +290,7 @@ class MowerBridge(private val context: Context, private val token: String,
             MowerService.monitor?.beforeTaskAction()
         }
         if (method == "status") return status()
+        if (method == "maa_reload") return reloadCore(p.getString("component_hash"))
         if (method == "mower_restart") {
             check(updateRestart != null && MowerService.active && !MowerService.stopping) { "服务无法自动重启，请手动停止并重新启动" }
             val id = p.getString("id")
@@ -267,7 +313,7 @@ class MowerBridge(private val context: Context, private val token: String,
             settings.save(p)
             systemError = null
             try {
-                RemoteServiceManager.getInstanceOrNull()?.let {
+                currentService()?.let {
                     if (prepared && it.asBinder() == serviceBinder) applyAudio(it)
                     else if (!settings.enabled("mute_game")) restoreAudio(it)
                 } ?: run { systemError = "已保存；Shizuku 连接恢复后应用游戏设置" }
@@ -365,8 +411,8 @@ class MowerBridge(private val context: Context, private val token: String,
     @Synchronized override fun close() {
         closed = true
         listener.close()
-        runCatching { RemoteServiceManager.getInstanceOrNull()?.let { restoreAudio(it) } }
+        runCatching { currentService()?.let { restoreAudio(it) } }
             .onFailure { AndroidSystemSettings.lastAction = "声音恢复待重试，请重新启动服务后检查后台与系统设置" }
-        runCatching { RemoteServiceManager.getInstanceOrNull()?.let { it.stopVirtualDisplay() } }
+        runCatching { currentService()?.let { it.stopVirtualDisplay() } }
     }
 }

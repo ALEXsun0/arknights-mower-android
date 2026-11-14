@@ -167,6 +167,25 @@ def installed_version(target=MAA_PATH):
     except (OSError, ValueError, KeyError): return ''
 
 
+def activate_core():
+    """Report activation separately from an already committed core installation."""
+    from mower_android.bridge import Bridge
+
+    try:
+        expected = COMPONENT.with_suffix('.sha256').read_text().strip()
+        result = Bridge().call('maa_reload', component_hash=expected)
+        if (not isinstance(result, dict) or result.get('component_hash') != expected
+                or type(result.get('activated')) is not bool):
+            raise ValueError('宿主未确认 MAA 核心版本')
+        return {'restart_required': False, 'activated': result['activated'],
+                'message': ('官方 Android MAA 已更新并加载，Mower 服务保持运行'
+                            if result['activated'] else
+                            '官方 Android MAA 已更新，下次连接后台游戏时加载，无需重启 Mower 服务')}
+    except Exception as exc:
+        return {'restart_required': True, 'activated': False,
+                'message': f'官方 Android MAA 已安装，但新核心尚未确认加载：{exc}；请重新连接后台游戏，仍失败时停止并重新启动服务'}
+
+
 @component_transaction
 def install_update(target, callback=None, session=None, source='github', mirror_token='', system='android', machine=None, channel='stable'):
     from arknights_mower.utils import maa_update as updater
@@ -188,7 +207,7 @@ def install_update(target, callback=None, session=None, source='github', mirror_
         packed.replace(COMPONENT); packed.with_suffix('.sha256').replace(COMPONENT.with_suffix('.sha256'))
     return {'version':release.tag, 'source':source, 'channel':channel, 'operation':'update', 'platform':'android', 'arch':'arm64',
             'target':str(MAA_PATH), 'backup':str(backup), 'runtime_downloaded':downloaded,'python_downloaded':0,'python_full_size':0,
-            'preserved':preserved, 'restart_required':True, 'message':'官方 Android MAA 已更新，停止并重新启动服务后生效'}
+            'preserved':preserved, **activate_core()}
 
 
 def get_release(session=None, channel='stable'):
@@ -236,4 +255,4 @@ def import_component(package, filename, callback=None):
         packed=work/'component.zip';pack_component(stage,packed)
         updater.replace_with_backup(stage,MAA_PATH,work)
         packed.replace(COMPONENT);packed.with_suffix('.sha256').replace(COMPONENT.with_suffix('.sha256'))
-    return {'kind':'maa-core','version':version,'message':'官方 Android MAA 核心已导入，停止并重新启动服务后生效'}
+    return {'kind':'maa-core','version':version, **activate_core()}
