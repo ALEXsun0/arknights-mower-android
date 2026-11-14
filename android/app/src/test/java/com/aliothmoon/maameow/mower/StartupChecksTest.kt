@@ -11,6 +11,17 @@ import org.junit.rules.TemporaryFolder
 class StartupChecksTest {
     @get:Rule val temporary = TemporaryFolder()
 
+    @Test fun newStartDatesUndatedErrorsAfterAnOlderRun() {
+        val log = temporary.newFile()
+        log.writeText("2000-01-01 00:00:00 old start\nold traceback\n")
+        val since = System.currentTimeMillis() - 2000
+        StartupChecks.recordPythonEvent(log, "Python 正在启动")
+        log.appendText("Traceback\nRuntimeError: initialization failed\n")
+        val selected = DiagnosticFiles.window(log.readText(), since, System.currentTimeMillis())
+        assertTrue(selected.contains("RuntimeError: initialization failed"))
+        assertFalse(selected.contains("old traceback"))
+    }
+
     private fun runtime(): File = temporary.newFolder().also { root ->
         StartupChecks.runtimeFiles.forEach { name ->
             File(root, name).apply {

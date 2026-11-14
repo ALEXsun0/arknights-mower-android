@@ -8,6 +8,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DiagnosticFilesTest {
+    @Test fun startupFailureWithoutDatedRecordsIsNotLost() {
+        val text = "[mower-startup] 0.2s 加载 Mower WebUI\nTraceback (most recent call last):\n  File \"/mower/server.py\", line 1\nRuntimeError: initialization failed\n"
+        val selected = DiagnosticFiles.window(text, now - 60000, now)
+        assertTrue(selected.contains("无法按所选时段筛选"))
+        assertTrue(selected.contains(text))
+    }
+
+    @Test fun undatedPrefixDoesNotIncludeDatedRecordsOutsideWindow() {
+        val text = "startup failed\n2026-09-13 18:00:00 ERROR old\nold detail\n2026-09-13 18:29:00 ERROR recent\nrecent detail\n"
+        val selected = DiagnosticFiles.window(text, now - 120000, now)
+        assertTrue(selected.contains("startup failed"))
+        assertTrue(selected.contains("recent detail"))
+        assertFalse(selected.contains("old detail"))
+    }
+
     private val now = LocalDateTime.of(2026, 9, 13, 18, 30).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
     private fun frame(root: File, time: Long, folder: String = "20260913-18", bytes: Int = 10): File =
         File(root, "$folder/${time * 1000000}.jpg").apply { parentFile.mkdirs(); writeBytes(ByteArray(bytes)); setLastModified(now) }

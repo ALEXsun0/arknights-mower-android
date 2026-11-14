@@ -180,7 +180,7 @@ def download(check_id):
 def register_routes(app):
     from flask import abort, request
 
-    @app.route('/android/apk-update', methods=['GET', 'POST'])
+    @app.route('/android/apk-update', endpoint='android_apk_update', methods=['GET', 'POST'])
     def route():
         if request.method == 'GET':
             return status()

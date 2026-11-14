@@ -22,9 +22,16 @@ internal object DiagnosticFiles {
         runCatching { LocalDateTime.parse(it, formatter).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() }.getOrNull()
     }
     fun window(text: String, since: Long, until: Long): String = buildString {
-        var include = false
+        var include = true
+        var dated = false
+        var warned = false
         text.lineSequence().forEach { line ->
-            logTime(line)?.let { include = it in since..until }
+            logTime(line)?.let { include = it in since..until; dated = true }
+            if (!dated && !warned && line.isNotBlank()) {
+                appendLine("[以下日志没有可识别时间戳，无法按所选时段筛选]")
+                warned = true
+            }
+            if (!dated && line.isBlank() && !warned) return@forEach
             if (include) appendLine(line)
         }
     }

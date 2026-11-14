@@ -121,7 +121,7 @@ def register_routes(app):
                 response.set_data(app.json.dumps(data))
         return response
 
-    @app.route('/android/python-update',methods=['GET','POST'])
+    @app.route('/android/python-update',endpoint='android_python_update',methods=['GET','POST'])
     def route():
         if request.method=='GET': return info()
         if request.headers.get('X-Mower-Update') != '1': abort(403)
