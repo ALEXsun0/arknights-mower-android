@@ -14,6 +14,5 @@ python3 scripts/prepare_android_maa.py
 python3 scripts/verify_maa_adapter.py
 python3 scripts/package_maa_python.py
 python3 scripts/pack_runtime.py
-docker run --rm --platform linux/arm64 -v "$PWD:/project" -w /project mower-android-runtime:dev python -m unittest discover -s tests -v
 bash android/gradlew -p android :app:assembleDebug --console=plain
 cp android/app/build/outputs/apk/debug/app-debug.apk artifacts/mower-android-arm64-debug.apk

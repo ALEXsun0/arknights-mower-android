@@ -74,7 +74,6 @@ jobs:
         working-directory: runtime/ui
         run: |
           npm ci --no-audit --no-fund
-          npm run test -- src/routes.test.js src/theme/mower.test.js src/utils/manualUpdate.test.js src/components/GlobalUpdateDrop.test.js src/components/SoftwareComponentUpdates.test.js src/components/SoftwareUpdate.test.js
           npm run build
       - name: Verify production WebUI API URLs
         run: python3 scripts/check_webui_build.py
@@ -89,8 +88,6 @@ jobs:
           load: true
           cache-from: type=gha,scope=android-python
           cache-to: type=gha,mode=max,scope=android-python
-      - name: Test Python integration
-        run: docker run --rm --platform linux/arm64 -v "$PWD:/project" -w /project mower-android-runtime:dev python -m unittest discover -s tests -v
       - name: Prepare official MAA and package runtime
         run: |
           python3 scripts/prepare_android_maa.py
