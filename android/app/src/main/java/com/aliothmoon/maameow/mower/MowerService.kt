@@ -142,11 +142,11 @@ class MowerService : Service() {
                 RemoteServiceManager.getInstance()
                 val bridgeToken = secret()
                 val webToken = savedConnection.token
-                val localBridge = MowerBridge(this@MowerService, bridgeToken) {
+                val localBridge = MowerBridge(this@MowerService, bridgeToken, updateRestart = {
                     mainHandler.post {
                         if (active && !stopping && ownsRuntime && updateRestart.request()) stopRuntime()
                     }
-                }
+                })
                 bridge = localBridge
                 engine = localBridge
                 localBridge.start()

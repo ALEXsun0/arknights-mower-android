@@ -473,6 +473,9 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                 import server
                 from mower_android.managed import import_component
                 with server.maa_maintenance_lock:
+                    busy = server._mower_busy_response()
+                    if busy:
+                        raise ValueError('Mower 任务正在运行，请停止任务后更新 MAA 核心')
                     if server._job_running(server.maa_update_job) or server._job_running(server.maa_resource_update_job):
                         raise ValueError('MAA 正在更新，请等待完成后重试')
                     result = import_component(path, plan['filename'])

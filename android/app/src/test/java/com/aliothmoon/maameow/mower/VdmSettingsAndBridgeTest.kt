@@ -57,11 +57,14 @@ class VdmSettingsAndBridgeTest {
 
     private fun verifyAuthenticatedPrepare(expectedMode: Int?) {
         val modes = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        val component = java.io.File(context.filesDir, "mower-data/maa-component.sha256")
+        component.parentFile!!.mkdirs(); component.writeText("a".repeat(64))
         val binder = Binder()
         val remote = Proxy.newProxyInstance(RemoteService::class.java.classLoader,
             arrayOf(RemoteService::class.java)) { _, method, args ->
             when (method.name) {
                 "asBinder" -> binder
+                "maaRpc" -> "{\"ok\":true,\"result\":{\"component_hash\":\"\"}}"
                 "setVirtualDisplayMode" -> { modes += args!![0] as Int; false }
                 "stopVirtualDisplay" -> null
                 else -> error("Unexpected backend operation: ${method.name}")

@@ -40,6 +40,18 @@ object RemoteServiceManager {
         runCatching { old?.destroy() }
     }
     fun getInstanceOrNull(): RemoteService? = service?.takeIf { it.asBinder().isBinderAlive }
+    suspend fun retireForCoreUpdate(expected: RemoteService) = withContext(Dispatchers.IO) {
+        connecting.lock()
+        try {
+            check(service?.asBinder() === expected.asBinder()) { "后台连接已改变，请重新连接" }
+            // Binder destruction can block; the remote ProcessExit watchdog owns its deadline.
+            kotlin.concurrent.thread(name = "maa-background-exit", isDaemon = true) {
+                runCatching { expected.destroy() }
+            }
+            awaitBackgroundExit { expected.asBinder().isBinderAlive }
+            if (service?.asBinder() === expected.asBinder()) service = null
+        } finally { connecting.unlock() }
+    }
     suspend fun getInstance(): RemoteService = withContext(Dispatchers.IO) {
         connecting.lock()
         try {

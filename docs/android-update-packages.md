@@ -31,7 +31,11 @@ JSON 示例：
 
 生成：`python3 scripts/package_maa_python.py`。CI 与 APK 一并发布该 ZIP，使用 GitHub asset digest，不额外发布 SHA256 文件。
 
-官方 Android 核心导入接受 `MAAComponent-v版本-android-arm64.tar.gz`，内置版本的官方哈希写入 `runtime/mower_android/maa-component-lock.json`，其他版本读取官方 Release asset 的 digest。核心和资源在下一次服务启动时加载，不在运行中的MaaCore进程强行替换动态库。
+官方 Android 核心导入接受 `MAAComponent-v版本-android-arm64.tar.gz`，内置版本的官方哈希写入 `runtime/mower_android/maa-component-lock.json`，其他版本读取官方 Release asset 的 digest。核心更新完成后，宿主通过带会话 Token 的本机桥接核对已安装组件摘要；已加载旧核心时，确认 MAA 空闲且用户未在手动操作、预览或解锁，再退出承载核心的后台进程。旧进程在 6 秒内确认退出后才允许重建，后台连接仍使用原有 20 秒启动期限。Python 调度服务和 WebUI 保持运行，不清除配置、排班或任务记录。尚未加载过核心时不创建后台显示器，下次连接游戏再加载。
+
+后台进程同时承载游戏显示器，因此核心切换会重建显示器；切换前仍在运行的游戏会重新连接，原本关闭的游戏不会被主动启动。系统可能因显示器移除而重建游戏界面，本功能不保证游戏画面连续。在线更新沿用 Mower 空闲准入，手动导入也拒绝正在运行的 Mower 任务。安装后的切换遇到 MAA 运行、手动操作、预览、解锁或服务停止时只保留待加载版本，下次明确准备 MAA 时再检查空闲条件；不增加轮询或重试定时器，不中断当前任务。更新和切换失败不自动启动调度。
+
+安装成功与加载成功分别报告。旧进程退出、后台连接或新核心加载失败时，保留已安装文件和回退副本，并提示重新连接后台游戏；仍失败时可停止并重新启动服务。下一次明确连接会核对组件摘要，已加载相同组件时不重复重建进程。新核心的资源初始化失败也保留其已尝试加载的组件身份，避免在同一进程混入另一版本。回退副本仍需完成正常 MAA 任务后才清理。此功能需要安装包含新原生桥和宿主适配层的 APK，仅更新 Mower 程序不会新增能力。
 
 MAA 核心和资源只走官方源，Android 暂时禁用 Mirror酱。`android-release.json` 与 APK、Python 包一起发布，供主仓库识别同渠道的兼容宿主，无需每次重新构建 APK。
 

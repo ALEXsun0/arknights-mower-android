@@ -5,6 +5,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackgroundServiceConnectionTest {
+    @Test fun replacementWaitsUntilOldProcessIsDead() = runBlocking {
+        var alive = true
+        val exit = launch { delay(30); alive = false }
+        awaitBackgroundExit(500) { alive }
+        assertFalse(alive)
+        exit.join()
+    }
+
+    @Test fun stuckExitFailsWithinDeadlineWithoutCancellingOwner() = runBlocking {
+        val failure = runCatching { awaitBackgroundExit(10) { true } }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertTrue(currentCoroutineContext().isActive)
+    }
+
     @Test fun connectionCompletes() = runBlocking {
         assertEquals("connected", awaitBackgroundService { "connected" })
     }
