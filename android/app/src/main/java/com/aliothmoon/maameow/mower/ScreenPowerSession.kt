@@ -49,6 +49,6 @@ internal class ScreenPowerSession(
     private fun restorePower() {
         if (!restorePending) return
         if (runCatching { setPower(true) }.getOrDefault(false)) restorePending = false
-        else reportFailure("屏幕恢复未成功，请短按电源键，未亮屏时稍等再按一次；重新连接后台时会再次恢复")
+        else reportFailure("屏幕或自动熄屏设置恢复未成功，请短按电源键并重新连接后台")
     }
 }

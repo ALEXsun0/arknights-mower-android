@@ -45,11 +45,7 @@ class BackgroundGameService : RemoteService.Stub() {
             "sleep" -> com.aliothmoon.maameow.remote.internal.WakeUnlockController.lockAndSleep()
             "screen_power" -> {
                 val power = com.aliothmoon.maameow.remote.internal.PowerController
-                val on = p.getBoolean("on")
-                val success = power.setDisplayPower(on)
-                if (on || !success) power.stopUserActivityKeepAlive()
-                else power.startUserActivityKeepAlive(0)
-                success
+                power.setFakeScreenPower(p.getBoolean("on"))
             }
             "game_status" -> {
                 val pkg = p.getString("package"); require(allowed(pkg))

@@ -23,6 +23,7 @@ class MowerRuntimeMonitorTest {
     private lateinit var monitor: MowerRuntimeMonitor
     private var state = "stopped"
     private var sleeps = 0
+    private var manualScreenOff = false
 
     @Before fun prepare() {
         context.getSharedPreferences("android-system", 0).edit().clear()
@@ -31,7 +32,8 @@ class MowerRuntimeMonitorTest {
         bridge = MowerBridge(context, "test-token")
         monitor = MowerRuntimeMonitor(context,
             readStatus = { JSONObject().put("status", state) },
-            sleepPhone = { sleeps++; 0 })
+            sleepPhone = { sleeps++; 0 },
+            manualScreenOff = { manualScreenOff })
         MowerService.engine = bridge
         MowerService.monitor = monitor
         MowerService.url = "http://127.0.0.1:58000/?token=test-token"
@@ -70,6 +72,22 @@ class MowerRuntimeMonitorTest {
         power.setIsInteractive(true)
         tick("working")
         tick("sleeping")
+        tick("sleeping")
+        assertEquals(1, sleeps)
+    }
+
+    @Test fun manualFakeScreenBlocksIdleLockUntilTheUserRestoresIt() {
+        power.setIsInteractive(false)
+        dispatch("task_screen_begin")
+        power.setIsInteractive(true)
+        tick("working")
+        manualScreenOff = true
+        tick("sleeping")
+        tick("sleeping")
+        assertEquals(0, sleeps)
+        manualScreenOff = false
+        context.getSharedPreferences("android-system", 0).edit().putBoolean("preserve_screen_on", false).apply()
+        tick("working")
         tick("sleeping")
         assertEquals(1, sleeps)
     }
