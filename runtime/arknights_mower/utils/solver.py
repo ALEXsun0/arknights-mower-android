@@ -855,6 +855,8 @@ class BaseSolver:
     def waiting_solver(self):
         """需要等待的页面解决方法。触发超时重启会返回False"""
         scene = self.scene()
+        if scene not in self.waiting_scene:
+            return True
         sleep_time, wait_count = getattr(
             config.conf.waiting_scene, scene_list[str(scene)]["label"]
         )

@@ -71,9 +71,9 @@ object MowerDiagnostics {
                 entry("network.txt", NetworkDiagnostics.report(context))
                 val startup = File("/data/local/tmp/mower-background-launch.log")
                 entry("background.log", if (startup.canRead()) MowerLogFiles.tail(startup, 128 * 1024) else "后台日志不可读")
-                val process = ProcessBuilder("/system/bin/logcat", "-d", "-t", "500", "--pid=${android.os.Process.myPid()}").start()
-                try { entry("android.log", process.inputStream.bufferedReader().use { it.readText() }) }
-                finally { process.destroy() }
+                progress(complete, total, "android.log")
+                entry("android.log", DiagnosticCommand.collect(
+                    listOf("/system/bin/logcat", "-d", "-t", "500", "--pid=${android.os.Process.myPid()}"), directory))
                 plan.images.frames.forEach { frame ->
                     progress(complete, total, frame.name)
                     // Cleanup can remove a frame after preview; report that instead of losing the whole export.
