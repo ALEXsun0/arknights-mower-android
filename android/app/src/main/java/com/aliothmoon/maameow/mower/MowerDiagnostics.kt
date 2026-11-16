@@ -14,30 +14,33 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object MowerDiagnostics {
+    private val tokenPattern = Regex("(?i)(token[=\\s:\"']+)[a-z0-9._-]+")
+    private val digestPattern = Regex("\\b[a-f0-9]{64}\\b")
     fun redact(value: String) = value
-        .replace(Regex("(?i)(token[=\\s:\"']+)[a-z0-9._-]+"), "$1[redacted]")
-        .replace(Regex("\\b[a-f0-9]{64}\\b"), "[redacted]")
+        .replace(tokenPattern, "$1[redacted]")
+        .replace(digestPattern, "[redacted]")
 
     internal data class Plan(val since: Long, val until: Long, val retentionHours: Double,
-        val logs: Map<String, String>, val images: DiagnosticFiles.Selection, val includeImages: Boolean, val compactImages: Boolean) {
-        val estimatedBytes get() = images.bytes + logs.values.sumOf { it.toByteArray().size.toLong() }
+        val logs: Map<String, DiagnosticLogArchive.Source>, val images: DiagnosticFiles.Selection, val includeImages: Boolean, val compactImages: Boolean) {
+        val estimatedBytes get() = images.bytes + logs.values.sumOf { it.bytes }
     }
 
     internal fun prepare(context: Context, since: Long, until: Long, includeImages: Boolean, compactImages: Boolean): Plan {
-        require(since < until) { "开始时间必须早于结束时间" }
-        val logs = linkedMapOf<String, String>()
-        fun collect(name: String, file: File, limit: Int) {
-            if (Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+        require(!includeImages || since < until) { "开始时间必须早于结束时间" }
+        val logs = DiagnosticLogArchive.snapshot(context.filesDir)
+        val imageLogs = mutableListOf<String>()
+        fun collect(file: File, limit: Int) {
+            if (includeImages && Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
                 val text = MowerLogFiles.tail(file, limit)
                 val selected = DiagnosticFiles.window(text, since, until)
-                logs[name] = redact((if (file.length() > limit) "[日志达到读取上限，较早内容可能未收入]\n" else "") + selected)
+                imageLogs += selected
             }
         }
-        collect("runtime.log", File(context.filesDir, "python.log"), 4 * 1024 * 1024)
+        collect(File(context.filesDir, "python.log"), 4 * 1024 * 1024)
         MowerLogFiles.recent(File(context.filesDir, "mower-data/log")).forEach {
-            collect("mower/${it.name}", it, 2 * 1024 * 1024)
+            collect(it, 2 * 1024 * 1024)
         }
-        val images = if (includeImages) DiagnosticFiles.select(File(context.filesDir, "mower-data/screenshot"), since, until, logs.values.joinToString("\n"),
+        val images = if (includeImages) DiagnosticFiles.select(File(context.filesDir, "mower-data/screenshot"), since, until, imageLogs.joinToString("\n"),
                 budget = if (compactImages) DiagnosticFiles.IMAGE_BUDGET else Long.MAX_VALUE, maximum = if (compactImages) 512 else Int.MAX_VALUE)
             else DiagnosticFiles.Selection(emptyList(), 0, 0, emptyList())
         return Plan(since, until, ScreenshotPreferences(context).hours(), logs, images, includeImages, compactImages)
@@ -49,8 +52,10 @@ object MowerDiagnostics {
         val target = File(directory, "mower-diagnostics-${plan.until}-${UUID.randomUUID().toString().take(8)}.zip")
         val temporary = File(directory, "${target.name}.part")
         val included = JSONArray(); val missing = JSONArray(plan.images.missingReferences)
-        val total = plan.logs.size + plan.images.frames.size + 9
-        check(directory.usableSpace > plan.estimatedBytes + 32L * 1024 * 1024) { "空间不足：需约 ${plan.estimatedBytes / 1048576} MiB 及 32 MiB 余量，请缩短时段或选关键截图" }
+        val logs = DiagnosticLogArchive.snapshot(context.filesDir)
+        val estimatedBytes = plan.images.bytes + logs.values.sumOf { it.bytes }
+        val total = logs.size + plan.images.frames.size + 6
+        check(directory.usableSpace > estimatedBytes + 32L * 1024 * 1024) { "空间不足：需约 ${estimatedBytes / 1048576} MiB 及 32 MiB 余量，请减少截图或先释放存储空间" }
         var complete = 0
         try {
             ZipOutputStream(temporary.outputStream().buffered()).use { output ->
@@ -62,18 +67,17 @@ object MowerDiagnostics {
                     output.putNextEntry(ZipEntry(name)); output.write(redact(value).toByteArray()); output.closeEntry()
                     complete++
                 }
-                plan.logs.forEach { (name, text) -> entry(name, text) }
+                logs.forEach { (name, source) ->
+                    progress(complete, total, name)
+                    output.putNextEntry(ZipEntry(name))
+                    DiagnosticLogArchive.write(source, output, ::redact) { progress(complete, total, name) }
+                    output.closeEntry()
+                    complete++
+                }
                 entry("device.txt", "APK ${com.aliothmoon.maameow.BuildConfig.VERSION_NAME}\nAndroid ${android.os.Build.VERSION.RELEASE}\n${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}\n${MowerService.message}\n")
-                val checks = File(context.filesDir, "startup-check.txt")
-                entry("startup-check.txt", if (checks.isFile) MowerLogFiles.tail(checks, 64 * 1024) else "暂无启动检查")
                 entry("process-exits.txt", ProcessExitDiagnostics.report(context))
                 entry("storage.txt", StorageDiagnostics.report(context.filesDir, context.cacheDir))
                 entry("network.txt", NetworkDiagnostics.report(context))
-                val startup = File("/data/local/tmp/mower-background-launch.log")
-                entry("background.log", if (startup.canRead()) MowerLogFiles.tail(startup, 128 * 1024) else "后台日志不可读")
-                progress(complete, total, "android.log")
-                entry("android.log", DiagnosticCommand.collect(
-                    listOf("/system/bin/logcat", "-d", "-t", "500", "--pid=${android.os.Process.myPid()}"), directory))
                 plan.images.frames.forEach { frame ->
                     progress(complete, total, frame.name)
                     // Cleanup can remove a frame after preview; report that instead of losing the whole export.
@@ -98,6 +102,9 @@ object MowerDiagnostics {
                 }
                 val manifest = JSONObject().put("format", 2).put("from", Instant.ofEpochMilli(plan.since).toString())
                     .put("until", Instant.ofEpochMilli(plan.until).toString()).put("screenshot_retention_hours", plan.retentionHours)
+                    .put("log_scope", "complete_saved_files").put("logs", JSONArray(logs.map { (name, source) ->
+                        JSONObject().put("path", name).put("source_bytes", source.bytes)
+                    }))
                     .put("screenshots_requested", plan.includeImages).put("available_screenshots", plan.images.available).put("available_screenshot_bytes", plan.images.availableBytes)
                     .put("omitted_by_limit", plan.images.omitted).put("compact_screenshots", plan.compactImages)
                     .put("missing_or_expired", missing).put("screenshots", included)
@@ -108,8 +115,8 @@ object MowerDiagnostics {
                     (if (plan.compactImages) "关键截图模式：优先订单截图及错误前后两分钟，其余在时段内采样，上限 128 MiB / 512 张。\n" else "完整截图模式：收入所选时段内所有仍可读取的截图。\n") +
                     "详情见 manifest.json；是否勾选截图：${plan.includeImages}。\n" +
                     "设置为 0 时不保存新截图；已清理或未写盘的历史画面无法恢复。重要分类沿用 Mower 保留最近 100 张的规则。\n" +
-                    "带时间戳的日志按所选时段筛选；开头无法确定时间的日志仍保留并标注。控制台最多读取末尾 4 MiB，最近四个 Mower 日志各 2 MiB；超限会在文件头说明。\n" +
-                    "不包含配置、Token 或解锁录制。系统诊断包含最近状态，可能覆盖其他时段。\n")
+                    "时间范围仅筛选截图；日志包含打包开始时所有已保存的运行日志，按行脱敏后写入，不按时段、文件数量或末尾字节数截取。打包开始后的追加内容留待下次导出。\n" +
+                    "导出不运行 logcat，不包含现场采集的 Android 系统日志。不包含配置、Token 或解锁录制。系统诊断包含最近状态，可能覆盖其他时段。\n")
             }
             check(temporary.renameTo(target)) { "无法保存诊断包" }
             directory.listFiles().orEmpty().filter { it != target && it.name.startsWith("mower-diagnostics") && it.extension == "zip" && it.lastModified() < System.currentTimeMillis() - 86400000 }

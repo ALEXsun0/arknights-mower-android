@@ -72,6 +72,7 @@ class MowerDiagnosticsActivity : Activity() {
         controls.addView(fromButton, LinearLayout.LayoutParams(-1, dp(48)))
         controls.addView(toButton, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
         updateDates()
+        controls.addView(label("完整导出已有日志文件，时间范围仅用于选择截图。", 12f, MowerStyle.muted))
         include = CheckBox(this).apply { text = "包含所选时段截图"; setTextColor(MowerStyle.ink); minHeight = dp(48); isChecked = savedInstanceState?.getBoolean("images") ?: true }
         compact = CheckBox(this).apply { text = "仅导出关键截图（最多 128 MiB）"; setTextColor(MowerStyle.ink); minHeight = dp(48); isChecked = savedInstanceState?.getBoolean("compact") ?: false }
         controls.addView(include); controls.addView(compact)
@@ -130,13 +131,14 @@ class MowerDiagnosticsActivity : Activity() {
     private fun preview() {
         if (working) return
         previewJob?.cancel(); plan = null; archive = null; buttons(false)
-        summary.text = "正在统计截图数量和占用…"
+        summary.text = "正在统计日志文件和截图占用…"
         val start = since; val end = until; val images = include.isChecked; val small = compact.isChecked
         previewJob = scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { scanLock.withLock { ensureActive(); MowerDiagnostics.prepare(this@MowerDiagnosticsActivity, start, end, images, small) } }
                 plan = result
-                summary.text = if (images) "时段内可用 ${result.images.available} 张 · ${mib(result.images.availableBytes)} MiB\n本次包含 ${result.images.frames.size} 张 · 截图 ${mib(result.images.bytes)} MiB\n预计诊断包不超过约 ${mib(result.estimatedBytes + 2 * 1024 * 1024)} MiB\n省略 ${result.images.omitted} 张；日志引用但未找到 ${result.images.missingReferences.size} 张" else "仅导出日志，不包含截图。\n预计诊断包不超过约 ${mib(result.estimatedBytes + 2 * 1024 * 1024)} MiB"
+                summary.text = "完整日志 ${result.logs.size} 个文件 · ${mib(result.logs.values.sumOf { it.bytes })} MiB\n" +
+                    if (images) "时段内可用 ${result.images.available} 张 · ${mib(result.images.availableBytes)} MiB\n本次包含 ${result.images.frames.size} 张 · 截图 ${mib(result.images.bytes)} MiB\n预计诊断包约 ${mib(result.estimatedBytes + 2 * 1024 * 1024)} MiB（压缩前，生成前会重新检查空间）\n省略 ${result.images.omitted} 张；日志引用但未找到 ${result.images.missingReferences.size} 张" else "不包含截图。\n预计诊断包约 ${mib(result.estimatedBytes + 2 * 1024 * 1024)} MiB（压缩前，生成前会重新检查空间）"
                 state.text = "预览完成；日志会脱敏，原始截图会随包导出。"
                 buttons(true)
             } catch (e: CancellationException) { throw e }
