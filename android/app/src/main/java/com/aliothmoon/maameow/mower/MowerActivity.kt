@@ -124,14 +124,14 @@ class MowerActivity : Activity() {
             return b
         }
         add("游戏画面") { startActivity(Intent(this, MowerGameActivity::class.java)) }
-        screenOff = add("一键息屏") {
+        screenOff = add("假熄屏挂机") {
             runCatching { MowerScreenSaver.turnOffScreen(this) }.onFailure {
-                Toast.makeText(this, it.message ?: "无法关闭屏幕电源", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, it.message ?: "无法进入假熄屏挂机", Toast.LENGTH_LONG).show()
             }
         }.apply {
             isEnabled = false
-            tooltipText = "仅关闭屏幕电源；恢复时可能需要短按两次电源键并解锁"
-            contentDescription = "一键息屏，仅关闭屏幕电源；恢复时可能需要短按两次电源键并解锁"
+            tooltipText = "关闭物理屏幕并暂停自动熄屏；通过运行通知恢复，实体电源键仍可使系统休眠"
+            contentDescription = "假熄屏挂机，关闭物理屏幕并保持系统唤醒；通过运行通知恢复"
         }
         add("软件设置") { startActivity(Intent(this, MowerSettingsActivity::class.java)) }
         toggle = add("启动服务", true) {

@@ -22,6 +22,48 @@ object PowerController {
         Thread(task, "display-user-activity").apply { isDaemon = true }
     }
     private var activityTask: ScheduledFuture<*>? = null
+    private val screenTimeout = ScreenTimeoutOverride(
+        recoveryFile = File("/data/local/tmp/mower_screen_timeout"),
+        currentUser = { powerCommand("/system/bin/am", "get-current-user").toInt() },
+        read = { user -> powerCommand("/system/bin/settings", "--user", user.toString(), "get", "system", "screen_off_timeout").takeUnless { it == "null" } },
+        write = { user, value ->
+            val args = mutableListOf("/system/bin/settings", "--user", user.toString(),
+                if (value == null) "delete" else "put", "system", "screen_off_timeout")
+            if (value != null) args.add(value)
+            powerCommand(*args.toTypedArray())
+        },
+    )
+    private val fakeScreen = FakeScreenPowerSession(
+        isInteractive = { ServiceManager.getPowerManager().isScreenOn(0) },
+        wake = { WakeUnlockController.wakeScreen() },
+        keepAwake = { enabled ->
+            if (enabled) {
+                screenTimeout.acquire()
+                startUserActivityKeepAlive(0)
+            } else {
+                screenTimeout.restore()
+                stopUserActivityKeepAlive()
+            }
+        },
+        displayPower = { on ->
+            runCatching { setDisplayPower(on) }.getOrElse {
+                Ln.e("$TAG: physical display power failed", it)
+                false
+            }
+        },
+    )
+
+    fun setFakeScreenPower(on: Boolean): Boolean = fakeScreen.setScreenOn(on)
+
+    private fun powerCommand(vararg arguments: String): String {
+        val process = ProcessBuilder(*arguments).redirectErrorStream(true).start()
+        try {
+            check(process.waitFor(3, TimeUnit.SECONDS)) { "自动熄屏设置操作超时" }
+            val output = process.inputStream.bufferedReader().use { it.readText().trim() }
+            check(process.exitValue() == 0) { "自动熄屏设置操作失败" }
+            return output
+        } finally { process.destroy() }
+    }
 
     var flag: Boolean
         get() = runCatching { file.exists() }.getOrDefault(false)
@@ -37,7 +79,7 @@ object PowerController {
         }
 
     fun setDisplayPower(on: Boolean): Boolean {
-        if (!on) flag = true
+        if (!on) { flag = true; check(flag) { "无法保存屏幕恢复标记" } }
         val restored = setDisplayPowerInternal(on)
         if (on && restored) flag = false
         return restored
@@ -65,7 +107,7 @@ object PowerController {
 
             val physicalDisplayIds =
                 if (useDisplayControl) DisplayControl.getPhysicalDisplayIds() else SurfaceControl.getPhysicalDisplayIds()
-            if (physicalDisplayIds == null) {
+            if (physicalDisplayIds == null || physicalDisplayIds.isEmpty()) {
                 Ln.e("Could not get physical display ids")
                 return false
             }
@@ -136,6 +178,9 @@ object PowerController {
             }.onFailure {
                 Ln.e("$TAG: Failed to recover screen power: ${it.message}")
             }
+        }
+        runCatching { screenTimeout.restore() }.onFailure {
+            Ln.e("$TAG: Failed to restore screen timeout", it)
         }
     }
 }

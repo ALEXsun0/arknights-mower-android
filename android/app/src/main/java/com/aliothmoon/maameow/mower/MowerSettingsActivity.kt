@@ -152,7 +152,7 @@ class MowerSettingsActivity : Activity() {
             Triple("sleep_when_idle", "本轮任务完成后锁屏休眠", "按 Mower 的工作与等待状态判断，不另建一套排班。"),
             Triple("preserve_screen_on", "保留原本亮着的屏幕", "本轮开始时已亮屏，则结束后不自动锁屏。"),
             Triple("screen_saver", "任务期间显示黑色屏保", "离开应用后显示，长按退出；需要系统悬浮窗权限。"),
-            Triple("hardware_screen_off", "屏保期间关闭物理屏幕", "保持后台游戏运行；长按屏幕、打开本应用或通知栏可恢复。")
+            Triple("hardware_screen_off", "屏保期间使用假熄屏挂机", "关闭物理面板并暂停自动熄屏；长按或通过运行通知恢复。仍可能受到厂商后台限制。")
         ))
         group("后台保活", listOf(
             Triple("keep_game_alive", "任务期间自动恢复游戏", "游戏退出后按需拉起，10 分钟最多 3 次；空闲主动退出、停止任务和手动操作期间不拉起。不能解除系统息屏限帧。"),

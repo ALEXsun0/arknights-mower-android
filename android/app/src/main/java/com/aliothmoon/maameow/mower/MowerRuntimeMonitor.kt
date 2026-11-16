@@ -11,6 +11,7 @@ class MowerRuntimeMonitor(
     private val context: Context,
     private val readStatus: () -> JSONObject = { JSONObject(NativeRuntimeClient.call("/status")) },
     private val sleepPhone: (MowerBridge) -> Int = { it.sleepPhone() },
+    private val manualScreenOff: () -> Boolean = { MowerScreenSaver.manuallyOff },
 ) {
     private val settings = AndroidSystemSettings(context)
     private val cycles = TaskCyclePolicy()
@@ -97,7 +98,7 @@ class MowerRuntimeMonitor(
             } else MowerScreenSaver.hide(automatic = true)
         } else MowerScreenSaver.hide(automatic = true)
         if (cycle.completed) {
-            if (settings.enabled("sleep_when_idle") && cycle.maySleep) {
+            if (settings.enabled("sleep_when_idle") && cycle.maySleep && !manualScreenOff()) {
                 val code = sleepPhone(engine)
                 AndroidSystemSettings.lastAction = if (code == 0) "本轮任务完成，手机已锁屏休眠" else UnlockSettings.resultText(code)
             }
