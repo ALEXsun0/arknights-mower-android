@@ -130,6 +130,8 @@ jobs:
       - name: Install Android build tools
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;29.0.13113456' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Test Android host before packaging
+        run: bash android/gradlew -p android :app:testDebugUnitTest --console=plain
       - uses: actions/download-artifact@v4
         with:
           name: android-runtime-${{ github.run_id }}
@@ -169,7 +171,7 @@ jobs:
           PY
       - name: Build APK
         run: |
-          bash android/gradlew -p android :app:testDebugUnitTest :app:assembleRelease :app:lintRelease --console=plain
+          bash android/gradlew -p android :app:assembleRelease :app:lintRelease --console=plain
           mkdir -p artifacts
           python3 scripts/package_maa_python.py
           cp android/app/build/outputs/apk/release/app-release.apk artifacts/mower-android-arm64.apk
