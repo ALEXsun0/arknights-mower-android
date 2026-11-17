@@ -13,13 +13,16 @@ import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], application = Application::class)
@@ -38,6 +41,7 @@ class MowerScreenPowerTest {
 
     @Test fun homeButtonKeepsScreenOffThroughMonitorChecksAndResumeRestoresIt() {
         val context = RuntimeEnvironment.getApplication()
+        shadowOf(context).grantPermissions("${context.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
         context.getSharedPreferences("android-system", 0).edit().clear()
             .putBoolean("sleep_when_idle", false).putBoolean("disconnect_stop", false).apply()
         val powers = mutableListOf<Boolean>()
@@ -67,7 +71,7 @@ class MowerScreenPowerTest {
         val home = Robolectric.buildActivity(MowerActivity::class.java).create()
         val bridge = MowerBridge(context, "test-token")
         try {
-            val button = buttons(home.get().window.decorView).single { it.text == "一键息屏" }
+            val button = buttons(home.get().window.decorView).single { it.text == "假熄屏挂机" }
             assertFalse(button.isEnabled)
             MowerService.active = true
             MowerService.url = "http://127.0.0.1:58000/"
@@ -77,6 +81,7 @@ class MowerScreenPowerTest {
             assertTrue(button.isEnabled)
             button.performClick()
             awaitPower()
+            assertNull(ShadowToast.getTextOfLatestToast())
             assertEquals(listOf(false), powers)
 
             var state = "working"
