@@ -1,6 +1,7 @@
 package com.aliothmoon.maameow.mower
 
 import android.content.Context
+import android.os.DeadObjectException
 import android.os.ParcelFileDescriptor
 import android.util.Base64
 import com.aliothmoon.maameow.RemoteService
@@ -148,7 +149,7 @@ class MowerBridge(private val context: Context, private val token: String,
         val installed = componentHash()
         require(expected.matches(Regex("[a-f0-9]{64}")) && expected == installed) { "MAA 安装版本已改变，请重新检查更新" }
         val current = currentService()
-        val state = current?.let { JSONObject(it.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }
+        val state = current?.let(::coreStatus)
         val activated = MaaCoreActivation.activate(expected, installed,
             state?.optString("component_hash", "") ?: "", prepared && current?.asBinder() == serviceBinder,
             state?.optBoolean("running") ?: false,
@@ -163,7 +164,7 @@ class MowerBridge(private val context: Context, private val token: String,
             retireService(old)
             check(!closed && !MowerService.stopping) { "服务正在停止，已取消 MAA 核心切换" }
             try {
-                prepare(JSONObject().put("package", packageName))
+                prepare(JSONObject().put("package", packageName), replacingCore = true)
                 if (gameAlive) check(ensurePrepared().mowerGame(packageName, true)) { "MAA 已加载，但游戏未能重新连接后台显示器" }
                 expectedGameRunning = wantedGame
                 nextGameProbe = 0L
@@ -177,20 +178,59 @@ class MowerBridge(private val context: Context, private val token: String,
         return JSONObject().put("activated", activated).put("component_hash", installed)
     }
 
-    private fun prepare(p: JSONObject): JSONObject {
+    private fun checkPreparing() {
+        check(!closed && !MowerService.stopping) { "服务正在停止，已取消后台游戏准备" }
+    }
+
+    private fun prepare(p: JSONObject, replacingCore: Boolean = false): JSONObject {
         val useVdm = settings.enabled("use_vdm")
         require(!useVdm || android.os.Build.VERSION.SDK_INT >= 34) { "VDM 需要 Android 14 或更高版本" }
         val requested = p.optString("package", packageName)
         require(requested in setOf("com.hypergryph.arknights", "com.hypergryph.arknights.bilibili")) { "暂支持官服和 B 服" }
-        val current = connectService()
         val hash = componentHash()
-        val coreState = JSONObject(current.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result")
-        val loaded = coreState.optString("component_hash", "")
-        if (loaded.isNotEmpty() && loaded != hash) {
+        var canReconnect = !replacingCore
+        var canReloadCore = !replacingCore
+        while (true) {
+            checkPreparing()
+            var current: RemoteService? = null
+            try {
+                current = connectService()
+                checkPreparing()
+                val state = coreStatus(current)
+                val loaded = state.optString("component_hash", "")
+                if (loaded.isEmpty() || loaded == hash) {
+                    if (prepared && current.asBinder() == serviceBinder && requested == packageName) {
+                        return status(current, state)
+                    }
+                    return prepareDisplay(current, requested, useVdm, hash)
+                }
+            } catch (failure: DeadObjectException) {
+                val sameServiceAlive = current != null && currentService()?.asBinder() === current.asBinder()
+                if (sameServiceAlive) {
+                    android.util.Log.e("Mower", "准备后台游戏时 Binder 调用失败，后台服务仍已连接", failure)
+                    throw IllegalStateException("准备后台游戏时 Binder 调用失败（DeadObjectException），请查看诊断日志", failure)
+                }
+                prepared = false
+                serviceBinder = null
+                recoveredBinder = null
+                displayId = -1
+                if (closed || MowerService.stopping) throw IllegalStateException("服务正在停止，已取消后台游戏准备", failure)
+                if (!canReconnect) {
+                    android.util.Log.e("Mower", "准备后台游戏失败，后台服务连接已断开", failure)
+                    throw IllegalStateException("准备后台游戏时服务连接已断开（DeadObjectException），请查看诊断日志", failure)
+                }
+                android.util.Log.w("Mower", "准备后台游戏时服务连接已断开，重新连接一次", failure)
+                canReconnect = false
+                continue
+            }
+            // Core replacement owns its process retirement and any game relaunch.
+            check(canReloadCore) { "后台进程加载的 MAA 核心与安装版本不一致，请检查更新" }
+            canReloadCore = false
             check(reloadCore(hash).getBoolean("activated")) { "MAA 核心等待空闲切换，请结束当前任务或手动操作后重新连接" }
-            return prepare(p)
         }
-        if (prepared && current.asBinder() == serviceBinder && requested == packageName) return status()
+    }
+
+    private fun prepareDisplay(current: RemoteService, requested: String, useVdm: Boolean, hash: String): JSONObject {
         prepared = false
         restoreAudio(current)
         recoveredBinder = current.asBinder()
@@ -199,14 +239,18 @@ class MowerBridge(private val context: Context, private val token: String,
         displayId = current.startVirtualDisplay()
         check(displayId > 0) { "无法创建后台游戏显示器" }
         val component = java.io.File(context.filesDir, "mower-data/maa-component.zip")
-        check(current.installCore(ParcelFileDescriptor.open(component, ParcelFileDescriptor.MODE_READ_ONLY), hash))
+        ParcelFileDescriptor.open(component, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            check(current.installCore(descriptor, hash))
+        }
         val connected = JSONObject(current.maaRpc(JSONObject().put("method", "maa_prepare")
             .put("params", JSONObject().put("bridge_library", java.io.File(context.applicationInfo.nativeLibraryDir, "libbridge.so").path)).toString()))
         check(connected.getBoolean("ok")) { connected.optString("error") }
+        val state = coreStatus(current)
+        checkPreparing()
         packageName = requested
         serviceBinder = current.asBinder()
         prepared = true
-        return status()
+        return status(current, state)
     }
 
     @Synchronized fun gameState(): JSONObject {
@@ -250,9 +294,15 @@ class MowerBridge(private val context: Context, private val token: String,
         return true
     }
 
+    private fun coreStatus(service: RemoteService): JSONObject =
+        JSONObject(service.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result")
+
     private fun status(): JSONObject {
         val s = currentService()
-        val maa = runCatching { JSONObject(s!!.maaRpc("{\"method\":\"maa_status\"}")).getJSONObject("result") }.getOrNull()
+        return status(s, s?.let { runCatching { coreStatus(it) }.getOrNull() })
+    }
+
+    private fun status(s: RemoteService?, maa: JSONObject?): JSONObject {
         return JSONObject().put("protocol", 1).put("connected", s != null)
             .put("prepared", prepared && s?.asBinder() == serviceBinder)
             .put("display_id", displayId).put("resolution", JSONArray(listOf(1920, 1080)))

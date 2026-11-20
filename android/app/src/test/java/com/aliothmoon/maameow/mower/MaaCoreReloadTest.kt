@@ -2,6 +2,7 @@ package com.aliothmoon.maameow.mower
 
 import android.app.Application
 import android.os.Binder
+import android.os.DeadObjectException
 import android.os.ParcelFileDescriptor
 import com.aliothmoon.maameow.RemoteService
 import java.io.DataInputStream
@@ -33,6 +34,9 @@ class MaaCoreReloadTest {
     private var shutdownDuringRetire = false
     private var serviceRestarts = 0
     private var backendCalls = 0
+    private var connections = 0
+    private var beforeConnect: () -> Unit = {}
+    private var beforeCall: (String) -> Unit = {}
 
     private inner class Backend(val generation: Int) {
         val binder = Binder()
@@ -43,6 +47,7 @@ class MaaCoreReloadTest {
         val remote = Proxy.newProxyInstance(RemoteService::class.java.classLoader,
             arrayOf(RemoteService::class.java)) { _, method, args ->
             backendCalls++
+            beforeCall(method.name)
             when (method.name) {
                 "asBinder" -> binder
                 "maaRpc" -> {
@@ -83,6 +88,8 @@ class MaaCoreReloadTest {
         current = Backend(1)
         bridge = MowerBridge(context, "session-token", updateRestart = { serviceRestarts++ },
             currentService = { current.remote }, connectService = {
+                connections++
+                beforeConnect()
                 check(!connectFailure) { "connection failed" }; current.remote
             }, retireService = {
                 assertSame(current.remote, it)
@@ -115,6 +122,111 @@ class MaaCoreReloadTest {
         val response = call("prepare")
         assertTrue(response.toString(), response.getBoolean("ok"))
         events.clear(); hashFile.writeText(newHash)
+    }
+
+    @Test fun prepareFinishesOnReplacementAfterBackgroundServiceDies() {
+        beforeCall = { method ->
+            if (method == "installCore" && current.generation == 1) {
+                current = Backend(2)
+                throw DeadObjectException()
+            }
+        }
+        val response = call("prepare")
+        assertTrue(response.toString(), response.getBoolean("ok"))
+        val status = response.getJSONObject("result")
+        assertTrue(status.getBoolean("prepared"))
+        assertEquals(12, status.getInt("display_id"))
+        assertEquals(oldHash, status.getString("maa_component_hash"))
+        assertEquals(listOf("display:1", "display:2", "load:2"), events)
+        assertEquals(2, connections)
+    }
+
+    @Test fun binderDeathWhileConnectingCanRecoverBeforeAnyDisplayExists() {
+        beforeConnect = { if (connections == 1) throw DeadObjectException() }
+        val result = call("prepare")
+        assertTrue(result.toString(), result.getBoolean("ok"))
+        assertEquals(listOf("display:1", "load:1"), events)
+        assertEquals(2, connections)
+    }
+
+    @Test fun reconnectFailurePreservesPermissionErrorAndStops() {
+        beforeCall = { method ->
+            if (method == "startVirtualDisplay") {
+                current = Backend(2)
+                beforeConnect = { throw SecurityException("后台权限已撤销") }
+                throw DeadObjectException()
+            }
+        }
+        val result = call("prepare")
+        assertFalse(result.getBoolean("ok"))
+        assertEquals("后台权限已撤销", result.getString("error"))
+        assertEquals(2, connections)
+        assertFalse(call("status").getJSONObject("result").getBoolean("prepared"))
+    }
+
+    @Test fun deathDuringFinalStatusCheckRequiresPreparedReplacement() {
+        beforeCall = { method ->
+            if (method == "maaRpc" && current.generation == 1 && current.loaded.isNotEmpty()) {
+                current = Backend(2)
+                throw DeadObjectException()
+            }
+        }
+        val result = call("prepare")
+        assertTrue(result.toString(), result.getBoolean("ok"))
+        assertEquals(12, result.getJSONObject("result").getInt("display_id"))
+        assertEquals(listOf("display:1", "load:1", "display:2", "load:2"), events)
+        assertEquals(2, connections)
+    }
+
+    @Test fun inputFailureDoesNotReconnectOrResendTheInput() {
+        assertTrue(call("prepare").getBoolean("ok"))
+        var attempts = 0
+        beforeCall = { method ->
+            if (method == "touchDown") {
+                attempts++
+                current = Backend(2)
+                throw DeadObjectException()
+            }
+        }
+        val result = call("motion_events", params = JSONObject("""{"kind":"DOWN","points":[[100,200]]}"""))
+        assertFalse(result.getBoolean("ok"))
+        assertEquals(1, attempts)
+        assertEquals(1, connections)
+    }
+
+    @Test fun repeatedDeathReportsFailureAndLeavesDisplayUnprepared() {
+        beforeCall = { method ->
+            if (method == "installCore") {
+                current = Backend(current.generation + 1)
+                throw DeadObjectException()
+            }
+        }
+        val failure = call("prepare")
+        assertFalse(failure.getBoolean("ok"))
+        assertTrue(failure.getString("error").contains("DeadObjectException"))
+        assertEquals(2, connections)
+        val status = call("status").getJSONObject("result")
+        assertFalse(status.getBoolean("prepared"))
+        assertEquals(-1, status.getInt("display_id"))
+    }
+
+    @Test fun stopDuringPreparePreventsReconnect() {
+        beforeCall = { method ->
+            if (method == "maaRpc") {
+                MowerService.stopping = true
+                current = Backend(2)
+                throw DeadObjectException()
+            }
+        }
+        assertFalse(call("prepare").getBoolean("ok"))
+        assertEquals(1, connections)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test fun binderFailureFromLiveBackendDoesNotReplayPreparation() {
+        beforeCall = { method -> if (method == "startVirtualDisplay") throw DeadObjectException() }
+        assertFalse(call("prepare").getBoolean("ok"))
+        assertEquals(1, connections)
     }
 
     @Test fun heldMotionOnPreparedDisplayRejectsUnauthorizedOrPartialBatches() {
