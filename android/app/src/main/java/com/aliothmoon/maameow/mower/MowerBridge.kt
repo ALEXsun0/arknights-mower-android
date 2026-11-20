@@ -284,7 +284,7 @@ class MowerBridge(private val context: Context, private val token: String,
             if (method == "task_screen_begin") monitor.beginRun() else monitor.endRun()
             return true
         }
-        if (method in setOf("tap", "swipe", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
+        if (method in setOf("tap", "swipe", "motion_events", "key", "text", "maa_start")) check(!MowerService.manual && !MowerService.unlocking) { "游戏画面正在手动操作，请先返回 WebUI" }
         if (method == "maa_start" || (method == "launch" && p.optBoolean("task", true)) ||
             (method == "screenshot" && p.optBoolean("require_game"))) {
             MowerService.monitor?.beforeTaskAction()
@@ -382,6 +382,26 @@ class MowerBridge(private val context: Context, private val token: String,
                     up = { s.touchUp(x, y, 0) },
                     cancel = { s.touchCancel() },
                 )
+                true
+            }
+            "motion_events" -> {
+                val kind = p.getString("kind")
+                val raw = p.getJSONArray("points")
+                require(raw.length() in 1..64)
+                require(kind == "MOVE" || (kind in setOf("DOWN", "UP") && raw.length() == 1))
+                val points = (0 until raw.length()).map { point(raw.getJSONArray(it)) }
+                try {
+                    for ((x, y) in points) {
+                        when (kind) {
+                            "DOWN" -> s.touchDown(x, y, 0)
+                            "MOVE" -> s.touchMove(x, y, 0)
+                            "UP" -> s.touchUp(x, y, 0)
+                        }
+                    }
+                } catch (e: Exception) {
+                    runCatching { s.touchCancel() }
+                    throw e
+                }
                 true
             }
             "swipe" -> {

@@ -24,12 +24,13 @@ class Bridge:
             data.extend(chunk)
         return bytes(data)
 
-    def call(self, method, **params):
+    def call(self, method, *, socket_timeout=None, **params):
+        timeout = self.timeout if socket_timeout is None else min(self.timeout, socket_timeout)
         payload = json.dumps(dict(token=self.token, method=method, params=params)).encode()
         transmission_started = False
         try:
-            with socket.create_connection(('127.0.0.1', self.port), self.timeout) as sock:
-                sock.settimeout(self.timeout)
+            with socket.create_connection(('127.0.0.1', self.port), timeout) as sock:
+                sock.settimeout(timeout)
                 transmission_started = True
                 sock.sendall(struct.pack('!I', len(payload)) + payload)
                 size, = struct.unpack('!I', self._read(sock, 4))
@@ -40,7 +41,7 @@ class Bridge:
                 raise BridgeError(response.get('error', 'Android operation failed'))
             return response.get('result')
         except (BridgeError, OSError, json.JSONDecodeError) as exc:
-            if method in ('tap', 'swipe', 'key', 'text'):
+            if method in ('tap', 'swipe', 'motion_events', 'key', 'text'):
                 from mower_android.input_failure import AndroidTouchFailure
                 raise AndroidTouchFailure(exc, delivery_unknown=transmission_started) from exc
             raise

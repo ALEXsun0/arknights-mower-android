@@ -40,6 +40,11 @@ class GameRecoveryTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def test_task_stop_closes_game_even_with_worker_stop_set(self):
+        self.stop.set()
+        self.device.exit_after_task_stop()
+        self.device.bridge.call.assert_called_once_with('exit_game', socket_timeout=5)
+
     def test_solver_exit_is_not_eagerly_undone_but_next_capture_requests_recovery(self):
         self.device.exit()
         self.device.bridge.call.assert_called_once_with('exit_game')

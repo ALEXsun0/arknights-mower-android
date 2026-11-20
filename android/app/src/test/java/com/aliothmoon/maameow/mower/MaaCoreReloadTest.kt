@@ -61,6 +61,10 @@ class MaaCoreReloadTest {
                 "setVirtualDisplayMode" -> true
                 "setVirtualDisplayResolution", "stopVirtualDisplay" -> null
                 "startVirtualDisplay" -> { events += "display:$generation"; generation + 10 }
+                "touchDown", "touchMove", "touchUp" -> {
+                    events += "${method.name}:${args!!.joinToString()}"
+                    null
+                }
                 "mowerGame" -> { events += "game:$generation"; gameAlive = true; true }
                 else -> error("Unexpected backend call: ${method.name}")
             }
@@ -95,10 +99,11 @@ class MaaCoreReloadTest {
         MowerService.previewing = false; MowerService.unlocking = false
     }
 
-    private fun call(method: String, hash: String = newHash, token: String? = "session-token"): JSONObject =
+    private fun call(method: String, hash: String = newHash, token: String? = "session-token",
+                     params: JSONObject = JSONObject().put("component_hash", hash)): JSONObject =
         Socket("127.0.0.1", bridge.port).use { socket ->
             socket.soTimeout = 5000
-            val request = JSONObject().put("method", method).put("params", JSONObject().put("component_hash", hash))
+            val request = JSONObject().put("method", method).put("params", params)
             if (token != null) request.put("token", token)
             val bytes = request.toString().toByteArray()
             DataOutputStream(socket.getOutputStream()).apply { writeInt(bytes.size); write(bytes); flush() }
@@ -110,6 +115,24 @@ class MaaCoreReloadTest {
         val response = call("prepare")
         assertTrue(response.toString(), response.getBoolean("ok"))
         events.clear(); hashFile.writeText(newHash)
+    }
+
+    @Test fun heldMotionOnPreparedDisplayRejectsUnauthorizedOrPartialBatches() {
+        prepareOld()
+        val down = JSONObject("""{"kind":"DOWN","points":[[100,200]]}""")
+        fun motion(p: JSONObject, token: String? = "session-token") =
+            call("motion_events", token = token, params = p).getBoolean("ok")
+        assertFalse(motion(down, null))
+        assertFalse(motion(down, "wrong-token"))
+        MowerService.manual = true
+        try { assertFalse(motion(down)) } finally { MowerService.manual = false }
+        assertFalse(motion(JSONObject("""{"kind":"MOVE","points":[[10,20],[1920,20]]}""")))
+        assertTrue(events.isEmpty())
+        assertTrue(motion(down))
+        assertTrue(motion(JSONObject("""{"kind":"MOVE","points":[[110,210],[120,220]]}""")))
+        assertTrue(motion(JSONObject("""{"kind":"UP","points":[[120,220]]}""")))
+        assertEquals(listOf("touchDown:100, 200, 0", "touchMove:110, 210, 0",
+            "touchMove:120, 220, 0", "touchUp:120, 220, 0"), events)
     }
 
     @Test fun updateReplacesNativeProcessAndReconnectsLiveGameWithoutRestartingService() {
