@@ -1,6 +1,6 @@
 # Android 独立发行
 
-默认分支 main 是 Mower 主仓通知发行的宿主源码来源。手动构建使用 Run workflow 选定的分支；开发版使用 MowerRelease 已发布的 Nightly Android 完整运行包，普通版使用主仓已公开的正式／公测发行。MAA 使用官方已公开的正式／公测组件。
+默认分支 main 是 Mower 主仓通知发行的宿主源码来源。手动构建使用 Run workflow 选定的分支；普通版和开发版默认使用 MowerRelease 开发版索引指向的最新 alpha Android 完整运行包，并核对包内提交与标签。手动选择 `beta` 可使用主仓已公开的正式／公测发行。MAA 使用官方已公开的正式／公测组件。
 
 工作流只接受 Mower 主仓主动发送的 `repository_dispatch`（`mower-release`）和手动 `workflow_dispatch`。没有定时轮询、MAA 通知或分支推送入口。Mower 新版必须已有 Android 完整更新 ZIP，MAA 必须已有官方 Android ARM64 包和 GitHub 摘要。附件尚未就绪时终止；需要重新通知或手动重试。普通版以此前普通发行判断组件变更，开发版发布不会触发普通版重复发布。
 
