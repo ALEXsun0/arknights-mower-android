@@ -36,6 +36,9 @@ class AndroidDevice:
         logger.debug('device.exit 调用来源:\n' + ''.join(traceback.format_stack()[:-1]))
         self.bridge.call('exit_game')
 
+    def exit_after_task_stop(self):
+        self.bridge.call('exit_game', socket_timeout=5)
+
     def return_home(self):
         # The game has its own display; never navigate away from the phone's UI.
         self.exit()
@@ -110,6 +113,12 @@ class AndroidDevice:
 
     def tap(self, point):
         self.bridge.call('tap', x=int(point[0]), y=int(point[1]))
+
+    def motion_events(self, kind, points):
+        if kind not in ('DOWN', 'MOVE', 'UP') or not points:
+            raise ValueError('无效的触控事件')
+        self.bridge.call('motion_events', kind=kind,
+                         points=[[int(x), int(y)] for x, y in points])
 
     def swipe(self, start, end, duration=100):
         self.swipe_ext([start, end], [duration], up_wait=0)

@@ -47,6 +47,15 @@ class TransportTests(unittest.TestCase):
         bridge = Bridge(server.getsockname()[1], 'test-secret', timeout=2)
         return bridge, thread, requests
 
+    def test_garrison_motion_batch_uses_one_authenticated_request(self):
+        device = object.__new__(AndroidDevice)
+        for kind, points in [('DOWN', [(1, 2)]), ('MOVE', [(3, 4), (5, 6)]), ('UP', [(5, 6)])]:
+            device.bridge, worker, requests = self.exchange({'ok': True, 'result': True})
+            device.motion_events(kind, points)
+            worker.join(timeout=3)
+            self.assertEqual(requests, [{'token': 'test-secret', 'method': 'motion_events',
+                                         'params': {'kind': kind, 'points': [list(p) for p in points]}}])
+
     def test_fragmented_response_and_authentication(self):
         bridge, worker, requests = self.exchange({'ok': True, 'result': {'version': '6.17.3'}})
         self.assertEqual(bridge.call('status'), {'version': '6.17.3'})
@@ -61,6 +70,7 @@ class TransportTests(unittest.TestCase):
 
     def test_input_rejection_leaves_navigation_retry_and_is_not_replayed(self):
         operations = {
+            'motion_events': lambda d: d.motion_events('MOVE', [(3, 4)]),
             'tap': lambda device: device.tap((10, 20)),
             'swipe': lambda device: device.swipe((10, 20), (30, 40)),
             'key': lambda device: device.send_keyevent(4),
