@@ -8,6 +8,7 @@ Android 14+ 的 VDM 控制器、VirtualDeviceManager / CompanionDeviceManager �
 | --- | --- | --- |
 | Mower / 原图标 | https://github.com/ALEXsun0/arknights-mower | MIT，见 runtime/LICENSE |
 | 官方 Android MaaCore | https://github.com/MaaAssistantArknights/MaaAssistantArknights | AGPL-3.0，含各依赖原许可证 |
+| Android 原生控制库 | [MaaFramework v5.15.0](https://github.com/MaaXYZ/MaaFramework/releases/tag/v5.15.0) | LGPL-3.0，见[随库许可证](../runtime/mower_android/control_unit/LICENSE.md) |
 | Meow 背景显示与输入 | https://github.com/Aliothmoon/MAA-Meow | AGPL-3.0，部分 scrcpy 代码 Apache-2.0 |
 | Shizuku API/provider | https://github.com/RikkaApps/Shizuku-API | Apache-2.0 / MIT，按各模块声明 |
 | XZ for Java 1.10 | https://github.com/tukaani-project/xz-java | 0BSD，见 docs/licenses/XZ-Java-COPYING |
@@ -19,3 +20,5 @@ Android 14+ 的 VDM 控制器、VirtualDeviceManager / CompanionDeviceManager �
 | Python 依赖 | scripts/requirements-android.lock | 各包内保留原始许可证 |
 
 Termux 打包源和构建规则：https://github.com/termux/termux-packages 。二进制版本和校验信息见 `scripts/engine-assets.lock.json`。Python 运行包保留包级许可证与 Debian copyright 文件。MAA OCR 直接使用官方 Android 组件附带的 NCNN 模型，不改变官方核心二进制，也不再附带本地模型转换器。发布和再分发应继续附带这些许可证及各许可证要求的源码。
+
+APK 内置、在线更新和本地导入的 MAA 组件统一使用 [MAA-Meow 采用的 v5.15.0 控制库](https://github.com/Aliothmoon/MAA-Meow/commit/82dca01a318e801de91c751bac2eca552a2ec6cd)。该库来自官方发行包 `MAA-android-aarch64-v5.15.0.zip`（SHA-256 `2b880f372833cad314a54b1316252162c3f66c4f20a4fcab40eb04cdb6c7a31e`）的 `bin/libMaaAndroidNativeControlUnit.so`，以 XZ 压缩存放。打包时校验解压后库文件的 SHA-256，MaaCore、其他依赖库和资源仍取自所选 MAA 组件。
