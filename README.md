@@ -16,7 +16,7 @@ Shizuku 后台服务：官方 Android MaaCore + 显示器、截图、触控
 
 Android `.so` 使用 Bionic，不能由 Linux 用户态 Python 直接通过 ctypes 加载。因此 Python 适配器保留 Mower 使用的 Asst 调用方式，由 Android 原生服务加载官方库并转发回调。它实现的是当前 Mower 所需接口，并非官方 Python API 的完整替代。
 
-`MAAComponent-v6.21.4-android-arm64.tar.gz` 包含核心、原生控制器和 NCNN OCR 资源，但没有 Python 绑定。构建和更新直接使用官方包中的 NCNN 模型，不再提供旧 ONNX OCR 模型的本地转换。核心二进制保持原样。版本、来源和 SHA-256 见 [UPSTREAM.json](UPSTREAM.json) 与 [组件锁定文件](scripts/maa-android.lock.json)。
+`MAAComponent-v6.21.4-android-arm64.tar.gz` 包含核心、原生控制器和 NCNN OCR 资源，但没有 Python 绑定。构建和更新直接使用官方包中的 NCNN 模型，不再提供旧 ONNX OCR 模型的本地转换。MaaCore 使用所选版本的官方二进制，Android 原生控制库固定采用 MaaFramework v5.15.0，详见[运行时组件说明](docs/third-party-runtime.md)。版本、来源和 SHA-256 见 [UPSTREAM.json](UPSTREAM.json) 与 [组件锁定文件](scripts/maa-android.lock.json)。
 
 后台游戏能力参考 [MAA-Meow](https://github.com/Aliothmoon/MAA-Meow)，基于其中的后台显示、截图、预览与输入代码适配；本项目独立运行，并保留相关来源与许可证。
 

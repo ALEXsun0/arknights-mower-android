@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -54,6 +55,12 @@ class CoreUpdateActivationTests(unittest.TestCase):
         # The actual installer must finish both disk replacement and component packing first.
         self.assertEqual((self.target / 'libMaaCore.so').read_bytes(), b'new core')
         self.assertEqual((self.root / 'maa.old/libMaaCore.so').read_bytes(), b'old core')
+        controller = 'libMaaAndroidNativeControlUnit.so'
+        with zipfile.ZipFile(self.component) as archive:
+            self.assertEqual(archive.namelist().count(controller), 1)
+            self.assertEqual(hashlib.sha256(archive.read(controller)).hexdigest(),
+                             '1a394e4df4518fd1acdb2051d6b08583da0162911c7b8046446bed0c117dfae2')
+            self.assertEqual(archive.read('libMaaCore.so'), b'new core')
         expected = hashlib.sha256(self.component.read_bytes()).hexdigest()
         self.assertEqual(params, {'component_hash': expected})
         self.assertEqual(self.component.with_suffix('.sha256').read_text().strip(), expected)

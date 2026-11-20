@@ -1,6 +1,7 @@
 """Android owns connection settings, including values imported from desktop backups."""
 import hashlib
 import json
+import lzma
 import math
 import os
 import shutil
@@ -149,10 +150,20 @@ def pack_component(target, destination=COMPONENT):
             model = target / 'resource/PaddleOCR' / kind / f'{kind}.ncnn.{extension}'
             if not model.is_file() or not model.stat().st_size:
                 raise ValueError('官方 Android MAA 组件缺少完整的 NCNN OCR 模型，请更新组件包')
+    controller = 'libMaaAndroidNativeControlUnit.so'
+    pinned = Path(__file__).with_name('control_unit') / (controller + '.xz')
+    with lzma.open(pinned) as source:
+        control_bytes = source.read()
+    if hashlib.sha256(control_bytes).hexdigest() != '1a394e4df4518fd1acdb2051d6b08583da0162911c7b8046446bed0c117dfae2':
+        raise ValueError('内置 MaaFramework v5.15.0 Android 控制库校验失败')
     temporary = destination.with_suffix('.zip.new')
     with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.writestr(zipfile.ZipInfo(controller), control_bytes,
+                         compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
         for file in target.rglob('*'):
             relative = file.relative_to(target)
+            if relative.as_posix() == controller:
+                continue
             if file.name == 'inference.onnx' and file.parent.name in ('det', 'rec'):
                 continue
             if file.is_file() and (relative.parts[0] in ('resource', 'cache') or (len(relative.parts) == 1 and (file.name.endswith('.so') or file.name == '.mower-android.json'))):
