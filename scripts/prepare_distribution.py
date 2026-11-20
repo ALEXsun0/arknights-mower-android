@@ -24,13 +24,13 @@ def adapter_metadata(code, baseline, previous, tag, mower, maa):
             'compatibility':{'since_android':tag,'mower_from':mower,'maa_from':maa,'until_android':None}}
 
 
-def plan(publish=False, force=False, mower_channel='beta'):
-    if mower_channel not in ('beta', 'dev'):
+def plan(publish=False, force=False, mower_channel='alpha'):
+    if mower_channel not in ('alpha', 'beta', 'dev'):
         raise ValueError('Unknown Mower channel')
     if mower_channel == 'dev' and os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
         raise ValueError('Development APKs require a manual workflow_dispatch')
     baseline = json.loads((ROOT/'scripts/bundled-release.json').read_text())
-    mower = nightly_release() if mower_channel == 'dev' else latest_beta(releases(MOWER_REPO))
+    mower = nightly_release() if mower_channel in ('alpha', 'dev') else latest_beta(releases(MOWER_REPO))
     maa = latest_beta(releases(MAA_REPO))
     android = [r for r in releases(ANDROID_REPO) if not r.get('draft') and android_version_key(r['tag_name'])]
     previous = {}; previous_release = max(android, key=lambda r: (android_version_key(r['tag_name']), r.get('published_at', ''))) if android else None
@@ -38,7 +38,7 @@ def plan(publish=False, force=False, mower_channel='beta'):
         descriptor = asset(previous_release, 'android-release.json')
         previous = json.loads(download(descriptor, ROOT/'artifacts/previous-release.json', 1024**2).read_text())
     allocation_previous = previous
-    if mower_channel == 'beta' and previous_release and '-dev.' in previous_release['tag_name']:
+    if mower_channel != 'dev' and previous_release and '-dev.' in previous_release['tag_name']:
         beta_releases = [r for r in android if '-dev.' not in r['tag_name']]
         previous_beta = max(beta_releases, key=lambda r: android_version_key(r['tag_name'])) if beta_releases else None
         previous = (json.loads(download(asset(previous_beta, 'android-release.json'),
@@ -48,8 +48,8 @@ def plan(publish=False, force=False, mower_channel='beta'):
     if any(a['name'] == mower_asset_name for a in mower.get('assets', [])):
         component = asset(mower, mower_asset_name)
         mower_state = {'tag':mower['tag_name'], 'source':'release', 'asset':component}
-        if mower_channel == 'dev': mower_state['repository'] = 'ArkMowers/MowerRelease'
-    elif mower['tag_name'] == baseline['mower']['tag'] and baseline['mower']['source'] == 'bundled':
+        if mower_channel in ('alpha', 'dev'): mower_state['repository'] = 'ArkMowers/MowerRelease'
+    elif mower_channel == 'beta' and mower['tag_name'] == baseline['mower']['tag'] and baseline['mower']['source'] == 'bundled':
         # The old alpha.5 predates official Android archives. Only that configured
         # bootstrap snapshot may fall back; a new incomplete release must retry.
         mower_state = dict(baseline['mower'])
@@ -124,6 +124,8 @@ def apply(metadata_only=False):
         with zipfile.ZipFile(package) as archive:
             if not archive.read('mower/CHANGELOG.md').strip(): raise ValueError('Mower release CHANGELOG.md is empty')
         if meta['version'] != mower['tag'].removeprefix('v'): raise ValueError('Mower release version mismatch')
+        if data['channel'] in ('alpha', 'dev') and not meta['revision'].startswith(mower['tag'].rsplit('.g', 1)[-1]):
+            raise ValueError('Nightly revision differs from the pinned release tag')
         runtime = ROOT/'runtime'
         # Only the shared application is replaced. Host/adapter and user data are never overlaid.
         shutil.rmtree(runtime/'arknights_mower')
@@ -145,7 +147,7 @@ def apply(metadata_only=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(); parser.add_argument('action',choices=['plan','apply'])
     parser.add_argument('--publish',action='store_true'); parser.add_argument('--force',action='store_true')
-    parser.add_argument('--mower-channel', choices=['beta', 'dev'], default='beta')
+    parser.add_argument('--mower-channel', choices=['alpha', 'beta', 'dev'], default='alpha')
     parser.add_argument('--metadata-only',action='store_true'); args=parser.parse_args()
     if args.action == 'plan': plan(args.publish,args.force,args.mower_channel)
     else: apply(args.metadata_only)

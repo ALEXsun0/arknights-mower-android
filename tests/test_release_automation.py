@@ -122,10 +122,10 @@ class SnapshotTests(unittest.TestCase):
             responses={prepare.MOWER_REPO:[mower],prepare.MAA_REPO:[maa],prepare.ANDROID_REPO:[android]}
             if '-dev.' in previous_version: responses[prepare.ANDROID_REPO].append(release('v0.2.17',[asset('android-release.json')]))
             with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo: responses[repo]),patch.object(prepare,'download',side_effect=lambda item,target,*args: beta_file if target.name == 'previous-beta-release.json' else previous_file),patch.object(prepare,'host_digest',return_value='a'*64):
-                same=prepare.plan(publish=True)
+                same=prepare.plan(publish=True, mower_channel='beta')
                 self.assertFalse(same['publish']);self.assertFalse(same['host_update'])
                 maa['tag_name']='v6.17.6';maa['assets']=[asset('MAAComponent-v6.17.6-android-arm64.tar.gz')]
-                changed=prepare.plan(publish=True)
+                changed=prepare.plan(publish=True, mower_channel='beta')
                 self.assertTrue(changed['publish']);self.assertFalse(changed['host_update'])
                 self.assertEqual(changed['host_version_code'],15)
                 self.assertEqual(changed['version_code'],previous_code+1)
@@ -153,7 +153,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
             for name in ['scripts/bundled-release.json','android/app/build.gradle.kts','runtime/mower_android/maa-python.json','runtime/mower_android/maa_adapter.py','UPSTREAM.json']:
                 target=root/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)
             baseline=json.loads((root/'scripts/bundled-release.json').read_text())
-            tag=baseline['mower']['tag'] + ('.g12345678' if channel == 'dev' else '')
+            tag=baseline['mower']['tag'] + ('.gaaaaaaaa' if channel in ('alpha', 'dev') else '')
             version=tag.removeprefix('v')
             meta={'kind':'mower-android','format':1,'platform':'android','arch':'arm64','runtime_api':1,'python':'3.12','version':version,'revision':'a'*40}
             payload = b'official compressed runtime fixture'
@@ -177,7 +177,7 @@ class OfficialMowerReleaseTests(unittest.TestCase):
             old=root/'runtime/arknights_mower/old.py';old.parent.mkdir(parents=True);old.write_text('# obsolete')
             config=root/'runtime/mower-data/conf.yml';config.parent.mkdir();config.write_text('keep configuration')
             with patch.object(prepare,'ROOT',root),patch.object(prepare,'releases',side_effect=lambda repo:responses[repo]),patch.object(prepare,'nightly_release',return_value=mower),patch.dict(os.environ, {'GITHUB_EVENT_NAME':'workflow_dispatch'}),patch.object(prepare,'download',return_value=archive),patch.object(prepare,'host_digest',return_value='a'*64) as fingerprint:
-                plan=prepare.plan(publish=True, mower_channel=channel)
+                plan=prepare.plan(publish=True) if channel == 'alpha' else prepare.plan(publish=True, mower_channel=channel)
                 self.assertEqual(plan['channel'], channel)
                 self.assertEqual('-dev.' in plan['version'], channel == 'dev')
                 self.assertTrue(plan['publish'])
@@ -193,9 +193,16 @@ class OfficialMowerReleaseTests(unittest.TestCase):
                 self.assertEqual(config.read_text(),'keep configuration')
                 self.assertTrue((root/'runtime/mower_android/maa_adapter.py').is_file())
                 self.assertEqual(json.loads((root/'UPSTREAM.json').read_text())['mower']['commit'],'a'*40)
+                if channel in ('alpha', 'dev'):
+                    with patch('mower_android.mower_package.inspect', return_value={**meta, 'revision':'b'*40}):
+                        with self.assertRaisesRegex(ValueError, 'Nightly revision'):
+                            prepare.apply()
                 mower['tag_name']='v4.2.0-alpha.1';mower['assets']=[]
                 with self.assertRaisesRegex(ValueError,'has not published'):
                     prepare.plan(publish=True, mower_channel=channel)
+
+    def test_default_release_bundles_published_alpha_with_a_regular_apk_version(self):
+        self.test_official_archive_is_preferred_and_applied_with_its_dependencies(format=2, channel='alpha')
 
     def test_nightly_runtime_is_pinned_and_reused(self):
         self.test_official_archive_is_preferred_and_applied_with_its_dependencies(format=2, channel='dev')

@@ -6,8 +6,8 @@ on:
       mower_channel:
         description: 'Bundled Mower channel (dev publishes only when manually requested)'
         type: choice
-        options: [beta, dev]
-        default: beta
+        options: [alpha, beta, dev]
+        default: alpha
       publish:
         description: 'Build and publish a complete release using the selected Mower channel and latest beta-channel MAA'
         type: boolean
@@ -38,7 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PUBLISH: ${{ inputs.publish || false }}
-          MOWER_CHANNEL: ${{ inputs.mower_channel || 'beta' }}
+          MOWER_CHANNEL: ${{ inputs.mower_channel || 'alpha' }}
         run: |
           args=(--mower-channel "$MOWER_CHANNEL")
           if [[ "$EVENT" == repository_dispatch || "$PUBLISH" == true ]]; then args+=(--publish); fi

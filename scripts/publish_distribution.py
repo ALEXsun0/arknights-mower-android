@@ -26,6 +26,8 @@ def notes(meta):
     text=f"Arknights Mower Android {meta['apk']['version']}（versionCode {meta['apk']['version_code']}）。\n\n"
     if meta.get('channel') == 'dev':
         text+=f"开发版 APK：内置 Mower Nightly **{m['tag']}**，MAA 使用公测渠道 **{maa['tag']}**。仅由手动工作流发包，标记为预发行版，不替换 Latest。\n"
+    elif meta.get('channel') == 'alpha':
+        text+=f"正式版 APK 内置 Mower alpha **{m['tag']}**，来自已发布的 Android Nightly。内置 MAA **{maa['tag']}**。\n"
     elif m.get('source') == 'bundled' and m.get('branch') == 'alpha':
         text+=f"内置 Mower 更新至 **alpha `{m['revision'][:8]}`**（版本基线 {m['tag']}）；MAA 使用公测渠道最新发行 **{maa['tag']}**。\n"
     else:

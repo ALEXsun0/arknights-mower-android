@@ -89,9 +89,9 @@ compressed = output.with_suffix(output.suffix + '.tmp')
 try:
     if shutil.which('xz'):
         with compressed.open('wb') as destination:
-            subprocess.run(['xz', '-T2', '-6', '--stdout', str(uncompressed)], stdout=destination, check=True)
+            subprocess.run(['xz', '-T2', '-8', '--stdout', str(uncompressed)], stdout=destination, check=True)
     else:
-        with uncompressed.open('rb') as source, lzma.open(compressed, 'wb', preset=6) as destination:
+        with uncompressed.open('rb') as source, lzma.open(compressed, 'wb', preset=8) as destination:
             shutil.copyfileobj(source, destination, 1024*1024)
     compressed.replace(output)
 finally:
