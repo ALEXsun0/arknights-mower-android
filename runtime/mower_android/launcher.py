@@ -43,6 +43,7 @@ def main():
     import server
     from mower_android.backup_cleanup import install_hooks
     install_hooks(server)
+    app_update.restore_reservation(server)
     from mower_android.task_screen import install_hooks as install_task_screen_hooks
     install_task_screen_hooks()
     from flask import request, abort, make_response
@@ -58,7 +59,8 @@ def main():
             abort(401)
         if request.path == '/stop':
             app_update.cancel_resume()
-        if request.path.startswith('/start/') or request.path in (
+        scheduling = request.path == '/scheduled-start' and request.method == 'PUT'
+        if scheduling or request.path.startswith('/start/') or request.path in (
                 '/maa-update/start', '/maa-resource-update/start', '/resource/install',
                 '/android/mower-recovery', '/android/python-update', '/android/apk-update'):
             update = app_update.status()

@@ -74,6 +74,41 @@ def restore_restart_context():
         os.environ['MOWER_RESTART_JOB'] = saved['id']
 
 
+def reservation_file(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise ValueError('预约启动的更新作业无效')
+    return restart_folder()/job_id/'scheduled-start.json'
+
+
+def restore_reservation(server):
+    saved = read_restart()
+    if (not saved.get('scheduled_start') or saved.get('status') != 'running' or
+            saved.get('id') != os.environ.get('MOWER_RESTART_JOB') or
+            saved.get('target') != os.environ.get('MOWER_ACTIVE_ID')):
+        return
+    restore = getattr(server, 'restore_scheduled_start', None)
+    ready = threading.Event()
+    try:
+        if resume_cancelled(saved):
+            return
+        restored = restore is not None and restore(reservation_file(saved['id']), startup_ready=ready)
+    except (OSError, ValueError):
+        restored = False
+    if not restored:
+        saved.update(status='failed', resume_state='failed',
+                     message='Mower 已更新，但原预约未能恢复，请在 WebUI 重新设置。')
+        save_restart(saved)
+        return
+    server.app.extensions['android_reservation_ready'] = ready
+
+
+def resume_cancelled(saved):
+    try:
+        return (restart_folder()/'service-restart-cancelled').read_text() == saved['id']
+    except FileNotFoundError:
+        return False
+
+
 def cancel_resume():
     current = status()
     if current.get('status') == 'running' and current.get('phase') == 'restarting':
@@ -92,11 +127,7 @@ def resume_tasks(server):
         if (saved.get('status') != 'running' or saved.get('target') != os.environ.get('MOWER_ACTIVE_ID') or
                 current.get('id') != saved.get('target') or current.get('pending') or current.get('booting')):
             return
-        try:
-            cancelled = (restart_folder()/'service-restart-cancelled').read_text() == saved['id']
-        except OSError:
-            cancelled = False
-        if cancelled:
+        if resume_cancelled(saved):
             saved['resume_mower'] = False
         if saved.get('resume_mower'):
             if saved.get('resume_state') == 'starting':
@@ -117,6 +148,10 @@ def resume_tasks(server):
         saved.update(status='succeeded', phase='completed', progress=100, restarted=True,
                      message=f"Mower {saved['version']} 已更新并重新启动" + ('，已续接原任务' if saved.get('resume_mower') else ''))
         save_restart(saved)
+        if saved.get('scheduled_start'):
+            ready = server.app.extensions.pop('android_reservation_ready', None)
+            if ready is not None:
+                ready.set()
 
 
 def restart_hint():
@@ -134,13 +169,37 @@ def prepare_restart():
         if running:
             from arknights_mower.solvers.record import current_state, save_state_to_db
             saved = current_state()
+        supports_handoff = getattr(server, 'handoff_scheduled_start', None) is not None
+        if not supports_handoff and getattr(server, 'scheduled_start_at', None) is not None:
+            raise ValueError('当前 Mower 版本无法交接预约启动，已保留原预约')
         config.stop_maa.set()
-        # Reuse /stop's bounded shutdown and saved-state wrapper inside this authenticated update.
-        if server.stop.__wrapped__() != 'true':
+        # Preserve the timer until the native host accepts the service restart.
+        if supports_handoff:
+            stopped = server.stop.__wrapped__(user_requested=False, preserve_scheduled_start=True)
+        else:
+            stopped = server.stop.__wrapped__()
+        if stopped != 'true':
             raise ValueError('Mower 任务尚未停止，未重启服务')
         if running and saved is not None and not save_state_to_db(saved):
             raise ValueError('任务状态保存失败，未重启服务')
         return running
+
+
+def restart_service(server, job):
+    def request_restart(pending):
+        if pending:
+            job['scheduled_start'] = True
+            job['resume_mower'] = False
+        save_restart(job)
+        Bridge(timeout=10).call('mower_restart', id=job['target'])
+
+    with server.maa_maintenance_lock:
+        job['resume_mower'] = prepare_restart()
+        handoff = getattr(server, 'handoff_scheduled_start', None)
+        if handoff is None:
+            request_restart(False)
+        elif not handoff(reservation_file(job['id']), before_shutdown=request_restart):
+            raise ValueError('未能交接预约启动，未请求手机重启服务')
 
 
 def prefs():
@@ -190,7 +249,8 @@ def status():
                 not current.get('pending') and not current.get('booting')):
             if saved.get('resume_state') == 'failed':
                 result = {**saved, 'restarted': True}
-            elif not saved.get('resume_mower') or saved.get('resume_state') == 'succeeded':
+            elif (not saved.get('resume_mower') and not saved.get('scheduled_start') or
+                  saved.get('status') == 'succeeded' or saved.get('resume_state') == 'succeeded'):
                 result = {**saved, 'status': 'succeeded', 'phase': 'completed', 'progress': 100,
                           'restarted': True, 'message': saved.get('message') if saved.get('status') == 'succeeded'
                           else f"Mower {saved['version']} 已更新并重新启动"}
@@ -484,9 +544,8 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                 _job.update(phase='restarting', progress=100, target=target, version=result['version'],
                             message='更新包已准备完成，正在重新启动 Mower 服务')
                 restarting = True
-                _job['resume_mower'] = prepare_restart()
-                save_restart(_job)
-                Bridge(timeout=10).call('mower_restart', id=target)
+                import server
+                restart_service(server, _job)
             else:
                 _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
         except Exception as exc:

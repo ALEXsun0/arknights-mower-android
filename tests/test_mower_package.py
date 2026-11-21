@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 import zipfile
 from pathlib import Path
@@ -21,6 +23,9 @@ class MowerPackageTests(unittest.TestCase):
         for name, value in (('_job', {'ok':True, 'status':'idle'}), ('_plans', {}), ('_last_check', {})):
             isolated = patch.object(app_update, name, value)
             isolated.start(); self.addCleanup(isolated.stop)
+        host_server = SimpleNamespace(maa_maintenance_lock=threading.RLock())
+        modules = patch.dict(sys.modules, {'server':host_server})
+        modules.start(); self.addCleanup(modules.stop)
         preparation = patch.object(app_update, 'prepare_restart')
         self.prepare_restart = preparation.start(); self.addCleanup(preparation.stop)
         self.prepare_restart.return_value = False
@@ -299,6 +304,55 @@ class MowerPackageTests(unittest.TestCase):
         mower_package.mark_ready()
         return target
 
+    def test_host_transfers_reservation_before_restart_and_waits_for_ready(self):
+        target = self.ready_restart()
+        job = {**app_update.read_restart(), 'id':'a'*32}
+        self.prepare_restart.return_value = True
+        old = sys.modules['server']
+        def handoff(path, *, before_shutdown):
+            self.assertEqual(path, app_update.restart_folder()/job['id']/'scheduled-start.json')
+            before_shutdown(True)
+            return True
+        old.handoff_scheduled_start = handoff
+        with patch.object(app_update, 'Bridge') as bridge:
+            app_update.restart_service(old, job)
+            bridge.return_value.call.assert_called_once_with('mower_restart', id=target)
+        saved = app_update.read_restart()
+        self.assertTrue(saved['scheduled_start'])
+        self.assertFalse(saved['resume_mower'])
+        app_update.restore_restart_context()
+        new = SimpleNamespace(app=SimpleNamespace(extensions={}), restore_scheduled_start=Mock(return_value=True))
+        app_update.restore_reservation(new)
+        ready = new.restore_scheduled_start.call_args.kwargs['startup_ready']
+        self.assertFalse(ready.is_set())
+        self.assertEqual(new.restore_scheduled_start.call_args.args, (app_update.reservation_file(job['id']),))
+        self.assertEqual(app_update.status()['status'], 'running')
+        app_update.resume_tasks(new)
+        self.assertTrue(ready.is_set())
+        app_update.restore_reservation(new)
+        self.assertEqual(new.restore_scheduled_start.call_count, 1)
+
+    def test_cancelled_or_wrong_target_reservation_is_not_restored(self):
+        self.ready_restart()
+        job = {**app_update.read_restart(), 'id':'a'*32, 'scheduled_start':True, 'resume_mower':False}
+        app_update.save_restart(job)
+        app_update.restore_restart_context()
+        server = Mock()
+        with patch.dict(os.environ, {'MOWER_ACTIVE_ID':'different'}):
+            app_update.restore_reservation(server)
+        app_update.cancel_resume()
+        app_update.restore_reservation(server)
+        server.restore_scheduled_start.assert_not_called()
+
+    def test_incompatible_target_reports_missing_reservation(self):
+        self.ready_restart()
+        job = {**app_update.read_restart(), 'id':'a'*32, 'scheduled_start':True, 'resume_mower':False}
+        app_update.save_restart(job)
+        app_update.restore_restart_context()
+        app_update.restore_reservation(SimpleNamespace())
+        self.assertEqual(app_update.status()['status'], 'failed')
+        self.assertIn('重新设置', app_update.status()['message'])
+
     def test_restart_journal_uses_the_stable_host_update_cache(self):
         self.assertEqual(app_update.restart_folder(), self.root/'tmp/updates/4e21008231518eabb448/android-service')
 
@@ -434,7 +488,7 @@ class RestartPreparationTests(unittest.TestCase):
         import threading
         from arknights_mower.utils import config
         from arknights_mower.solvers import record
-        server = Mock()
+        server = Mock(handoff_scheduled_start=None, scheduled_start_at=None)
         server.maa_maintenance_lock = threading.RLock()
         server.mower_thread.is_alive.return_value = True
         server._job_running.return_value = False
@@ -453,7 +507,7 @@ class RestartPreparationTests(unittest.TestCase):
     def test_preparation_reuses_saved_shutdown_and_aborts_maa(self):
         import threading
         from arknights_mower.utils import config
-        server = Mock()
+        server = Mock(handoff_scheduled_start=None, scheduled_start_at=None)
         server.mower_thread = None
         server.maa_maintenance_lock = threading.RLock()
         server._job_running.return_value = False
@@ -465,10 +519,19 @@ class RestartPreparationTests(unittest.TestCase):
             server.stop.__wrapped__.assert_called_once()
             server.stop.assert_not_called()
 
+    def test_legacy_core_keeps_pending_reservation_when_handoff_is_unavailable(self):
+        server = Mock(handoff_scheduled_start=None, scheduled_start_at='pending', mower_thread=None)
+        server.maa_maintenance_lock = threading.RLock()
+        server._job_running.return_value = server.resource_update.running.return_value = False
+        server.stop.__wrapped__ = Mock()
+        with patch.dict(sys.modules, {'server':server}), self.assertRaisesRegex(ValueError, '保留原预约'):
+            app_update.prepare_restart()
+        server.stop.__wrapped__.assert_not_called()
+
     def test_busy_components_and_failed_shutdown_prevent_restart_preparation(self):
         import threading
         from arknights_mower.utils import config
-        server = Mock()
+        server = Mock(handoff_scheduled_start=None, scheduled_start_at=None)
         server.mower_thread = None
         server.maa_maintenance_lock = threading.RLock()
         server._job_running.return_value = True
