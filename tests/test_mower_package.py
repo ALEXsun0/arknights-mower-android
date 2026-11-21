@@ -478,8 +478,9 @@ class RestartPreparationTests(unittest.TestCase):
     def setUp(self):
         from arknights_mower import utils
         config = Mock()
+        self.record = Mock()
         modules = patch.dict(sys.modules, {'arknights_mower.utils.config':config,
-            'arknights_mower.solvers.record':Mock()})
+            'arknights_mower.solvers.record':self.record})
         modules.start(); self.addCleanup(modules.stop)
         attribute = patch.object(utils, 'config', config, create=True)
         attribute.start(); self.addCleanup(attribute.stop)
@@ -487,7 +488,6 @@ class RestartPreparationTests(unittest.TestCase):
     def test_running_tasks_are_saved_before_restart_and_save_failure_aborts_it(self):
         import threading
         from arknights_mower.utils import config
-        from arknights_mower.solvers import record
         server = Mock(handoff_scheduled_start=None, scheduled_start_at=None)
         server.maa_maintenance_lock = threading.RLock()
         server.mower_thread.is_alive.return_value = True
@@ -496,8 +496,8 @@ class RestartPreparationTests(unittest.TestCase):
         server.stop.__wrapped__ = Mock(return_value='true')
         saved = {'tasks':[{'type':'run_order', 'time':'2026-10-19T15:30:00'}]}
         with patch.dict(sys.modules, {'server':server}), patch.object(config, 'stop_maa'), \
-                patch.object(record, 'current_state', return_value=saved), \
-                patch.object(record, 'save_state_to_db', return_value=True) as persist:
+                patch.object(self.record, 'current_state', return_value=saved), \
+                patch.object(self.record, 'save_state_to_db', return_value=True) as persist:
             self.assertTrue(app_update.prepare_restart())
             persist.assert_called_once_with(saved)
             persist.return_value = False
