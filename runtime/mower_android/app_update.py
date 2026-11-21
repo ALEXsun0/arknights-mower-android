@@ -25,6 +25,7 @@ _lock = threading.Lock()
 _plans = {}
 _job = {'ok': True, 'status': 'idle'}
 _last_check = {}
+_unsaved_restart_result = {}
 
 
 def version_key(value):
@@ -63,7 +64,13 @@ def save_restart(job):
 def read_restart():
     try:
         value = json.loads((restart_folder()/'service-restart.json').read_text())
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        if (value.get('status') == 'running' and _unsaved_restart_result and
+                value.get('id') == _unsaved_restart_result.get('id') and
+                value.get('target') == _unsaved_restart_result['target']):
+            return dict(_unsaved_restart_result)
+        return value
     except (OSError, ValueError):
         return {}
 
@@ -76,6 +83,7 @@ def withdrawn_restart(job):
 
 
 def restart_to_restore():
+    global _unsaved_restart_result
     saved = read_restart()
     if (saved.get('status') != 'running' or not saved.get('target') or
             saved['target'] != os.environ.get('MOWER_ACTIVE_ID')):
@@ -89,9 +97,13 @@ def restart_to_restore():
     except (OSError, ValueError):
         saved.update(status='failed', resume_state='failed',
                      message='未能核对本次自动重启是否已撤回，请在 WebUI 确认预约和任务状态。')
+    else:
+        saved = withdrawn_restart(saved)
+    try:
         save_restart(saved)
-        return None
-    save_restart(withdrawn_restart(saved))
+    except OSError:
+        saved['message'] += ' 本次结果未能保存到更新记录。'
+        _unsaved_restart_result = saved
     return None
 
 
