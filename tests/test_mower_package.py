@@ -397,6 +397,71 @@ class MowerPackageTests(unittest.TestCase):
             self.wait_update()
         self.assertEqual(app_update.read_restart()['status'], 'running')
         self.assertEqual(app_update._job['status'], 'running')
+        server = sys.modules['server']
+        server.resolve_scheduled_start_handoff = Mock()
+        job = app_update.read_restart()
+        self.assertFalse(app_update.cancel(job['id'])['cancellable'])
+        server.resolve_scheduled_start_handoff.assert_called_once_with(
+            app_update.reservation_file(job['id']), accepted=True)
+        self.assertEqual(app_update.read_restart()['status'], 'running')
+
+    def test_unknown_restart_can_be_withdrawn_after_storage_recovers(self):
+        from werkzeug.datastructures import FileStorage
+
+        rename = Path.rename
+        def fail_withdraw(path, destination):
+            if path.name == 'restart-request':
+                raise PermissionError(path)
+            return rename(path, destination)
+        with (patch.dict(os.environ, MOWER_SERVICE_RESTART='1'), patch.object(app_update, 'Bridge') as bridge,
+              patch.object(Path, 'rename', fail_withdraw)):
+            bridge.return_value.call.side_effect = OSError('request never arrived')
+            preview = app_update.inspect_upload(FileStorage(stream=io.BytesIO(self.pack().read_bytes()), filename='mower.zip'))
+            app_update.submit(preview['check_id'], confirm_downgrade=True)
+            self.wait_update()
+            current = app_update.status()
+            self.assertIn('重启结果未知', current['message'])
+            self.assertTrue(current['cancellable'])
+            with self.assertRaises(ValueError):
+                app_update.cancel('previous-job')
+            with self.assertRaisesRegex(ValueError, '检查存储后重试'):
+                app_update.cancel(current['id'])
+            self.assertEqual(app_update.read_restart()['status'], 'running')
+
+        server = sys.modules['server']
+        server.resolve_scheduled_start_handoff = Mock()
+        self.assertEqual(app_update.cancel(current['id'])['status'], 'cancelled')
+        server.resolve_scheduled_start_handoff.assert_called_once_with(
+            app_update.reservation_file(current['id']), accepted=False)
+        self.assertEqual(app_update.status()['status'], 'cancelled')
+        with patch.dict(os.environ, MOWER_SERVICE_RESTART='1'), patch.object(app_update, 'Bridge') as bridge:
+            preview = app_update.inspect_upload(FileStorage(stream=io.BytesIO(self.pack().read_bytes()), filename='retry.zip'))
+            next_job = app_update.submit(preview['check_id'], confirm_downgrade=True)
+            self.wait_update()
+            self.assertNotEqual(current['id'], next_job['id'])
+            bridge.return_value.call.assert_called_once()
+            self.assertEqual(app_update.read_restart()['id'], next_job['id'])
+
+    def test_snapshot_cancellation_before_handoff_respects_a_later_reservation(self):
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                target = self.ready_restart()
+                job = {**app_update.read_restart(), 'id':('a' if pending else 'b')*32}
+                def prepare():
+                    app_update.cancel_resume()
+                    return True
+                self.prepare_restart.side_effect = prepare
+                old = sys.modules['server']
+                def handoff(path, *, before_shutdown):
+                    before_shutdown(pending)
+                    return True
+                old.handoff_scheduled_start = handoff
+                with patch.object(app_update, '_job', job), patch.object(app_update, 'Bridge'):
+                    app_update.restart_service(old, job)
+                saved = app_update.read_restart()
+                self.assertFalse(saved['resume_mower'])
+                self.assertEqual(bool(saved.get('scheduled_start')), pending)
+                self.assertFalse(app_update.resume_cancelled(saved))
 
     def test_cancelled_or_wrong_target_reservation_is_not_restored(self):
         self.ready_restart()

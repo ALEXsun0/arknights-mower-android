@@ -110,11 +110,14 @@ def resume_cancelled(saved):
 
 
 def cancel_resume():
-    current = status()
-    if current.get('status') == 'running' and current.get('phase') == 'restarting':
+    if _job.get('status') == 'running' and _job.get('phase') == 'restarting':
+        _job['stop_requested'] = True
+    saved = read_restart()
+    if (saved.get('status') == 'running' and saved.get('phase') == 'restarting' and
+            (saved.get('id') == _job.get('id') or saved.get('target') == os.environ.get('MOWER_ACTIVE_ID'))):
         temporary = restart_folder()/(uuid.uuid4().hex+'.cancel')
         try:
-            temporary.write_text(current['id'])
+            temporary.write_text(saved['id'])
             temporary.replace(restart_folder()/'service-restart-cancelled')
         finally:
             temporary.unlink(missing_ok=True)
@@ -170,7 +173,7 @@ def prepare_restart():
             from arknights_mower.solvers.record import current_state, save_state_to_db
             saved = current_state()
         supports_handoff = getattr(server, 'handoff_scheduled_start', None) is not None
-        if not supports_handoff and getattr(server, 'scheduled_start_at', None) is not None:
+        if (not supports_handoff or not hasattr(server, 'resolve_scheduled_start_handoff')) and getattr(server, 'scheduled_start_at', None) is not None:
             raise ValueError('当前 Mower 版本无法交接预约启动，已保留原预约')
         config.stop_maa.set()
         # Preserve the timer until the native host accepts the service restart.
@@ -189,37 +192,44 @@ class RestartDecisionUnknown(RuntimeError):
     """The update job still owns the saved reservation."""
 
 
+def withdraw_or_confirm_restart(job):
+    directory = reservation_file(job['id']).parent
+    try:
+        (directory/'restart-request').rename(directory/'restart-withdrawn')
+        return False
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise RestartDecisionUnknown('未能撤回手机服务的重启请求') from exc
+    for receipt, accepted in (('restart-accepted', True), ('restart-withdrawn', False)):
+        try:
+            if (directory/receipt).read_text(encoding='utf-8') == job['target']:
+                return accepted
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            raise RestartDecisionUnknown('未能读取手机服务的重启决定') from exc
+    raise RestartDecisionUnknown('未找到本次更新的重启决定')
+
+
 def request_native_restart(job):
     directory = reservation_file(job['id']).parent
     directory.mkdir(parents=True, exist_ok=True)
-    request = directory/'restart-request'
-    with request.open('x', encoding='utf-8') as stream:
+    with (directory/'restart-request').open('x', encoding='utf-8') as stream:
         stream.write(job['target'])
     try:
         Bridge(timeout=10).call('mower_restart_job', id=job['target'], job=job['id'])
-    except Exception as error:
-        # The bridge accepts by renaming this request before replying. Unlink
-        # and rename compete on the same name, so a withdrawn request cannot
-        # subsequently be accepted by a delayed native handler.
-        try:
-            request.unlink()
-        except FileNotFoundError:
-            try:
-                accepted = (directory/'restart-accepted').read_text(encoding='utf-8')
-            except (OSError, ValueError) as lookup_error:
-                raise RestartDecisionUnknown('未能读取手机服务的重启决定') from lookup_error
-            if accepted != job['target']:
-                raise RestartDecisionUnknown('重启确认与本次更新版本不符') from error
-            return
-        except OSError as lookup_error:
-            raise RestartDecisionUnknown('未能确认手机服务是否已接受重启') from lookup_error
-        raise
+    except Exception:
+        if not withdraw_or_confirm_restart(job):
+            raise
 
 
 def restart_service(server, job):
     def request_restart(pending):
         if pending:
             job['scheduled_start'] = True
+        stop_requested = job.pop('stop_requested', False)
+        if pending or stop_requested:
             job['resume_mower'] = False
         try:
             save_restart(job)
@@ -278,6 +288,8 @@ def info():
 
 def status():
     result = dict(_job)
+    if result.get('decision_unknown'):
+        return {**result, 'last_check': _last_check}
     saved = read_restart()
     if (saved.get('id') and
             (result.get('status') == 'idle' or result.get('id') == saved['id'])):
@@ -588,7 +600,10 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                 _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
         except RestartDecisionUnknown as exc:
             # A replacement may already have completed this journal.
-            _job['message'] = str(exc)
+            _job.update(decision_unknown=True, cancellable=True, message=(
+                f'重启结果未知：{exc}。点「取消更新」核对本次请求；已接受则继续重启，'
+                '未接受则撤回请求并恢复原预约。若仍无法读取，请检查存储后重试。'
+            ))
         except Exception as exc:
             _job.update(status='failed', message=(f'更新包已准备完成，但自动重启未完成：{exc}；请在手机停止并重新启动服务。'
                         if restarting else str(exc)))
@@ -601,10 +616,39 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
     return dict(_job)
 
 
+def cancel(job_id):
+    if not _lock.acquire(blocking=False):
+        raise ValueError('更新正在处理，请稍后重试')
+    try:
+        if not isinstance(job_id, str) or job_id != _job.get('id') or not _job.get('decision_unknown'):
+            raise ValueError('当前没有可核对的重启请求，请刷新更新状态')
+        import server
+        try:
+            accepted = withdraw_or_confirm_restart(_job)
+        except RestartDecisionUnknown as exc:
+            raise ValueError(_job['message']) from exc
+        resolver = getattr(server, 'resolve_scheduled_start_handoff', None)
+        if resolver is not None:
+            resolver(reservation_file(job_id), accepted=accepted)
+        if accepted:
+            _job.update(message='手机服务已接受本次重启，正在等待新服务就绪。')
+        else:
+            result = {**_job, 'status':'cancelled', 'phase':'cancelled', 'cancellable':False,
+                      'message':'本次自动重启已撤回，可重新提交更新。'}
+            result.pop('decision_unknown')
+            save_restart(result)
+            _job.update(result)
+        _job.pop('decision_unknown')
+        _job['cancellable'] = False
+        return dict(_job)
+    finally:
+        _lock.release()
+
+
 def __getattr__(name):
     # Source-only routes must not fall through to the desktop Git implementation.
     if name in {'remember_source_remote', 'source_history', 'check_source_version', 'source_pulls',
-                'check_source_pull', 'check_source_pulls', 'upload_package', 'cancel'}:
+                'check_source_pull', 'check_source_pulls', 'upload_package'}:
         def unsupported(*args, **kwargs): raise ValueError('此 Release 安装器不支持该操作')
         return unsupported
     raise AttributeError(name)

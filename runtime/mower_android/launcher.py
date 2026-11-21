@@ -43,6 +43,7 @@ def main():
     import server
     from mower_android.backup_cleanup import install_hooks
     install_hooks(server)
+    server.app.extensions["update_host_task_stop"] = app_update.cancel_resume
     app_update.restore_reservation(server)
     from mower_android.task_screen import install_hooks as install_task_screen_hooks
     install_task_screen_hooks()
@@ -57,8 +58,6 @@ def main():
             if request.path == '/':
                 return '<!doctype html><meta name="viewport" content="width=device-width"><title>Mower</title><p>请使用手机「局域网」页面中带访问令牌的完整地址。</p>'
             abort(401)
-        if request.path == '/stop':
-            app_update.cancel_resume()
         scheduling = request.path == '/scheduled-start' and request.method == 'PUT'
         if scheduling or request.path.startswith('/start/') or request.path in (
                 '/maa-update/start', '/maa-resource-update/start', '/resource/install',
@@ -89,6 +88,9 @@ def main():
 
     @server.app.after_request
     def android_response(response):
+        if (not hasattr(server, 'resolve_scheduled_start_handoff') and
+                request.path == '/stop' and response.status_code == 200 and response.get_data() == b'true'):
+            app_update.cancel_resume()
         if request.path == '/conf' and request.method == 'GET' and response.is_json:
             from mower_android.managed import native_theme
             data = response.get_json(); data['runtime_platform'] = 'android'; data['theme'] = native_theme(); response.set_data(server.app.json.dumps(data))
