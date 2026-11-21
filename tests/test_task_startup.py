@@ -197,6 +197,8 @@ class TaskStartupTests(unittest.TestCase):
         for readable in (True, False):
             with self.subTest(readable=readable), ExitStack() as stack:
                 directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+                stack.enter_context(patch.object(app_update, "_job", {"ok": True, "status": "idle"}))
+                stack.enter_context(patch.object(app_update, "_unsaved_restart_result", {}))
                 stack.enter_context(patch.object(app_update, "restart_folder", return_value=directory))
                 target = "staged-target"
                 stack.enter_context(patch.dict(os.environ, MOWER_ACTIVE_ID=target))
