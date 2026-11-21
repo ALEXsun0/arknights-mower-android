@@ -25,6 +25,7 @@ _lock = threading.Lock()
 _plans = {}
 _job = {'ok': True, 'status': 'idle'}
 _last_check = {}
+_unsaved_restart_result = {}
 
 
 def version_key(value):
@@ -63,23 +64,97 @@ def save_restart(job):
 def read_restart():
     try:
         value = json.loads((restart_folder()/'service-restart.json').read_text())
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        if (value.get('status') == 'running' and _unsaved_restart_result and
+                value.get('id') == _unsaved_restart_result.get('id') and
+                value.get('target') == _unsaved_restart_result['target']):
+            return dict(_unsaved_restart_result)
+        return value
     except (OSError, ValueError):
         return {}
 
 
-def restore_restart_context():
+def withdrawn_restart(job):
+    result = {**job, 'status':'cancelled', 'phase':'cancelled', 'cancellable':False,
+              'message':'本次自动重启已撤回，可重新提交更新。'}
+    result.pop('decision_unknown', None)
+    return result
+
+
+def restart_to_restore():
+    global _unsaved_restart_result
     saved = read_restart()
-    if saved.get('status') == 'running' and saved.get('target') == os.environ.get('MOWER_ACTIVE_ID'):
+    if (saved.get('status') != 'running' or not saved.get('target') or
+            saved['target'] != os.environ.get('MOWER_ACTIVE_ID')):
+        return None
+    try:
+        receipt = reservation_file(saved.get('id')).with_name('restart-withdrawn')
+        if receipt.read_text(encoding='utf-8') != saved['target']:
+            return saved
+    except FileNotFoundError:
+        return saved
+    except (OSError, ValueError):
+        saved.update(status='failed', resume_state='failed',
+                     message='未能核对本次自动重启是否已撤回，请在 WebUI 确认预约和任务状态。')
+    else:
+        saved = withdrawn_restart(saved)
+    try:
+        save_restart(saved)
+    except OSError:
+        saved['message'] += ' 本次结果未能保存到更新记录。'
+        _unsaved_restart_result = saved
+    return None
+
+
+def restore_restart_context():
+    saved = restart_to_restore()
+    if saved:
         os.environ['MOWER_RESTART_JOB'] = saved['id']
 
 
+def reservation_file(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise ValueError('预约启动的更新作业无效')
+    return restart_folder()/job_id/'scheduled-start.json'
+
+
+def restore_reservation(server):
+    saved = restart_to_restore()
+    if not saved or not saved.get('scheduled_start') or saved['id'] != os.environ.get('MOWER_RESTART_JOB'):
+        return
+    restore = getattr(server, 'restore_scheduled_start', None)
+    ready = threading.Event()
+    try:
+        if resume_cancelled(saved):
+            return
+        restored = restore is not None and restore(reservation_file(saved['id']), startup_ready=ready)
+    except (OSError, ValueError):
+        restored = False
+    if not restored:
+        saved.update(status='failed', resume_state='failed',
+                     message='Mower 已更新，但原预约未能恢复，请在 WebUI 重新设置。')
+        save_restart(saved)
+        return
+    server.app.extensions['android_reservation_ready'] = ready
+
+
+def resume_cancelled(saved):
+    try:
+        return (restart_folder()/'service-restart-cancelled').read_text() == saved['id']
+    except FileNotFoundError:
+        return False
+
+
 def cancel_resume():
-    current = status()
-    if current.get('status') == 'running' and current.get('phase') == 'restarting':
+    if _job.get('status') == 'running' and _job.get('phase') == 'restarting':
+        _job['stop_requested'] = True
+    saved = read_restart()
+    if (saved.get('status') == 'running' and saved.get('phase') == 'restarting' and
+            (saved.get('id') == _job.get('id') or saved.get('target') == os.environ.get('MOWER_ACTIVE_ID'))):
         temporary = restart_folder()/(uuid.uuid4().hex+'.cancel')
         try:
-            temporary.write_text(current['id'])
+            temporary.write_text(saved['id'])
             temporary.replace(restart_folder()/'service-restart-cancelled')
         finally:
             temporary.unlink(missing_ok=True)
@@ -87,16 +162,13 @@ def cancel_resume():
 
 def resume_tasks(server):
     with _lock:
-        saved = read_restart()
-        current = mower_package.state()
-        if (saved.get('status') != 'running' or saved.get('target') != os.environ.get('MOWER_ACTIVE_ID') or
-                current.get('id') != saved.get('target') or current.get('pending') or current.get('booting')):
+        saved = restart_to_restore()
+        if not saved:
             return
-        try:
-            cancelled = (restart_folder()/'service-restart-cancelled').read_text() == saved['id']
-        except OSError:
-            cancelled = False
-        if cancelled:
+        current = mower_package.state()
+        if current.get('id') != saved['target'] or current.get('pending') or current.get('booting'):
+            return
+        if resume_cancelled(saved):
             saved['resume_mower'] = False
         if saved.get('resume_mower'):
             if saved.get('resume_state') == 'starting':
@@ -117,6 +189,10 @@ def resume_tasks(server):
         saved.update(status='succeeded', phase='completed', progress=100, restarted=True,
                      message=f"Mower {saved['version']} 已更新并重新启动" + ('，已续接原任务' if saved.get('resume_mower') else ''))
         save_restart(saved)
+        if saved.get('scheduled_start'):
+            ready = server.app.extensions.pop('android_reservation_ready', None)
+            if ready is not None:
+                ready.set()
 
 
 def restart_hint():
@@ -134,13 +210,82 @@ def prepare_restart():
         if running:
             from arknights_mower.solvers.record import current_state, save_state_to_db
             saved = current_state()
+        supports_handoff = getattr(server, 'handoff_scheduled_start', None) is not None
+        if (not supports_handoff or not hasattr(server, 'resolve_scheduled_start_handoff')) and getattr(server, 'scheduled_start_at', None) is not None:
+            raise ValueError('当前 Mower 版本无法交接预约启动，已保留原预约')
         config.stop_maa.set()
-        # Reuse /stop's bounded shutdown and saved-state wrapper inside this authenticated update.
-        if server.stop.__wrapped__() != 'true':
+        # Preserve the timer until the native host accepts the service restart.
+        if supports_handoff:
+            stopped = server.stop.__wrapped__(user_requested=False, preserve_scheduled_start=True)
+        else:
+            stopped = server.stop.__wrapped__()
+        if stopped != 'true':
             raise ValueError('Mower 任务尚未停止，未重启服务')
         if running and saved is not None and not save_state_to_db(saved):
             raise ValueError('任务状态保存失败，未重启服务')
         return running
+
+
+class RestartDecisionUnknown(RuntimeError):
+    """The update job still owns the saved reservation."""
+
+
+def withdraw_or_confirm_restart(job):
+    directory = reservation_file(job['id']).parent
+    try:
+        (directory/'restart-request').rename(directory/'restart-withdrawn')
+        return False
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise RestartDecisionUnknown('未能撤回手机服务的重启请求') from exc
+    for receipt, accepted in (('restart-accepted', True), ('restart-withdrawn', False)):
+        try:
+            if (directory/receipt).read_text(encoding='utf-8') == job['target']:
+                return accepted
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            raise RestartDecisionUnknown('未能读取手机服务的重启决定') from exc
+    raise RestartDecisionUnknown('未找到本次更新的重启决定')
+
+
+def request_native_restart(job):
+    directory = reservation_file(job['id']).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory/'restart-request').open('x', encoding='utf-8') as stream:
+        stream.write(job['target'])
+    try:
+        Bridge(timeout=10).call('mower_restart_job', id=job['target'], job=job['id'])
+    except Exception:
+        if not withdraw_or_confirm_restart(job):
+            raise
+
+
+def restart_service(server, job):
+    def request_restart(pending):
+        if pending:
+            job['scheduled_start'] = True
+        stop_requested = job.pop('stop_requested', False)
+        if pending or stop_requested:
+            job['resume_mower'] = False
+        try:
+            save_restart(job)
+            request_native_restart(job)
+        except RestartDecisionUnknown:
+            raise
+        except Exception as exc:
+            # The request was never sent or was withdrawn before acceptance.
+            rejected = getattr(server, 'RestartHandoffRejected', RuntimeError)
+            raise rejected(str(exc)) from exc
+
+    with server.maa_maintenance_lock:
+        job['resume_mower'] = prepare_restart()
+        handoff = getattr(server, 'handoff_scheduled_start', None)
+        if handoff is None:
+            request_restart(False)
+        elif not handoff(reservation_file(job['id']), before_shutdown=request_restart):
+            raise ValueError('未能交接预约启动，未请求手机重启服务')
 
 
 def prefs():
@@ -181,16 +326,21 @@ def info():
 
 def status():
     result = dict(_job)
+    if result.get('decision_unknown'):
+        return {**result, 'last_check': _last_check}
     saved = read_restart()
     if (saved.get('id') and
             (result.get('status') == 'idle' or result.get('id') == saved['id'])):
+        if saved.get('status') == 'cancelled':
+            return {**saved, 'last_check': _last_check}
         result = saved
         current = mower_package.state()
         if (saved.get('target') == os.environ.get('MOWER_ACTIVE_ID') == current.get('id') and
                 not current.get('pending') and not current.get('booting')):
             if saved.get('resume_state') == 'failed':
                 result = {**saved, 'restarted': True}
-            elif not saved.get('resume_mower') or saved.get('resume_state') == 'succeeded':
+            elif (not saved.get('resume_mower') and not saved.get('scheduled_start') or
+                  saved.get('status') == 'succeeded' or saved.get('resume_state') == 'succeeded'):
                 result = {**saved, 'status': 'succeeded', 'phase': 'completed', 'progress': 100,
                           'restarted': True, 'message': saved.get('message') if saved.get('status') == 'succeeded'
                           else f"Mower {saved['version']} 已更新并重新启动"}
@@ -484,11 +634,16 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                 _job.update(phase='restarting', progress=100, target=target, version=result['version'],
                             message='更新包已准备完成，正在重新启动 Mower 服务')
                 restarting = True
-                _job['resume_mower'] = prepare_restart()
-                save_restart(_job)
-                Bridge(timeout=10).call('mower_restart', id=target)
+                import server
+                restart_service(server, _job)
             else:
                 _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
+        except RestartDecisionUnknown as exc:
+            # A replacement may already have completed this journal.
+            _job.update(decision_unknown=True, cancellable=True, message=(
+                f'重启结果未知：{exc}。点「取消更新」核对本次请求；已接受则继续重启，'
+                '未接受则撤回请求并恢复原预约。若仍无法读取，请检查存储后重试。'
+            ))
         except Exception as exc:
             _job.update(status='failed', message=(f'更新包已准备完成，但自动重启未完成：{exc}；请在手机停止并重新启动服务。'
                         if restarting else str(exc)))
@@ -501,10 +656,37 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
     return dict(_job)
 
 
+def cancel(job_id):
+    if not _lock.acquire(blocking=False):
+        raise ValueError('更新正在处理，请稍后重试')
+    try:
+        if not isinstance(job_id, str) or job_id != _job.get('id') or not _job.get('decision_unknown'):
+            raise ValueError('当前没有可核对的重启请求，请刷新更新状态')
+        import server
+        try:
+            accepted = withdraw_or_confirm_restart(_job)
+        except RestartDecisionUnknown as exc:
+            raise ValueError(_job['message']) from exc
+        resolver = getattr(server, 'resolve_scheduled_start_handoff', None)
+        if resolver is not None:
+            resolver(reservation_file(job_id), accepted=accepted)
+        if accepted:
+            _job.update(message='手机服务已接受本次重启，正在等待新服务就绪。')
+        else:
+            result = withdrawn_restart(_job)
+            save_restart(result)
+            _job.update(result)
+        _job.pop('decision_unknown')
+        _job['cancellable'] = False
+        return dict(_job)
+    finally:
+        _lock.release()
+
+
 def __getattr__(name):
     # Source-only routes must not fall through to the desktop Git implementation.
     if name in {'remember_source_remote', 'source_history', 'check_source_version', 'source_pulls',
-                'check_source_pull', 'check_source_pulls', 'upload_package', 'cancel'}:
+                'check_source_pull', 'check_source_pulls', 'upload_package'}:
         def unsupported(*args, **kwargs): raise ValueError('此 Release 安装器不支持该操作')
         return unsupported
     raise AttributeError(name)

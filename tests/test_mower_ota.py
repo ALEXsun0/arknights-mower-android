@@ -5,6 +5,7 @@ import os
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import zipfile
@@ -47,15 +48,10 @@ class MowerOtaTests(unittest.TestCase):
         folder = self.root / 'mower-programs'
         (folder / ident).mkdir(parents=True)
         (folder / ident / 'mower-android.json').write_text('{}')
-        package = types.ModuleType('arknights_mower')
-        package.__version__ = '4.1.6-alpha.7'
-        utils = types.ModuleType('arknights_mower.utils')
-        software = types.ModuleType('arknights_mower.utils.software_update')
-        software.version_key = lambda value: int(value.rsplit('.', 1)[1])
-        software.choose_release = Mock()
-        with (patch.dict(sys.modules, {'arknights_mower': package,
-                                       'arknights_mower.utils': utils,
-                                       'arknights_mower.utils.software_update': software}),
+        import arknights_mower
+        with (patch.object(arknights_mower, '__version__', '4.1.6-alpha.7'),
+              patch('arknights_mower.utils.network_settings.get_effective_settings',
+                    return_value={'github_proxy': ''}),
               patch.object(app_update.mower_package, 'folder', return_value=folder),
               patch.object(app_update.mower_package, 'state', return_value={
                   'id': ident, 'version': '4.1.6-alpha.7'}),
@@ -310,7 +306,9 @@ class MowerOtaTests(unittest.TestCase):
                             'version': 'v4.1.6-alpha.8',
                             'ota': {'asset': {'digest': 'sha256:'+digest},
                                     'base_id': 'b'*64, 'from_version': '4.1.6-alpha.7'}}
-                with (patch.dict(os.environ, MOWER_SERVICE_RESTART='1', MOWER_DATA_DIR=str(self.root)),
+                host_server = types.SimpleNamespace(maa_maintenance_lock=threading.RLock())
+                with (patch.dict(sys.modules, {'server': host_server}),
+                      patch.dict(os.environ, MOWER_SERVICE_RESTART='1', MOWER_DATA_DIR=str(self.root)),
                       patch.object(app_update, '_job', {'ok': True, 'status': 'idle'}),
                       patch.object(app_update, '_plans', {'ota': plan}),
                       patch.object(app_update, 'read_restart', return_value={}),
@@ -326,10 +324,10 @@ class MowerOtaTests(unittest.TestCase):
                       patch.object(app_update.threading, 'Thread', side_effect=lambda *, target, daemon: Mock(start=target))):
                     result = app_update.submit('ota')
                     self.assertEqual(result['phase'], 'restarting')
-                    self.assertEqual(result['status'], 'running')
+                    self.assertEqual(result['status'], 'running', result.get('message'))
                     self.assertTrue(result['resume_mower'])
                     reconstruct.assert_called_once()
-                    bridge.return_value.call.assert_called_once_with('mower_restart', id='c'*64)
+                    bridge.return_value.call.assert_called_once_with('mower_restart_job', id='c'*64, job=result['id'])
 
     def test_manual_ota_reconstructs_offline(self):
         import arknights_mower

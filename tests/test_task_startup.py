@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -188,6 +189,54 @@ class TaskStartupTests(unittest.TestCase):
         self.assertTrue(response.json["auto_start_handled"])
         self.assertTrue(response.json["desktop_startup_handled"])
         return response.json["status"]
+
+    def test_unwritable_restart_journal_still_serves_webui_without_resuming(self):
+        from arknights_mower.views.software_update import software_update_bp
+        from mower_android import app_update
+
+        for readable in (True, False):
+            with self.subTest(readable=readable), ExitStack() as stack:
+                directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+                stack.enter_context(patch.object(app_update, "_job", {"ok": True, "status": "idle"}))
+                stack.enter_context(patch.object(app_update, "_unsaved_restart_result", {}))
+                stack.enter_context(patch.object(app_update, "restart_folder", return_value=directory))
+                target = "staged-target"
+                stack.enter_context(patch.dict(os.environ, MOWER_ACTIVE_ID=target))
+                stack.enter_context(patch.object(app_update.mower_package, "state", return_value={"id": target}))
+                job_id = ("4" if readable else "5") * 32
+                job = dict(id=job_id, target=target, status="running", phase="restarting",
+                           scheduled_start=True, resume_mower=True, version="test")
+                app_update.save_restart(job)
+                receipt = app_update.reservation_file(job_id).with_name("restart-withdrawn")
+                receipt.parent.mkdir()
+                if readable:
+                    receipt.write_text(target)
+                else:
+                    receipt.mkdir()  # Cannot read this receipt as a file.
+                journal = directory / "service-restart.json"
+                replace = Path.replace
+                def deny_journal(path, destination):
+                    if destination == journal:
+                        raise PermissionError(destination)
+                    return replace(path, destination)
+                stack.enter_context(patch.object(Path, "replace", deny_journal))
+
+                def serve(client, workers, config, server, events):
+                    server.app.register_blueprint(software_update_bp)
+                    headers = {"token": "test-token"}
+                    self.assertEqual(client.get("/", headers=headers).data, b"WebUI")
+                    response = client.get("/software-update/status", headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json["status"], "cancelled" if readable else "failed")
+                    self.assertIn("未能保存", response.json["message"])
+                    self.assertEqual(json.loads(journal.read_text())["status"], "running")
+                    self.assertNotEqual(os.environ.get("MOWER_RESTART_JOB"), job_id)
+                    server.start.assert_not_called()
+                    for other in ({**job, "id": "6" * 32}, {**job, "target": "another-target"}):
+                        journal.write_text(json.dumps(other))
+                        self.assertEqual(app_update.read_restart(), other)
+
+                self.launch(automatic=False, during_serve=serve)
 
     def test_update_routes_coexist_and_require_current_token(self):
         def serve(client, workers, config, server, events):

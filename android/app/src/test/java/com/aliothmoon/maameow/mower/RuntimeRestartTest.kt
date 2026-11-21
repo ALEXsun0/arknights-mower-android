@@ -34,6 +34,31 @@ class RuntimeRestartTest {
         assertTrue(restart.request())
     }
 
+    @Test fun acceptsOnlyTheMatchingOutstandingRequest() {
+        val data = temporary.newFolder()
+        val job = "a".repeat(32)
+        val target = "b".repeat(64)
+        val dir = File(RuntimeRestart.directory(data), job).apply { mkdirs() }
+        val request = File(dir, "restart-request").apply { writeText(target) }
+        val accepted = File(dir, "restart-accepted")
+        assertTrue(runCatching { RuntimeRestart.acceptRequest(data, job, "c".repeat(64)) }.isFailure)
+        assertTrue(request.exists())
+        RuntimeRestart.acceptRequest(data, job, target)
+        assertEquals(target, accepted.readText())
+        assertFalse(request.exists())
+        assertTrue(runCatching { RuntimeRestart.acceptRequest(data, job, target) }.isFailure)
+    }
+
+    @Test fun withdrawnRequestCannotTriggerALateRestart() {
+        val data = temporary.newFolder()
+        val job = "d".repeat(32)
+        val target = "e".repeat(64)
+        val dir = File(RuntimeRestart.directory(data), job).apply { mkdirs() }
+        File(dir, "restart-request").apply { writeText(target); delete() }
+        assertTrue(runCatching { RuntimeRestart.acceptRequest(data, job, target) }.isFailure)
+        assertFalse(File(dir, "restart-accepted").exists())
+    }
+
     @Test fun userStopPersistsCancellationForThePendingJobOnly() {
         val data = temporary.newFolder()
         val directory = RuntimeRestart.directory(data).apply { mkdirs() }
