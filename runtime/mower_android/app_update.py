@@ -68,9 +68,36 @@ def read_restart():
         return {}
 
 
-def restore_restart_context():
+def withdrawn_restart(job):
+    result = {**job, 'status':'cancelled', 'phase':'cancelled', 'cancellable':False,
+              'message':'本次自动重启已撤回，可重新提交更新。'}
+    result.pop('decision_unknown', None)
+    return result
+
+
+def restart_to_restore():
     saved = read_restart()
-    if saved.get('status') == 'running' and saved.get('target') == os.environ.get('MOWER_ACTIVE_ID'):
+    if (saved.get('status') != 'running' or not saved.get('target') or
+            saved['target'] != os.environ.get('MOWER_ACTIVE_ID')):
+        return None
+    try:
+        receipt = reservation_file(saved.get('id')).with_name('restart-withdrawn')
+        if receipt.read_text(encoding='utf-8') != saved['target']:
+            return saved
+    except FileNotFoundError:
+        return saved
+    except (OSError, ValueError):
+        saved.update(status='failed', resume_state='failed',
+                     message='未能核对本次自动重启是否已撤回，请在 WebUI 确认预约和任务状态。')
+        save_restart(saved)
+        return None
+    save_restart(withdrawn_restart(saved))
+    return None
+
+
+def restore_restart_context():
+    saved = restart_to_restore()
+    if saved:
         os.environ['MOWER_RESTART_JOB'] = saved['id']
 
 
@@ -81,10 +108,8 @@ def reservation_file(job_id):
 
 
 def restore_reservation(server):
-    saved = read_restart()
-    if (not saved.get('scheduled_start') or saved.get('status') != 'running' or
-            saved.get('id') != os.environ.get('MOWER_RESTART_JOB') or
-            saved.get('target') != os.environ.get('MOWER_ACTIVE_ID')):
+    saved = restart_to_restore()
+    if not saved or not saved.get('scheduled_start') or saved['id'] != os.environ.get('MOWER_RESTART_JOB'):
         return
     restore = getattr(server, 'restore_scheduled_start', None)
     ready = threading.Event()
@@ -125,10 +150,11 @@ def cancel_resume():
 
 def resume_tasks(server):
     with _lock:
-        saved = read_restart()
+        saved = restart_to_restore()
+        if not saved:
+            return
         current = mower_package.state()
-        if (saved.get('status') != 'running' or saved.get('target') != os.environ.get('MOWER_ACTIVE_ID') or
-                current.get('id') != saved.get('target') or current.get('pending') or current.get('booting')):
+        if current.get('id') != saved['target'] or current.get('pending') or current.get('booting'):
             return
         if resume_cancelled(saved):
             saved['resume_mower'] = False
@@ -293,6 +319,8 @@ def status():
     saved = read_restart()
     if (saved.get('id') and
             (result.get('status') == 'idle' or result.get('id') == saved['id'])):
+        if saved.get('status') == 'cancelled':
+            return {**saved, 'last_check': _last_check}
         result = saved
         current = mower_package.state()
         if (saved.get('target') == os.environ.get('MOWER_ACTIVE_ID') == current.get('id') and
@@ -633,9 +661,7 @@ def cancel(job_id):
         if accepted:
             _job.update(message='手机服务已接受本次重启，正在等待新服务就绪。')
         else:
-            result = {**_job, 'status':'cancelled', 'phase':'cancelled', 'cancellable':False,
-                      'message':'本次自动重启已撤回，可重新提交更新。'}
-            result.pop('decision_unknown')
+            result = withdrawn_restart(_job)
             save_restart(result)
             _job.update(result)
         _job.pop('decision_unknown')

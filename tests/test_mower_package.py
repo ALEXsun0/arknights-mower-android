@@ -247,7 +247,7 @@ class MowerPackageTests(unittest.TestCase):
 
     def test_failed_new_launch_reports_rollback_after_process_restart(self):
         mower_package.install(self.pack())
-        app_update.save_restart({'ok':True, 'id':'restart-job', 'status':'running',
+        app_update.save_restart({'ok':True, 'id':'f'*32, 'status':'running',
             'target':mower_package.state()['id'], 'version':'4.2.0'})
         mower_package.select_source(self.root/'bundled')
         mower_package.select_source(self.root/'bundled')
@@ -298,7 +298,7 @@ class MowerPackageTests(unittest.TestCase):
     def ready_restart(self, *, resume=True):
         mower_package.install(self.pack())
         target = mower_package.state()['id']
-        app_update.save_restart({'ok':True, 'id':'restart-job', 'status':'running', 'phase':'restarting',
+        app_update.save_restart({'ok':True, 'id':'f'*32, 'status':'running', 'phase':'restarting',
             'target':target, 'version':'4.2.0', 'resume_mower':resume})
         mower_package.select_source(self.root/'bundled')
         mower_package.mark_ready()
@@ -442,6 +442,76 @@ class MowerPackageTests(unittest.TestCase):
             bridge.return_value.call.assert_called_once()
             self.assertEqual(app_update.read_restart()['id'], next_job['id'])
 
+    def test_manual_start_after_withdrawal_survives_interrupted_cleanup(self):
+        for job_id, scheduled, running in (('a'*32, True, False), ('b'*32, False, True), ('c'*32, False, False)):
+            with self.subTest(scheduled=scheduled, running=running), patch.dict(os.environ):
+                mower_package.install(self.pack())
+                job = {'id':job_id, 'target':mower_package.state()['id'], 'version':'4.2.0',
+                       'status':'running', 'phase':'restarting', 'scheduled_start':scheduled,
+                       'resume_mower':running}
+                app_update.save_restart(job)
+                transfer = app_update.reservation_file(job_id)
+                transfer.parent.mkdir(parents=True)
+                if scheduled:
+                    transfer.write_text('reservation')
+                (transfer.parent/'restart-request').write_text(job['target'])
+                old = sys.modules['server']
+                old.resolve_scheduled_start_handoff = Mock(side_effect=SystemExit)
+                with patch.object(app_update, '_job', {**job, 'decision_unknown':True}):
+                    with self.assertRaises(SystemExit):
+                        app_update.cancel(job_id)
+                self.assertEqual((transfer.parent/'restart-withdrawn').read_text(), job['target'])
+                self.assertEqual(app_update.read_restart()['status'], 'running')
+                self.assertEqual(transfer.exists(), scheduled)
+
+                mower_package.select_source(self.root/'bundled')
+                new = Mock()
+                new.start.__wrapped__ = Mock(return_value='true')
+                app_update.restore_restart_context()
+                self.assertNotEqual(os.environ.get('MOWER_RESTART_JOB'), job_id)
+                app_update.restore_reservation(new)
+                mower_package.mark_ready()
+                for _ in range(2):
+                    app_update.resume_tasks(new)
+                    self.assertEqual(app_update.status()['status'], 'cancelled')
+                new.restore_scheduled_start.assert_not_called()
+                new.start.__wrapped__.assert_not_called()
+                self.assertEqual(app_update.read_restart()['status'], 'cancelled')
+
+    def test_withdrawal_must_match_job_and_target(self):
+        target = self.ready_restart()
+        job = {**app_update.read_restart(), 'id':'b'*32}
+        app_update.save_restart(job)
+        for job_id, receipt_target in ((job['id'], 'another-target'), ('a'*32, target)):
+            directory = app_update.reservation_file(job_id).parent
+            directory.mkdir(parents=True)
+            (directory/'restart-withdrawn').write_text(receipt_target)
+        app_update.restore_restart_context()
+        new = Mock()
+        new.start.__wrapped__ = Mock(return_value='true')
+        app_update.resume_tasks(new)
+        new.start.__wrapped__.assert_called_once_with('0')
+        self.assertEqual(app_update.read_restart()['status'], 'succeeded')
+
+    def test_unreadable_withdrawal_receipt_blocks_recovery(self):
+        self.ready_restart()
+        job = app_update.read_restart()
+        receipt = app_update.reservation_file(job['id']).with_name('restart-withdrawn')
+        read = Path.read_text
+        def deny_receipt(path, *args, **kwargs):
+            if path == receipt:
+                raise PermissionError(path)
+            return read(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', deny_receipt):
+            app_update.restore_restart_context()
+        new = Mock()
+        new.start.__wrapped__ = Mock()
+        app_update.resume_tasks(new)
+        new.start.__wrapped__.assert_not_called()
+        current = app_update.status()
+        self.assertEqual(current['status'], 'failed')
+        self.assertIn('未能核对', current['message'])
+
     def test_snapshot_cancellation_before_handoff_respects_a_later_reservation(self):
         for pending in (False, True):
             with self.subTest(pending=pending):
@@ -493,7 +563,7 @@ class MowerPackageTests(unittest.TestCase):
         server.start.__wrapped__ = Mock(return_value='true')
         with patch.dict(os.environ):
             app_update.restore_restart_context()
-            self.assertEqual(os.environ['MOWER_RESTART_JOB'], 'restart-job')
+            self.assertEqual(os.environ['MOWER_RESTART_JOB'], 'f'*32)
         self.assertEqual(app_update.status()['status'], 'running')
         mower_package.save({**mower_package.state(), 'pending':True, 'booting':True})
         app_update.resume_tasks(server)
@@ -506,7 +576,7 @@ class MowerPackageTests(unittest.TestCase):
         self.assertIn('已续接原任务', app_update.status()['message'])
 
     def test_stopped_tasks_and_user_cancellation_do_not_resume(self):
-        for was_running, cancellation in ((False, ''), (True, 'restart-job')):
+        for was_running, cancellation in ((False, ''), (True, 'f'*32)):
             with self.subTest(was_running=was_running):
                 self.ready_restart(resume=was_running)
                 (app_update.restart_folder()/'service-restart-cancelled').write_text(cancellation)
