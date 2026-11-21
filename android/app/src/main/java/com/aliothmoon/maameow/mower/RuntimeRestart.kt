@@ -29,6 +29,14 @@ internal class RuntimeRestart {
             return File(data, "tmp/updates/$key/android-service")
         }
 
+        fun acceptRequest(data: File, job: String, target: String) {
+            require(job.matches(Regex("[a-f0-9]{32}"))) { "Mower 重启作业标识无效" }
+            val jobDir = File(directory(data), job)
+            val request = File(jobDir, "restart-request")
+            check(request.readText() == target) { "重启请求与待启动版本不符" }
+            check(request.renameTo(File(jobDir, "restart-accepted"))) { "重启请求已撤回或无法确认" }
+        }
+
         fun cancelResume(data: File) {
             val directory = directory(data)
             val journal = File(directory, "service-restart.json")

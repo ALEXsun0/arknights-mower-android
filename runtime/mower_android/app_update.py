@@ -185,13 +185,51 @@ def prepare_restart():
         return running
 
 
+class RestartDecisionUnknown(RuntimeError):
+    """The update job still owns the saved reservation."""
+
+
+def request_native_restart(job):
+    directory = reservation_file(job['id']).parent
+    directory.mkdir(parents=True, exist_ok=True)
+    request = directory/'restart-request'
+    with request.open('x', encoding='utf-8') as stream:
+        stream.write(job['target'])
+    try:
+        Bridge(timeout=10).call('mower_restart_job', id=job['target'], job=job['id'])
+    except Exception as error:
+        # The bridge accepts by renaming this request before replying. Unlink
+        # and rename compete on the same name, so a withdrawn request cannot
+        # subsequently be accepted by a delayed native handler.
+        try:
+            request.unlink()
+        except FileNotFoundError:
+            try:
+                accepted = (directory/'restart-accepted').read_text(encoding='utf-8')
+            except (OSError, ValueError) as lookup_error:
+                raise RestartDecisionUnknown('未能读取手机服务的重启决定') from lookup_error
+            if accepted != job['target']:
+                raise RestartDecisionUnknown('重启确认与本次更新版本不符') from error
+            return
+        except OSError as lookup_error:
+            raise RestartDecisionUnknown('未能确认手机服务是否已接受重启') from lookup_error
+        raise
+
+
 def restart_service(server, job):
     def request_restart(pending):
         if pending:
             job['scheduled_start'] = True
             job['resume_mower'] = False
-        save_restart(job)
-        Bridge(timeout=10).call('mower_restart', id=job['target'])
+        try:
+            save_restart(job)
+            request_native_restart(job)
+        except RestartDecisionUnknown:
+            raise
+        except Exception as exc:
+            # The request was never sent or was withdrawn before acceptance.
+            rejected = getattr(server, 'RestartHandoffRejected', RuntimeError)
+            raise rejected(str(exc)) from exc
 
     with server.maa_maintenance_lock:
         job['resume_mower'] = prepare_restart()
@@ -548,6 +586,9 @@ def submit(check_id, background=False, force=False, confirm_downgrade=False):
                 restart_service(server, _job)
             else:
                 _job.update(status='succeeded', progress=100, message=result.get('message', '已完成'))
+        except RestartDecisionUnknown as exc:
+            # A replacement may already have completed this journal.
+            _job['message'] = str(exc)
         except Exception as exc:
             _job.update(status='failed', message=(f'更新包已准备完成，但自动重启未完成：{exc}；请在手机停止并重新启动服务。'
                         if restarting else str(exc)))

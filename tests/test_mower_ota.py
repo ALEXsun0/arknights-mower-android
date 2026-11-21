@@ -327,7 +327,7 @@ class MowerOtaTests(unittest.TestCase):
                     self.assertEqual(result['status'], 'running', result.get('message'))
                     self.assertTrue(result['resume_mower'])
                     reconstruct.assert_called_once()
-                    bridge.return_value.call.assert_called_once_with('mower_restart', id='c'*64)
+                    bridge.return_value.call.assert_called_once_with('mower_restart_job', id='c'*64, job=result['id'])
 
     def test_manual_ota_reconstructs_offline(self):
         import arknights_mower

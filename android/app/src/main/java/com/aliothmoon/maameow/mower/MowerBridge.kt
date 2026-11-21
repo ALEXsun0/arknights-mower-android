@@ -113,7 +113,7 @@ class MowerBridge(private val context: Context, private val token: String,
                     check(MessageDigest.isEqual(token.toByteArray(), request.optString("token").toByteArray())) { "Unauthorized" }
                     val method = request.getString("method")
                     val result = dispatch(method, request.optJSONObject("params") ?: JSONObject())
-                    restart = method == "mower_restart"
+                    restart = method == "mower_restart" || method == "mower_restart_job"
                     JSONObject().put("ok", true).put("result", result)
                 } catch (e: Exception) {
                     JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName)
@@ -291,12 +291,15 @@ class MowerBridge(private val context: Context, private val token: String,
         }
         if (method == "status") return status()
         if (method == "maa_reload") return reloadCore(p.getString("component_hash"))
-        if (method == "mower_restart") {
+        if (method == "mower_restart" || method == "mower_restart_job") {
             check(updateRestart != null && MowerService.active && !MowerService.stopping) { "服务无法自动重启，请手动停止并重新启动" }
             val id = p.getString("id")
             require(id.matches(Regex("[a-f0-9]{64}"))) { "Mower 更新版本无效" }
             val state = JSONObject(java.io.File(context.filesDir, "mower-data/mower-programs/active.json").readText())
             check(state.optString("id") == id && state.optBoolean("pending") && !state.optBoolean("booting")) { "没有匹配的待启动 Mower 更新" }
+            if (method == "mower_restart_job") {
+                RuntimeRestart.acceptRequest(java.io.File(context.filesDir, "mower-data"), p.getString("job"), id)
+            }
             return true
         }
         if (method == "apk_info" || method == "apk_install") {
